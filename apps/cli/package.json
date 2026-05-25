@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-cli",
-  "version": "0.5.0",
+  "version": "0.1.0",
   "description": "BMW NFS / WinKFP reconstruction CLI — `nfsx plan` resolves a part number through SP-Daten and prints the flash context (IPO + SGBD + working files + transport).",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
