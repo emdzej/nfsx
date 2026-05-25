@@ -62,17 +62,13 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
     expect(jobEntries).toEqual([]);
   });
 
-  it('dispatches CDHapiJob to the EDIABAS provider with the right (ecu, job) tuple', async () => {
-    // Validates that the runtime's `CDHapiJob` slot (0x0D) correctly
-    // hands off to the EDIABAS provider — the load-bearing bridge
-    // between IPO and ECU. We mock HARDWARE_REFERENZ_LESEN, then
-    // dispatch HW_REFERENZ, and confirm the mock recorded the call
-    // with the right args. We catch the crash that happens later
-    // (a stack-management edge case in the HwReferenzLesen control
-    // flow — TestApiFehler return + subsequent PUSHREF local[4] —
-    // that needs a deeper port of ncsx's CABI provider to resolve;
-    // tracked as a known limitation, doesn't affect JOB_ERMITTELN
-    // flows or simpler IPO paths).
+  it('dispatches CDHapiJob to the EDIABAS provider and reads results back', async () => {
+    // End-to-end validation of the HwReferenzLesen flow:
+    //   - CDHGetSgbdName returns the seeded sgbd
+    //   - CDHapiJob fires with the right (ecu, job) and reads results
+    //   - The mock recorded the call
+    //   - CDHapiResultText reads JOB_STATUS / HW_REF_SG_KENNUNG / HW_REF_PROJEKT
+    //   - cabimain returns cleanly (no stack-mgmt crash)
     const ediabas = new MockEdiabasProvider();
     ediabas.setSimpleResult('C_ACC65', 'HARDWARE_REFERENZ_LESEN', {
       JOB_STATUS: 'OKAY',
@@ -87,15 +83,8 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
       ediabas,
     });
 
-    // Expect the dispatch — the IPO crashes mid-flow (see comment
-    // above), but the CDHapiJob handshake completed first.
-    await expect(handle.runCabimain('HW_REFERENZ')).rejects.toThrow();
+    await handle.runCabimain('HW_REFERENZ');
 
-    // What we CAN verify:
-    //   - CDHGetSgbdName returned the seeded sgbd
-    //   - CDHapiJob fired with the right (ecu, job)
-    //   - The mock recorded the call
-    //   - JOB_STATUS was read back successfully
     const sgbdCall = handle.state.trace.find((t) => t.name === 'CDHGetSgbdName');
     expect(sgbdCall).toBeDefined();
     expect(sgbdCall!.args.sgbd).toBe('C_ACC65');
@@ -112,16 +101,14 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
     expect(handle.state.lastJob).toBeDefined();
     expect(handle.state.lastJob!.status).toBe('OKAY');
 
-    // We also exercised CDHapiResultText (slot 0x0F) successfully —
-    // TestApiFehler read JOB_STATUS back from the mock.
-    const resultTextCall = handle.state.trace.find(
+    const jobStatusRead = handle.state.trace.find(
       (t) => t.name === 'CDHapiResultText' && t.args.name === 'JOB_STATUS',
     );
-    expect(resultTextCall).toBeDefined();
-    expect(resultTextCall!.args.value).toBe('OKAY');
+    expect(jobStatusRead).toBeDefined();
+    expect(jobStatusRead!.args.value).toBe('OKAY');
 
     console.log(
-      `\n  HW_REFERENZ dispatch chain verified (5 calls before stack-mgmt crash):\n` +
+      `\n  HW_REFERENZ dispatch chain (${handle.state.trace.length} calls):\n` +
         handle.state.trace
           .map(
             (t, i) =>

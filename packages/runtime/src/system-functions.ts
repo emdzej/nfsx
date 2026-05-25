@@ -1,32 +1,35 @@
 /**
- * NCSEXPER-style system-function overrides for the inpax VM.
+ * NCSEXPER-style system-function overrides for the inpax VM, driven
+ * by the authoritative `NCSEXPER_CABI_SLOTS` table from
+ * `@emdzej/ncsx-inpax-cabi-provider`.
  *
- * The IPO bytecode calls slots by numeric ID, not by name. NCSEXPER
- * and INPA assign DIFFERENT names + signatures to the same slot
- * IDs:
+ * Each NFS IPO calls slots by numeric ID (e.g. `CALL sys 0x0F`). The
+ * slot table maps ID → `(name, CABI-param-list)`. The IPO pushes args
+ * top-down in declaration order, so the override pops LIFO (reverse
+ * declaration order). Using the metadata for pop order eliminates the
+ * hand-rolled signature guesswork that caused the HW_REFERENZ stack
+ * corruption: the result-readers and `CDHGetSgbdName` have their
+ * out-refs as the *first* params (bottom of stack), not the last —
+ * the old code popped refs first and silently corrupted the stack.
  *
- *   slot 0x2E — INPA: PEMSGZ_Kopfzeile(out bool)   1 ref
- *               NCSEXPER: CDHSetCabdPar(name, value, out retVal)   2 in + 1 ref
+ * For HW_REFERENZ / Ident / AifLesen we only need the read-path slots
+ * (CDHapi*, error mgmt, CABD/system-data, error scratchpad). Other
+ * slots in the 99-entry NCSEXPER table get a default pop-and-no-op
+ * via `defaultOverride` so the stack stays balanced.
  *
- *   slot 0x2F — INPA: PEMTrennLinie(out bool)   1 ref
- *               NCSEXPER: CDHGetCabdPar(name, out value, out retVal)   1 in + 2 ref
- *
- * NFS IPOs were authored against the NCSEXPER (a.k.a. NCS Expert)
- * runtime, so we must override these slots — without it the VM
- * pops the wrong number of args and corrupts the stack.
- *
- * The override surface here is intentionally tiny — the five slots
- * cabimain + `Jobs()` actually exercise. As more flows light up
- * (Ident, AifLesen, etc. — which add CDHapiJob / CDHapiResultText)
- * we extend. The slot IDs are anchored against
- * `ncsx/packages/inpax-cabi-provider/src/ncsexper-syscalls.ts` —
- * once that package lands on npm we replace this hand-rolled table
- * with the full 80+ slot one.
+ * Once the flash-programming path (Phase 5) lights up, NFS-specific
+ * slots (flash block transfer, FSC, AIF protocol) will need their own
+ * overrides — those live in `winkfpt.exe`'s slot table, not NCSEXPER's.
  */
 
 import type { ExecutionContext } from '@emdzej/inpax-interpreter';
 import { StackEntryFlags, ValueType, type StackEntry, type Value } from '@emdzej/inpax-core';
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
+import {
+  NCSEXPER_CABI_SLOTS,
+  type CabiParam,
+  type CabiSlot,
+} from '@emdzej/ncsx-inpax-cabi-provider';
 import type { CabiState } from './state.js';
 
 type SystemFunctionOverride = (
@@ -36,21 +39,7 @@ type SystemFunctionOverride = (
 const NCSEXPER_SUCCESS = 0;
 
 export interface BuildSystemFunctionsOptions {
-  /**
-   * EDIABAS provider that handles CDHapiJob dispatches. When unset
-   * the CDH-EDIABAS slots are no-ops — the IPO can still dispatch
-   * cabimain but actual ECU calls disappear. Pass a
-   * `MockEdiabasProvider` (or a real `EdiabasXProvider`) to give
-   * the IPO data to work with.
-   */
   ediabas?: IEdiabasProvider;
-  /**
-   * Default SGBD name returned by `CDHGetSgbdName` (slot 0x33).
-   * NCSEXPER's host populates this from `SGFAM.SGBD` for the
-   * current ECU; the IPO uses it as the first arg to subsequent
-   * `CDHapiJob` calls. Without this, the IPO's apiJob would
-   * dispatch to `""` and fail.
-   */
   defaultSgbd?: string;
 }
 
@@ -59,222 +48,308 @@ export function buildSystemFunctions(
   opts: BuildSystemFunctionsOptions = {},
 ): Map<number, SystemFunctionOverride> {
   const map = new Map<number, SystemFunctionOverride>();
-  const ediabas = opts.ediabas;
-  const defaultSgbd = opts.defaultSgbd ?? '';
-
-  // ── slot 0x02 — exit() ──────────────────────────────────────────
-  // INPA: setitem(int, string, bool); NCSEXPER: exit() — terminate
-  // the IPO. Treat as a no-op here: when the dispatcher hits this,
-  // execution unwinds to RET via the next instruction anyway. A
-  // proper "halt the VM" signal would be cleaner but isn't needed
-  // for read-only flows.
-  map.set(0x02, () => {
-    /* no-op — NCSEXPER's exit() is RET-equivalent at the script level */
-  });
-
-  // ── slot 0x0B — setjobstatus(in int JobStatus) ────────────────
-  // Shared between INPA and NCSEXPER; same signature, just record
-  // the value so the host can surface it after dispatch.
-  map.set(0x0b, (ctx) => {
-    const status = ctx.popInt();
-    state.lastJobStatus = status;
-    state.trace.push({ slot: 0x0b, name: 'setjobstatus', args: { status } });
-  });
-
-  // ── slot 0x0D — CDHapiJob(string ecu, string job, string para, string result)
-  // THE bridge between the IPO and EDIABAS. Pop 4 in-strings, hand
-  // off to the provider. The IPO follows up with CDHapiResult*
-  // calls (0x0F/0x10/0x11/etc.) to read named results back.
-  map.set(0x0d, async (ctx) => {
-    const result = ctx.popString();
-    const para = ctx.popString();
-    const job = ctx.popString();
-    const ecu = ctx.popString();
-    state.trace.push({ slot: 0x0d, name: 'CDHapiJob', args: { ecu, job, para, result } });
-    if (!ediabas) {
-      state.lastJob = { ecu, job, para, status: 'NO_EDIABAS', ok: false };
-      return;
-    }
-    try {
-      await ediabas.job(ecu, job, para, result);
-      // Status reading — providers expose JOB_STATUS as a result.
-      // Mock returns 'OKAY' when results are configured, 'ERROR_*'
-      // when setNextError was called.
-      const status = readJobStatus(ediabas);
-      state.lastJob = { ecu, job, para, status, ok: true };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      state.lastJob = { ecu, job, para, status: `ERROR: ${message}`, ok: false };
-    }
-  });
-
-  // ── slot 0x0F — CDHapiResultText(out string val, in string name, in int set, in string fmt)
-  map.set(0x0f, (ctx) => {
-    const fmt = ctx.popString();
-    const set = ctx.popInt();
-    const name = ctx.popString();
-    const outRef = ctx.popRef();
-    const value = ediabas ? safeResultText(ediabas, name, set, fmt) : '';
-    writeString(ctx, outRef, value);
-    state.trace.push({ slot: 0x0f, name: 'CDHapiResultText', args: { name, set, value } });
-  });
-
-  // ── slot 0x10 — CDHapiResultInt(out int val, in string name, in int set)
-  map.set(0x10, (ctx) => {
-    const set = ctx.popInt();
-    const name = ctx.popString();
-    const outRef = ctx.popRef();
-    const value = ediabas ? safeResultInt(ediabas, name, set) : 0;
-    writeInt(ctx, outRef, value);
-    state.trace.push({ slot: 0x10, name: 'CDHapiResultInt', args: { name, set, value } });
-  });
-
-  // ── slot 0x11 — CDHapiResultSets(out int sets)
-  map.set(0x11, (ctx) => {
-    const outRef = ctx.popRef();
-    const sets = ediabas ? ediabas.resultSets() : 0;
-    writeInt(ctx, outRef, sets);
-    state.trace.push({ slot: 0x11, name: 'CDHapiResultSets', args: { sets } });
-  });
-
-  // ── slot 0x15 — CDHapiCheckJobStatus(in string RefStr)
-  // Compares lastJob.status against the reference and pushes a
-  // bool result back. NCSEXPER uses this to detect specific error
-  // codes (e.g. ERROR_NUMBER_ARGUMENT).
-  map.set(0x15, (ctx) => {
-    const refStr = ctx.popString();
-    // No out param — the IPO checks state via CDHTestError after.
-    // The "check" here is informational tracing only.
-    const matches = state.lastJob?.status === refStr;
-    state.trace.push({ slot: 0x15, name: 'CDHapiCheckJobStatus', args: { refStr, matches } });
-  });
-
-  // ── slot 0x33 — CDHGetSgbdName(out string SgbdName, out int RetVal)
-  // NCSEXPER's host populates the current SGBD name before
-  // dispatch (typically from SGFAM.SGBD lookup). We return the
-  // configured defaultSgbd.
-  map.set(0x33, (ctx) => {
-    const retRef = ctx.popRef();
-    const sgbdRef = ctx.popRef();
-    writeString(ctx, sgbdRef, defaultSgbd);
-    writeInt(ctx, retRef, NCSEXPER_SUCCESS);
-    state.trace.push({ slot: 0x33, name: 'CDHGetSgbdName', args: { sgbd: defaultSgbd } });
-  });
-
-  // ── slot 0x2B — CDHSetReturnVal(in int Wert) ──────────────────
-  // INPA's same-slot name is PEMInitialisiere with `(out bool)` —
-  // wrong signature for an NFS IPO. We pop one int and record.
-  map.set(0x2b, (ctx) => {
-    const wert = ctx.popInt();
-    state.trace.push({ slot: 0x2b, name: 'CDHSetReturnVal', args: { wert } });
-  });
-
-  // ── slot 0x2C — CDHSetSystemData(string name, string value, out int retVal)
-  map.set(0x2c, (ctx) => {
-    const retRef = ctx.popRef();
-    const value = ctx.popString();
-    const name = ctx.popString();
-    state.systemData.set(name, value);
-    writeInt(ctx, retRef, NCSEXPER_SUCCESS);
-    state.trace.push({ slot: 0x2c, name: 'CDHSetSystemData', args: { name, value } });
-  });
-
-  // ── slot 0x2D — CDHGetSystemData(string name, out string value, out int retVal)
-  map.set(0x2d, (ctx) => {
-    const retRef = ctx.popRef();
-    const valueRef = ctx.popRef();
-    const name = ctx.popString();
-    const value = state.systemData.get(name) ?? '';
-    writeString(ctx, valueRef, value);
-    writeInt(ctx, retRef, NCSEXPER_SUCCESS);
-    state.trace.push({ slot: 0x2d, name: 'CDHGetSystemData', args: { name, value } });
-  });
-
-  // ── slot 0x2E — CDHSetCabdPar(string name, string value, out int retVal)
-  // The slot `Jobs()` hammers to publish JOB[1..N] entries.
-  map.set(0x2e, (ctx) => {
-    const retRef = ctx.popRef();
-    const value = ctx.popString();
-    const name = ctx.popString();
-    state.cabdPars.set(name, value);
-    writeInt(ctx, retRef, NCSEXPER_SUCCESS);
-    state.trace.push({ slot: 0x2e, name: 'CDHSetCabdPar', args: { name, value } });
-  });
-
-  // ── slot 0x2F — CDHGetCabdPar(string name, out string value, out int retVal)
-  // The slot cabimain hits to read JOBNAME and dispatch.
-  map.set(0x2f, (ctx) => {
-    const retRef = ctx.popRef();
-    const valueRef = ctx.popRef();
-    const name = ctx.popString();
-    const value = state.cabdPars.get(name) ?? '';
-    writeString(ctx, valueRef, value);
-    writeInt(ctx, retRef, NCSEXPER_SUCCESS);
-    state.trace.push({ slot: 0x2f, name: 'CDHGetCabdPar', args: { name, value } });
-  });
-
-  // ── slot 0x52 — CDHResetError() ─────────────────────────────────
-  // No args. NFS IPOs call this at startup to clear stale error
-  // state; we just trace it.
-  map.set(0x52, () => {
-    state.trace.push({ slot: 0x52, name: 'CDHResetError', args: {} });
-  });
-
-  // ── slot 0x53 — CDHSetError(int ErrNr, string Module, string Proc, int LineNr, string ErrorInfo)
-  // 5 in-args. The IPO's SetCDHFehler user function ends up here
-  // when something goes wrong (e.g. unknown ProzessorTyp). We pop
-  // + trace; the IPO continues.
-  map.set(0x53, (ctx) => {
-    const errorInfo = ctx.popString();
-    const lineNr = ctx.popInt();
-    const proc = ctx.popString();
-    const modul = ctx.popString();
-    const errNr = ctx.popInt();
-    state.trace.push({
-      slot: 0x53,
-      name: 'CDHSetError',
-      args: { errNr, modul, proc, lineNr, errorInfo },
-    });
-  });
-
-  // ── slot 0x54 — CDHTestError(out int ErrNr) ────────────────────
-  // Reads the current error number. We always say 0 (no error).
-  map.set(0x54, (ctx) => {
-    const ref = ctx.popRef();
-    writeInt(ctx, ref, 0);
-    state.trace.push({ slot: 0x54, name: 'CDHTestError', args: { errNr: 0 } });
-  });
-
+  for (const slot of NCSEXPER_CABI_SLOTS) {
+    map.set(slot.id, makeOverride(slot, state, opts));
+  }
   return map;
 }
 
-function writeInt(ctx: ExecutionContext, ref: StackEntry, value: number): void {
-  ctx.setOutParam(ref, makeEntry(ValueType.Int, value));
-}
+function makeOverride(
+  slot: CabiSlot,
+  state: CabiState,
+  opts: BuildSystemFunctionsOptions,
+): SystemFunctionOverride {
+  const ediabas = opts.ediabas;
+  const defaultSgbd = opts.defaultSgbd ?? '';
 
-function writeString(ctx: ExecutionContext, ref: StackEntry, value: string): void {
-  ctx.setOutParam(ref, makeEntry(ValueType.String, value));
+  switch (slot.name) {
+    // ── Flow control ─────────────────────────────────────────────────
+    case 'exit':
+      return (ctx) => {
+        popArgs(ctx, slot.params);
+        state.trace.push({ slot: slot.id, name: slot.name, args: {} });
+      };
+
+    // ── setjobstatus(in int JobStatus) — slot 0x0B in INPA, 0x0A here
+    // (NCSEXPER's `simdigital`). Not in NFS read paths but harmless
+    // through default handling.
+
+    // ── EDIABAS bridge ──────────────────────────────────────────────
+    case 'CDHapiInit':
+      return () => {
+        state.trace.push({ slot: slot.id, name: slot.name, args: {} });
+      };
+
+    case 'CDHapiEnd':
+      return () => {
+        state.trace.push({ slot: slot.id, name: slot.name, args: {} });
+      };
+
+    case 'CDHapiJob':
+      return async (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const ecu = String(args.ecu || defaultSgbd);
+        const job = String(args.job);
+        const para = String(args.para);
+        const result = String(args.result);
+        state.trace.push({ slot: slot.id, name: slot.name, args: { ecu, job, para, result } });
+        if (!ediabas) {
+          state.lastJob = { ecu, job, para, status: 'NO_EDIABAS', ok: false };
+          return;
+        }
+        try {
+          await ediabas.job(ecu, job, para, result);
+          const status = readJobStatus(ediabas);
+          state.lastJob = { ecu, job, para, status, ok: true };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          state.lastJob = { ecu, job, para, status: `ERROR: ${message}`, ok: false };
+        }
+      };
+
+    case 'CDHapiResultText':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const value = ediabas
+          ? safeResultText(
+              ediabas,
+              String(args.ApiResult),
+              Number(args.ApiSet) | 0,
+              String(args.ApiFormat ?? ''),
+            )
+          : '';
+        writeOut(ctx, args.ResultText, 'string', value);
+        state.trace.push({
+          slot: slot.id,
+          name: slot.name,
+          args: { name: String(args.ApiResult), set: Number(args.ApiSet), value },
+        });
+      };
+
+    case 'CDHapiResultInt':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const value = ediabas
+          ? safeResultInt(ediabas, String(args.ApiResult), Number(args.ApiSet) | 0)
+          : 0;
+        writeOut(ctx, args.ResultVal, 'int', value);
+        state.trace.push({
+          slot: slot.id,
+          name: slot.name,
+          args: { name: String(args.ApiResult), set: Number(args.ApiSet), value },
+        });
+      };
+
+    case 'CDHapiResultSets':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const sets = ediabas ? ediabas.resultSets() : 0;
+        writeOut(ctx, args.sets, 'int', sets);
+        state.trace.push({ slot: slot.id, name: slot.name, args: { sets } });
+      };
+
+    case 'CDHapiCheckJobStatus':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const refStr = String(args.RefStr);
+        const matches = state.lastJob?.status === refStr;
+        state.trace.push({ slot: slot.id, name: slot.name, args: { refStr, matches } });
+      };
+
+    // ── SG / SGBD identity ──────────────────────────────────────────
+    case 'CDHGetSgbdName':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        writeOut(ctx, args.SgbdName, 'string', defaultSgbd);
+        writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+        state.trace.push({ slot: slot.id, name: slot.name, args: { sgbd: defaultSgbd } });
+      };
+
+    // ── CABD parameter store ────────────────────────────────────────
+    case 'CDHSetCabdPar':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const name = String(args.Bezeichner);
+        const value = String(args.Wert);
+        state.cabdPars.set(name, value);
+        writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+        state.trace.push({ slot: slot.id, name: slot.name, args: { name, value } });
+      };
+
+    case 'CDHGetCabdPar':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const name = String(args.Bezeichner);
+        const value = state.cabdPars.get(name) ?? '';
+        writeOut(ctx, args.Wert, 'string', value);
+        writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+        state.trace.push({ slot: slot.id, name: slot.name, args: { name, value } });
+      };
+
+    // ── System-data store ───────────────────────────────────────────
+    case 'CDHSetSystemData':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const name = String(args.Bezeichner);
+        const value = String(args.Wert);
+        state.systemData.set(name, value);
+        writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+        state.trace.push({ slot: slot.id, name: slot.name, args: { name, value } });
+      };
+
+    case 'CDHGetSystemData':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const name = String(args.Bezeichner);
+        const value = state.systemData.get(name) ?? '';
+        writeOut(ctx, args.Wert, 'string', value);
+        writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+        state.trace.push({ slot: slot.id, name: slot.name, args: { name, value } });
+      };
+
+    // ── Error scratchpad ────────────────────────────────────────────
+    case 'CDHSetReturnVal':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        state.trace.push({ slot: slot.id, name: slot.name, args: { wert: Number(args.Wert) | 0 } });
+      };
+
+    case 'CDHResetError':
+      return (ctx) => {
+        popArgs(ctx, slot.params);
+        state.trace.push({ slot: slot.id, name: slot.name, args: {} });
+      };
+
+    case 'CDHSetError':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        state.trace.push({
+          slot: slot.id,
+          name: slot.name,
+          args: {
+            errNr: Number(args.ErrNr) | 0,
+            modul: String(args.ModulName),
+            proc: String(args.ProcName),
+            lineNr: Number(args.LineNr) | 0,
+            errorInfo: String(args.ErrorInfo),
+          },
+        });
+      };
+
+    case 'CDHTestError':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        writeOut(ctx, args.ErrNr, 'int', 0);
+        state.trace.push({ slot: slot.id, name: slot.name, args: { errNr: 0 } });
+      };
+
+    // ── String / convert utilities the control flow may touch ──────
+    case 'strlen':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        writeOut(ctx, args.len, 'int', String(args.str).length);
+      };
+
+    case 'strcat':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        writeOut(ctx, args.DestStr, 'string', String(args.SrcStr1) + String(args.SrcStr2));
+      };
+
+    case 'midstr':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const src = String(args.SrcStr);
+        const start = Math.max(0, Number(args.FirstIndex) - 1);
+        const count = Math.max(0, Number(args.Count));
+        writeOut(ctx, args.ResultStr, 'string', src.substring(start, start + count));
+      };
+
+    case 'inttostring':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        writeOut(ctx, args.s, 'string', String(Number(args.i) | 0));
+      };
+
+    case 'realtostring':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        writeOut(ctx, args.s, 'string', String(args.r));
+      };
+
+    case 'testtimer':
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        writeOut(ctx, args.expiredflag, 'bool', true);
+      };
+
+    default:
+      return defaultOverride(slot);
+  }
 }
 
 /**
- * Build a by-value `StackEntry` for `setOutParam`. The inpax core
- * exports `Stack.createEntry` but it's not on the published API
- * surface for 0.7.1 — constructing the literal directly works and
- * matches what the inpax VM does internally for outs (ByValue
- * because the VM resolves the ref's `refInfo` to find where to
- * store, and uses our `value` field).
+ * Pop args off the IPO stack in reverse declaration order, returning
+ * an object keyed by param name. `in` params resolve to JS values;
+ * `out`/`inout` params resolve to a `StackEntry` ref the override
+ * can write back through via `writeOut`.
  */
+function popArgs(
+  ctx: ExecutionContext,
+  params: readonly CabiParam[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (let i = params.length - 1; i >= 0; i--) {
+    const param = params[i]!;
+    if (param.direction === 'in') {
+      switch (param.type) {
+        case 'string': out[param.name] = ctx.popString(); break;
+        case 'int':    out[param.name] = ctx.popInt(); break;
+        case 'real':   out[param.name] = ctx.popReal(); break;
+        case 'bool':   out[param.name] = ctx.popBool(); break;
+      }
+    } else {
+      out[param.name] = ctx.popRef();
+    }
+  }
+  return out;
+}
+
+function writeOut(
+  ctx: ExecutionContext,
+  ref: unknown,
+  type: CabiParam['type'],
+  value: string | number | boolean,
+): void {
+  const refEntry = ref as StackEntry | undefined;
+  if (!refEntry?.refInfo) return;
+  let entry: StackEntry;
+  switch (type) {
+    case 'string': entry = makeEntry(ValueType.String, String(value)); break;
+    case 'int':    entry = makeEntry(ValueType.Int, Number(value) | 0); break;
+    case 'real':   entry = makeEntry(ValueType.Real, Number(value)); break;
+    case 'bool':   entry = makeEntry(ValueType.Bool, Boolean(value)); break;
+  }
+  ctx.setOutParam(refEntry, entry);
+}
+
+/**
+ * For slots we haven't wired explicitly — pop args correctly per the
+ * CABI signature so the stack stays balanced, then no-op. The VM's
+ * `popFrame()` after each `CALL sys` truncates back to the FRAME
+ * marker so even if out-refs aren't written, the IPO sees the ALLOC
+ * default (0 / "" / false), which most paths interpret as "no error".
+ */
+function defaultOverride(slot: CabiSlot): SystemFunctionOverride {
+  return (ctx) => {
+    popArgs(ctx, slot.params);
+  };
+}
+
 function makeEntry(type: ValueType, value: Value): StackEntry {
   return { type, flags: StackEntryFlags.ByValue, value };
 }
 
-/**
- * Read JOB_STATUS from the most recent ediabas job. Providers
- * publish it as a string result on set 1 with name `JOB_STATUS`.
- * Defaults to `OKAY` when the provider doesn't surface a status
- * (e.g. mock with no setNextError). Falls back to empty string
- * if the result query throws.
- */
 function readJobStatus(ediabas: IEdiabasProvider): string {
   try {
     if (!ediabas.hasResult('JOB_STATUS', 1)) return 'OKAY';
@@ -284,7 +359,6 @@ function readJobStatus(ediabas: IEdiabasProvider): string {
   }
 }
 
-/** Wrap resultText with a defensive fallback — missing result → empty string. */
 function safeResultText(
   ediabas: IEdiabasProvider,
   name: string,
@@ -299,7 +373,6 @@ function safeResultText(
   }
 }
 
-/** Wrap resultInt with a defensive fallback — missing result → 0. */
 function safeResultInt(ediabas: IEdiabasProvider, name: string, set: number): number {
   try {
     if (!ediabas.hasResult(name, set)) return 0;

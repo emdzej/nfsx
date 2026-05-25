@@ -1,7 +1,7 @@
 {
   "name": "@emdzej/nfsx-runtime",
   "version": "0.1.0",
-  "description": "CABI-style IPO runtime for nfsx. Wraps the inpax VM with a NCSEXPER-style syscall slot table so NFS IPOs (slot-compatible with NCSEXPER per docs/architecture.md §9.5) can run end-to-end. Drop-in scope today; will be replaced by @emdzej/ncsx-inpax-cabi-provider once that package lands on npm.",
+  "description": "CABI-style IPO runtime for nfsx. Wraps the inpax VM with the NCSEXPER 99-slot CABI surface (via @emdzej/ncsx-inpax-cabi-provider) plus NFS-specific overrides for flash/FSC/AIF slots not in the NCSEXPER table.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -21,7 +21,12 @@
     "@emdzej/inpax-core": "^0.7.1",
     "@emdzej/inpax-providers": "^0.7.1",
     "@emdzej/inpax-mock-provider": "^0.7.1",
-    "@emdzej/inpax-interfaces": "^0.7.1"
+    "@emdzej/inpax-interfaces": "^0.7.1",
+    "@emdzej/ncsx-inpax-cabi-provider": "^0.4.0",
+    "@emdzej/ncsx-chassis": "^0.4.0",
+    "@emdzej/ncsx-fa-asw": "^0.4.0",
+    "@emdzej/ncsx-wire": "^0.4.0",
+    "@emdzej/bimmerz-logger": "^0.1.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.1",
