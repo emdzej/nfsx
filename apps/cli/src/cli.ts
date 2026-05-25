@@ -24,6 +24,7 @@
 
 import { runPlan } from './plan.js';
 import { runRun } from './run.js';
+import { runFlash } from './flash.js';
 
 function printUsage(): void {
   process.stdout.write(
@@ -32,14 +33,17 @@ function printUsage(): void {
 Commands:
   plan    Resolve a part number through SP-Daten → IPO + Flash SGBD + auth.
   run     Execute an NFS IPO's cabimain dispatcher and print what it published.
+  flash   Drive the 7-stage FlashSession orchestrator (DRY-RUN BY DEFAULT).
 
 Examples:
   nfsx plan --hwnr 4010581
   nfsx run 16ACC65.ipo --job JOB_ERMITTELN
+  nfsx flash --swt 00swtkwp.ipo --sgbd C_DSC_KWP --firmware fw.s37 --mock-file mock.json
 
 Per-command help:
   nfsx plan --help
   nfsx run --help
+  nfsx flash --help
 `,
   );
 }
@@ -57,6 +61,8 @@ async function main(argv: string[]): Promise<number> {
       return runPlan(args.slice(1));
     case 'run':
       return runRun(args.slice(1));
+    case 'flash':
+      return runFlash(args.slice(1));
     default:
       process.stderr.write(`unknown command: ${cmd}\n\n`);
       printUsage();

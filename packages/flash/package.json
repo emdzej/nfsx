@@ -1,32 +1,28 @@
 {
-  "name": "@emdzej/nfsx-cli",
+  "name": "@emdzej/nfsx-flash",
   "version": "0.5.0",
-  "description": "BMW NFS / WinKFP reconstruction CLI — `nfsx plan` resolves a part number through SP-Daten and prints the flash context (IPO + SGBD + working files + transport).",
+  "description": "Flash-programming orchestrator for nfsx. Wraps nfsx-runtime + nfsx-fsc + nfsx-flash-data with the 7-stage pipeline (RESOLVE → PRECHECK → AUTHENTICATE → SESSION → TRANSFER → AIF_WRITE → POSTCHECK), dry-run default, per-stage confirmation gates, and a strategy pattern for ECU-specific seed→key auth.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
-  "bin": {
-    "nfsx": "dist/cli.js"
-  },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist .turbo *.tsbuildinfo",
-    "nfsx": "node dist/cli.js"
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@emdzej/nfsx-resolver": "workspace:*",
-    "@emdzej/nfsx-data-files": "workspace:*",
     "@emdzej/nfsx-runtime": "workspace:*",
-    "@emdzej/nfsx-flash": "workspace:*",
+    "@emdzej/nfsx-fsc": "workspace:*",
     "@emdzej/nfsx-flash-data": "workspace:*",
-    "@emdzej/inpax-mock-provider": "^0.7.1"
+    "@emdzej/inpax-interfaces": "^0.7.1"
   },
   "devDependencies": {
+    "@emdzej/inpax-mock-provider": "^0.7.1",
     "@types/node": "^22.13.1",
     "vitest": "^2.1.8"
   },
@@ -36,6 +32,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/emdzej/nfsx.git",
-    "directory": "apps/cli"
+    "directory": "packages/flash"
   }
 }

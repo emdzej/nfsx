@@ -29,6 +29,12 @@ importers:
       '@emdzej/nfsx-data-files':
         specifier: workspace:*
         version: link:../../packages/data-files
+      '@emdzej/nfsx-flash':
+        specifier: workspace:*
+        version: link:../../packages/flash
+      '@emdzej/nfsx-flash-data':
+        specifier: workspace:*
+        version: link:../../packages/flash-data
       '@emdzej/nfsx-resolver':
         specifier: workspace:*
         version: link:../../packages/resolver
@@ -44,6 +50,40 @@ importers:
         version: 2.1.9(@types/node@22.19.19)
 
   packages/data-files:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.1
+        version: 22.19.19
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)
+
+  packages/flash:
+    dependencies:
+      '@emdzej/inpax-interfaces':
+        specifier: ^0.7.1
+        version: 0.7.1
+      '@emdzej/nfsx-flash-data':
+        specifier: workspace:*
+        version: link:../flash-data
+      '@emdzej/nfsx-fsc':
+        specifier: workspace:*
+        version: link:../fsc
+      '@emdzej/nfsx-runtime':
+        specifier: workspace:*
+        version: link:../runtime
+    devDependencies:
+      '@emdzej/inpax-mock-provider':
+        specifier: ^0.7.1
+        version: 0.7.1
+      '@types/node':
+        specifier: ^22.13.1
+        version: 22.19.19
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)
+
+  packages/flash-data:
     devDependencies:
       '@types/node':
         specifier: ^22.13.1
