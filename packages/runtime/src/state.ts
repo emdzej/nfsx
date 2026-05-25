@@ -20,6 +20,19 @@
  * IPOs (the Phase 3 hello-world milestone).
  */
 
+export interface LastJob {
+  ecu: string;
+  job: string;
+  para: string;
+  /**
+   * Most recent JOB_STATUS reported by the SGBD. `OKAY` on success,
+   * `ERROR_*` on failure. Empty when no apiJob has run yet.
+   */
+  status: string;
+  /** Whether the job dispatched at all (vs. throwing in ediabas). */
+  ok: boolean;
+}
+
 export class CabiState {
   /**
    * CABD parameter store (slot 0x2E / 0x2F — NCSEXPER's
@@ -37,6 +50,14 @@ export class CabiState {
 
   /** Last value passed to setjobstatus (slot 0x0B). */
   lastJobStatus: number = 0;
+
+  /**
+   * Result of the most recent `CDHapiJob` (slot 0x0D). Result data
+   * itself lives in the IEdiabasProvider — this just tracks
+   * dispatch metadata so the host can introspect what happened
+   * without re-reading the underlying buffer.
+   */
+  lastJob: LastJob | undefined;
 
   /**
    * Capture every CDH* / system call the IPO makes, in order. Lets

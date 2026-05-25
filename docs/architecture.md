@@ -730,13 +730,25 @@ by `@emdzej/ediabasx`.
 
 Reconstruction surface left:
 
-1. Remaining 4 data parsers (SGIDC.AS2, SGIDD.AS2, npv.dat,
-   prgifsel.dat).
-2. Wire an NFS IPO through inpax against a mock transport
-   (Phase 3 — actually run a read-only IPO job like `Ident`).
-3. Real-ECU read-only flows on hardware (Phase 3).
-4. FSC + certificate management UI (Phase 4).
-5. Actual flash + safety surface (Phase 5).
+1. ~~Remaining 4 data parsers (SGIDC.AS2, SGIDD.AS2, npv.dat,
+   prgifsel.dat).~~ ✅ shipped 2026-05-25 — all 7 parsers done.
+2. ~~Wire an NFS IPO through inpax against a mock transport
+   (Phase 3 — actually run a read-only IPO job).~~ ✅ shipped
+   2026-05-25 — `@emdzej/nfsx-runtime` runs 16ACC65.ipo's
+   JOB_ERMITTELN dispatch end-to-end; `Jobs()` publishes 18 job
+   names + JOB_ANZAHL counter into the CABI store.
+3. Wire CDHapiJob + result-readers (slots 0x0D / 0x0F / 0x10 /
+   0x11 / 0x15) to surface mock ECU data back through the IPO ✅
+   2026-05-25. HW_REFERENZ dispatch chain confirmed:
+   CDHGetSgbdName → CDHapiJob → mock → CDHapiResultText. Known
+   limitation: a stack-mgmt edge case after TestApiFehler returns
+   in `HwReferenzLesen` crashes the IPO partway through —
+   needs a deeper port of ncsx's full CabiProvider (the 7-slot
+   hand-rolled override table covers the load-bearing path but
+   not every NFS IPO control-flow combination).
+4. Real-ECU read-only flows on hardware (Phase 3 end-game).
+5. FSC + certificate management UI (Phase 4).
+6. Actual flash + safety surface (Phase 5).
 
 ## 8. Repo layout (proposed, not yet created)
 

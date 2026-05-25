@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs';
 import { parseIpo } from '@emdzej/inpax-parser';
 import { VM } from '@emdzej/inpax-interpreter';
 import { StackEntryFlags, ValueType, type FunctionBlock } from '@emdzej/inpax-core';
+import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
 import {
   NullUIProvider,
   NullSimulationProvider,
@@ -39,6 +40,17 @@ export interface NfsRuntimeHandle {
   vm: VM;
   /** In-memory CABI state — cabd-pars + system-data + trace. */
   state: CabiState;
+  /**
+   * EDIABAS provider the runtime is using. Either the caller-
+   * supplied one or a fresh `MockEdiabasProvider`. Exposed so
+   * tests can pre-configure mock results before dispatch:
+   *
+   *     const h = await startNfsRuntime({ ipoPath });
+   *     (h.ediabas as MockEdiabasProvider).setSimpleResult(
+   *       'C_ACC65', 'IDENT', { ID_BMW_NR: '6985684', JOB_STATUS: 'OKAY' });
+   *     await h.runCabimain('SG_IDENT_LESEN');
+   */
+  ediabas: IEdiabasProvider;
   /**
    * Run the IPO's `cabimain(JOBNAME)` dispatcher with the supplied
    * job name. Seeds JOBNAME into the cabd-par store + pushes it as
@@ -70,6 +82,22 @@ export interface StartNfsRuntimeOptions {
    * Optional pre-seed of system-data entries.
    */
   systemData?: Record<string, string>;
+  /**
+   * EDIABAS provider for `CDHapiJob` dispatch. Defaults to a fresh
+   * `MockEdiabasProvider` — fine for IPOs that don't dispatch any
+   * apiJobs (like JOB_ERMITTELN). For IPOs that DO call apiJob,
+   * supply a provider with pre-configured mock results, or a real
+   * `EdiabasXProvider` when targeting a live ECU.
+   */
+  ediabas?: IEdiabasProvider;
+  /**
+   * SGBD basename for the ECU this runtime represents (e.g.
+   * `C_ACC65`). Returned by `CDHGetSgbdName` (slot 0x33), which
+   * NFS IPOs call to discover which SGBD to drive their apiJobs
+   * against. Without this, apiJob calls in IPOs like
+   * `HwReferenzLesen` / `Ident` dispatch to `""` and fail.
+   */
+  sgbd?: string;
 }
 
 export async function startNfsRuntime(
@@ -84,19 +112,26 @@ export async function startNfsRuntime(
   for (const [k, v] of Object.entries(options.cabdPars ?? {})) state.cabdPars.set(k, v);
   for (const [k, v] of Object.entries(options.systemData ?? {})) state.systemData.set(k, v);
 
-  // 3. System-function overrides — the NCSEXPER-style slot table.
-  const systemFunctions = buildSystemFunctions(state);
+  // 3. EDIABAS provider — caller-supplied or fresh mock. Same
+  //    instance is wired into both the inpax runtime (so the VM's
+  //    own internal callers can see it) AND the syscall overrides
+  //    (so our CDHapiJob handler dispatches through it).
+  const ediabas: IEdiabasProvider = options.ediabas ?? new MockEdiabasProvider();
 
-  // 4. Build the VM. All providers are null/mock — NFS IPOs that
-  //    we'll run for the hello-world path are batch-mode (Jobs /
-  //    Ident / AifLesen / etc.); no screens, menus, or
-  //    state-machines fire. EDIABAS calls (CDHapiJob) go to the
-  //    mock provider, which returns empty result sets — fine for
-  //    read-only verification, real ECU comes later.
+  // 4. System-function overrides — the NCSEXPER-style slot table.
+  const systemFunctions = buildSystemFunctions(state, {
+    ediabas,
+    defaultSgbd: options.sgbd,
+  });
+
+  // 5. Build the VM. All UI / simulation / etc. providers are
+  //    null — NFS IPOs we run for the hello-world path are
+  //    batch-mode (Jobs / Ident / AifLesen / …); no screens,
+  //    menus, or state-machines fire.
   const vm = new VM(ipo, {
     runtime: {
       ui: new NullUIProvider(),
-      ediabas: new MockEdiabasProvider(),
+      ediabas,
       simulation: new NullSimulationProvider(),
       print: new NullPrintProvider(),
       pem: new NullPemProvider(),
@@ -105,7 +140,7 @@ export async function startNfsRuntime(
       sps: new NullSpsProvider(),
     },
     systemFunctions,
-    debug: false,
+    debug: process.env.NFSX_VM_DEBUG === '1',
   });
 
   // 5. Pre-seed common globals NCSEXPER's MFC UI would set before
@@ -147,7 +182,7 @@ export async function startNfsRuntime(
     await vm.executeBlockWithContext(cabimain, ctx);
   };
 
-  return { ipoPath: options.ipoPath, vm, state, runCabimain };
+  return { ipoPath: options.ipoPath, vm, state, ediabas, runCabimain };
 }
 
 function findFunction(vm: VM, name: string): FunctionBlock | undefined {
