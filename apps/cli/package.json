@@ -20,7 +20,8 @@
   },
   "dependencies": {
     "@emdzej/nfsx-resolver": "workspace:*",
-    "@emdzej/nfsx-data-files": "workspace:*"
+    "@emdzej/nfsx-data-files": "workspace:*",
+    "@emdzej/nfsx-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.13.1",

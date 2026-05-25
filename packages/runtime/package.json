@@ -1,0 +1,38 @@
+{
+  "name": "@emdzej/nfsx-runtime",
+  "version": "0.1.0",
+  "description": "CABI-style IPO runtime for nfsx. Wraps the inpax VM with a NCSEXPER-style syscall slot table so NFS IPOs (slot-compatible with NCSEXPER per docs/architecture.md §9.5) can run end-to-end. Drop-in scope today; will be replaced by @emdzej/ncsx-inpax-cabi-provider once that package lands on npm.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@emdzej/inpax-parser": "^0.7.1",
+    "@emdzej/inpax-interpreter": "^0.7.1",
+    "@emdzej/inpax-core": "^0.7.1",
+    "@emdzej/inpax-providers": "^0.7.1",
+    "@emdzej/inpax-mock-provider": "^0.7.1",
+    "@emdzej/inpax-interfaces": "^0.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "vitest": "^2.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emdzej/nfsx.git",
+    "directory": "packages/runtime"
+  }
+}

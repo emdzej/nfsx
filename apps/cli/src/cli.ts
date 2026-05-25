@@ -23,31 +23,28 @@
  */
 
 import { runPlan } from './plan.js';
+import { runRun } from './run.js';
 
 function printUsage(): void {
   process.stdout.write(
     `nfsx — BMW NFS / WinKFP reconstruction CLI
 
-Usage:
-  nfsx plan --hwnr <HWNR>      [--sp-daten <DIR>]
-  nfsx plan --sg-typ <NAME>    [--sp-daten <DIR>]
-  nfsx plan --diag-addr <HEX>  [--sp-daten <DIR>]
-
-Options:
-  --sp-daten <DIR>   Path to an extracted SP-Daten chassis drop.
-                     Default: $NFSX_SP_DATEN or ~/Downloads/E46_v74
-  --json             Emit machine-readable JSON instead of pretty text.
-  --help             Show this help.
+Commands:
+  plan    Resolve a part number through SP-Daten → IPO + Flash SGBD + auth.
+  run     Execute an NFS IPO's cabimain dispatcher and print what it published.
 
 Examples:
   nfsx plan --hwnr 4010581
-  nfsx plan --sg-typ ACC65 --sp-daten ~/Downloads/E60_v75
-  nfsx plan --diag-addr 0x12 --json
+  nfsx run 16ACC65.ipo --job JOB_ERMITTELN
+
+Per-command help:
+  nfsx plan --help
+  nfsx run --help
 `,
   );
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const args = argv.slice(2);
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     printUsage();
@@ -58,6 +55,8 @@ function main(argv: string[]): number {
   switch (cmd) {
     case 'plan':
       return runPlan(args.slice(1));
+    case 'run':
+      return runRun(args.slice(1));
     default:
       process.stderr.write(`unknown command: ${cmd}\n\n`);
       printUsage();
@@ -65,4 +64,10 @@ function main(argv: string[]): number {
   }
 }
 
-process.exit(main(process.argv));
+main(process.argv).then(
+  (code) => process.exit(code),
+  (err) => {
+    process.stderr.write(`fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  },
+);

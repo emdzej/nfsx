@@ -8,6 +8,7 @@
   "exclude": ["src/**/*.test.ts"],
   "references": [
     { "path": "../../packages/data-files" },
-    { "path": "../../packages/resolver" }
+    { "path": "../../packages/resolver" },
+    { "path": "../../packages/runtime" }
   ]
 }
