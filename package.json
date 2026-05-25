@@ -1,0 +1,27 @@
+{
+  "name": "nfsx",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.33.1",
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "ci": "turbo run build lint typecheck test",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "turbo": "^2.8.10",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emdzej/nfsx.git"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

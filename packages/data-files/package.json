@@ -1,0 +1,30 @@
+{
+  "name": "@emdzej/nfsx-data-files",
+  "version": "0.1.0",
+  "description": "Plaintext parsers for BMW NFS / WinKFP data files: kmm_*.txt (planner inputs), HWNR.DA2 (part-number → SG lookup), KFCONF10.DA2 (per-SG flash config), SGIDC.AS2 / SGIDD.AS2 (auth material), npv.dat (ZB upgrade table), prgifsel.dat (transport selector). All file formats are line-oriented plaintext — no binary container, no compression. Specs in ../../docs/architecture.md §9.2.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "vitest": "^2.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emdzej/nfsx.git",
+    "directory": "packages/data-files"
+  }
+}
