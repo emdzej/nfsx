@@ -739,16 +739,126 @@ Reconstruction surface left:
    names + JOB_ANZAHL counter into the CABI store.
 3. Wire CDHapiJob + result-readers (slots 0x0D / 0x0F / 0x10 /
    0x11 / 0x15) to surface mock ECU data back through the IPO ✅
-   2026-05-25. HW_REFERENZ dispatch chain confirmed:
-   CDHGetSgbdName → CDHapiJob → mock → CDHapiResultText. Known
-   limitation: a stack-mgmt edge case after TestApiFehler returns
-   in `HwReferenzLesen` crashes the IPO partway through —
-   needs a deeper port of ncsx's full CabiProvider (the 7-slot
-   hand-rolled override table covers the load-bearing path but
-   not every NFS IPO control-flow combination).
+   2026-05-25. HW_REFERENZ end-to-end dispatch confirmed against
+   a mock EDIABAS: 14-syscall trace runs cleanly, all 4 result
+   reads (JOB_STATUS / HW_REF_STATUS / HW_REF_SG_KENNUNG /
+   HW_REF_PROJEKT) land in cabd-pars. Bug-of-the-day: hand-rolled
+   pop order on the result-readers and CDHGetSgbdName was
+   backwards; switched to driving pop order from
+   `@emdzej/ncsx-inpax-cabi-provider`'s `NCSEXPER_CABI_SLOTS`
+   metadata table (authoritative CABI.H signatures, 68/68
+   validated against ncsserv.exe).
 4. Real-ECU read-only flows on hardware (Phase 3 end-game).
 5. FSC + certificate management UI (Phase 4).
 6. Actual flash + safety surface (Phase 5).
+
+### 9.6 NFS slot table — winkfpt Ghidra walk 2026-05-25
+
+Walking the winkfpt.exe interpreter to characterise NFS's slot
+surface vs NCSEXPER's. Anchored against the **IPO opcode dispatcher**
+at `CInterpreter::DoInterpret` (FUN_004a2c00 in our session, renamed
+in Ghidra) — confirmed by the embedded source-path strings
+`"interpr.cpp"` + `"CInterpreter::DoInterpret"` at line numbers 0x204
+and 0x255 (CALL and CALLE error paths).
+
+**Dispatcher structure (FUN_004a2c00 case 0xc — CALL):**
+
+```c
+bVar1 = puVar3[1];                   // call type byte (0x80 = user, else sys)
+uVar2 = *(ushort *)(puVar3 + 2);     // slot / function number
+iVar7 = CInterpreter_LookupCallTarget(state, bVar1, uVar2, &handler);
+//                                     │     │      │       │
+//                                     │     │      │       └─ out: function pointer
+//                                     │     │      └────────── slot number
+//                                     │     └───────────────── 0x80=user, else=sys
+//                                     └─────────────────────── interp state struct
+if (iVar7 == 1)      { FUN_004ab7d0(state, ip); FUN_004a2230(handler); }  // user
+else if (iVar7 == 2) { (*handler)(*(int*)(state + 0x20), &slot_call_ctx); FUN_004ad290(); }  // sys
+```
+
+**Slot table layout (`FUN_004aa460` aka `CInterpreter_LookupCallTarget`):**
+
+- User-function table at `state + 0x3c`, count at `state + 0x40`.
+- **Sys-function table at `state + 0x50`, count at `state + 0x54`.**
+  (Byte-level extraction of the table contents requires reading raw
+  PE bytes — possible via a more capable Ghidra tool than MCP exposes
+  today, or via a runtime debugger attached to winkfpt.exe.)
+
+**Strategic finding — NFS slot table is a NCSEXPER superset:**
+
+The winkfpt.exe string table reveals two distinct populations of
+CABI-relevant symbols:
+
+1. **NCSEXPER-compatible CDH* surface** — same names ncsx already
+   ships in `NCSEXPER_CABI_SLOTS` (99 entries). All 16 slots our
+   HW_REFERENZ test exercises map cleanly through the NCSEXPER
+   table. The metadata is authoritative for these (CABI.H lineage,
+   shared bytecode VM, shared parameter conventions).
+
+2. **NFS-specific CDH* additions** — strings present in winkfpt
+   but absent from ncsx's table:
+   - **`CDHIntInit` / `CDHIntSetMode` / `CDHIntSetScriptFile` /
+     `CDHIntTrigger`** — internal scripting engine bindings.
+     Probably how winkfpt drives flash trigger sequences from
+     within IPO control flow.
+   - **Expanded `CDHBinBuf*`** — NCSEXPER has Create / Delete /
+     ReadByte / ReadWord / WriteByte / WriteWord / ToStr /
+     ToNettoData. NFS adds **`CDHBinBufWrite` /
+     `CDHBinBufWrite/Change` / `CDHBinBufRead` / `CDHBinBufReadAt` /
+     `CDHBinBufSize` / `CDHBinBufAppend` / `CDHBinBufCopy`** — the
+     extended binbuf operations needed for flash-block staging
+     (NCSEXPER never moves more than coding-bytes' worth of data
+     through a binbuf; NFS streams entire S37 frames).
+   - **`CDHSaveTmpFswPswList` / `CDHRestoreTmpFswPswList`** — a
+     temporary-snapshot variant of NCSEXPER's Save/Restore pair.
+
+3. **Host-side `coapiKf*` family** — NFS's flash-specific business
+   logic lives here, NOT in IPO-exposed slots:
+   - `coapiKfProgSgD2` / `coapiKfProgSgDevelop` /
+     `coapiKfProgSgDevelopWithAif` — the actual flash entry points
+   - `coapiKfGetHwReferenzFromSgD2` / `coapiKfGetAifFromSgD2` /
+     `coapiKfGetUProg` — read SG state
+   - `coapiKfReadHwNrTabD2` / `coapiKfReadZbNrTabD2` /
+     `coapiKfReadKfConfTabD2` — load SP-Daten tables
+   - `coapiKfCheckBsuPossibleD2` /
+     `coapiKfCheckBsuPossibleForZbUpdateD2` — upgrade-eligibility
+     checks
+   - `coapiKfRefreshGdaten` / `coapiKfImportWdp` /
+     `coapiKfExportDevelopData` — host-side orchestration
+
+   These functions are HOST-CALLABLE from winkfpt's MFC UI — they're
+   not slots an IPO can `CALL sys` to. The flash protocol is driven
+   by the C host directly against the SGBD via `apiJob`, with IPOs
+   only used for the read-only metadata steps (HW_REFERENZ,
+   AIF_LESEN, IDENT, status reads).
+
+**Implications for nfsx Phase 5 (actual flash):**
+
+NFS's architecture is fundamentally different from NCSEXPER's:
+
+- **NCSEXPER** — the IPO does most work; host = UI + cabd-par store.
+  Reconstructing NCSEXPER means re-implementing the IPO surface.
+- **NFS** — the IPO does only read-only metadata; host drives the
+  flash protocol directly through the SGBD. Reconstructing NFS's
+  flash flow means re-implementing the `coapiKf*` C functions in
+  TypeScript, calling `apiJob` against the SGBD for each protocol
+  step.
+
+The IPO surface we have today (NCSEXPER-compatible 99-slot table)
+is therefore sufficient for **all NFS read flows**: HW_REFERENZ,
+AIF_LESEN, IDENT, JOB_ERMITTELN, status reads. NFS-specific
+`CDHInt*` / expanded `CDHBinBuf*` are probably wired but not
+exercised by the read paths — when we hit the first IPO that
+actually uses them (likely `00swt*.ipo` flash trigger scripts in
+Phase 5), we extract the slot IDs from a debugger trace at that
+point.
+
+**Concrete next step when Phase 5 starts:** run winkfpt against a
+real ECU with a logging proxy on the IPO interpreter (or attach a
+debugger to `CInterpreter_LookupCallTarget` and dump every
+`(slot_num, returned_handler)` tuple). That gives a complete
+empirical slot map for whatever IPOs the flash flow actually
+touches, instead of trying to extract the table statically.
 
 ## 8. Repo layout (proposed, not yet created)
 
