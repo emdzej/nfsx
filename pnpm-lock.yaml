@@ -52,6 +52,25 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.19)
 
+  packages/fsc:
+    dependencies:
+      '@emdzej/inpax-interfaces':
+        specifier: ^0.7.1
+        version: 0.7.1
+      '@emdzej/nfsx-runtime':
+        specifier: workspace:*
+        version: link:../runtime
+    devDependencies:
+      '@emdzej/inpax-mock-provider':
+        specifier: ^0.7.1
+        version: 0.7.1
+      '@types/node':
+        specifier: ^22.13.1
+        version: 22.19.19
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)
+
   packages/resolver:
     dependencies:
       '@emdzej/nfsx-data-files':

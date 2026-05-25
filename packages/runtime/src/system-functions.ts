@@ -358,8 +358,13 @@ function makeEntry(type: ValueType, value: Value): StackEntry {
 }
 
 function readJobStatus(ediabas: IEdiabasProvider): string {
+  // Default to '' (not 'OKAY') when JOB_STATUS isn't published — mirrors
+  // what the IPO sees when it reads JOB_STATUS via CDHapiResultText.
+  // The 'OKAY' default would mis-flag mock-less / failed dispatches as
+  // successful in `state.lastJob.status`, which downstream consumers
+  // (FscManager.toResult) rely on for ok/error routing.
   try {
-    if (!ediabas.hasResult('JOB_STATUS', 1)) return 'OKAY';
+    if (!ediabas.hasResult('JOB_STATUS', 1)) return '';
     return ediabas.resultText('JOB_STATUS', 1, '');
   } catch {
     return '';

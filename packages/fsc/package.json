@@ -1,7 +1,7 @@
 {
-  "name": "@emdzej/nfsx-data-files",
+  "name": "@emdzej/nfsx-fsc",
   "version": "0.4.0",
-  "description": "Plaintext parsers for BMW NFS / WinKFP data files: kmm_*.txt (planner inputs), HWNR.DA2 (part-number → SG lookup), KFCONF10.DA2 (per-SG flash config), SGIDC.AS2 / SGIDD.AS2 (auth material), npv.dat (ZB upgrade table), prgifsel.dat (transport selector). All file formats are line-oriented plaintext — no binary container, no compression. Specs in ../../docs/architecture.md §9.2.",
+  "description": "FSC + cert + identity host orchestrator for nfsx. Wraps @emdzej/nfsx-runtime with high-level FscManager operations (checkFsc / getFsc / getVin / getFsStatus / …) over the 00swt*.ipo CABI surface. The TypeScript equivalent of winkfpt's coapiKf* C functions, scoped to the FSC + cert + identity subset.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -15,7 +15,12 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
+  "dependencies": {
+    "@emdzej/nfsx-runtime": "workspace:*",
+    "@emdzej/inpax-interfaces": "^0.7.1"
+  },
   "devDependencies": {
+    "@emdzej/inpax-mock-provider": "^0.7.1",
     "@types/node": "^22.13.1",
     "vitest": "^2.1.8"
   },
@@ -25,6 +30,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/emdzej/nfsx.git",
-    "directory": "packages/data-files"
+    "directory": "packages/fsc"
   }
 }

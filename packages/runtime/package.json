@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-runtime",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "CABI-style IPO runtime for nfsx. Wraps the inpax VM with the NCSEXPER 99-slot CABI surface (via @emdzej/ncsx-inpax-cabi-provider) plus NFS-specific overrides for flash/FSC/AIF slots not in the NCSEXPER table.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
