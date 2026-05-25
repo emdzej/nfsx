@@ -5,9 +5,33 @@ programming toolchain, in the same family as
 [`ncsx`](https://github.com/emdzej/ncsx) (NCS Expert / coding) and
 [`inpax`](https://github.com/emdzej/inpax) (INPA / diagnostics).
 
-> **Status**: pre-zero. Initial architecture analysis only. **Do not
-> flash real ECUs with anything in this repo yet.** Misprogrammed
-> ECUs can become permanent paperweights.
+> **Status**: v0.1.0 — read-only resolver demo. **Do not flash real
+> ECUs with anything in this repo yet.** Misprogrammed ECUs can
+> become permanent paperweights.
+
+## Quick demo
+
+```bash
+$ node apps/cli/dist/cli.js plan --hwnr 4010581
+
+Lookup: HWNR=4010581
+SP-Daten: ~/Downloads/E46_v74
+Candidates: 1
+
+SG_TYP: ACC65
+─────────────
+  Queried HWNR:   4010581
+  Known HWNRs:    8
+  KFCONF rows:    1
+    variant 21/01:
+      IPO:        25ACC65.IPO
+      Flash SGBD: 02FLASH.PRG
+      Working:    .HIS=ACC65.HIS  .DAT=ACC65.DAT  .DIR=ACC65D.DIR  .HWH=ACC65.HWH
+```
+
+The full part-number → IPO + Flash SGBD lookup chain is working
+against real BMW E46 SP-Daten. 100% join coverage between
+`HWNR.DA2` (3763 rows) and `KFCONF10.DA2` (237 SG_TYPs).
 
 ## What NFS is
 

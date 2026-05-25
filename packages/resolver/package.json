@@ -1,0 +1,33 @@
+{
+  "name": "@emdzej/nfsx-resolver",
+  "version": "0.1.0",
+  "description": "Lookup-chain resolver for BMW NFS / WinKFP SP-Daten. Loads HWNR.DA2 + KFCONF10.DA2 + kmm_SIT.txt and exposes part-number → flash-context queries. The C-side equivalent of winkfpt's `coapiKfReadKfConf*` + planner machinery. Anchor: ../../docs/architecture.md §9.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@emdzej/nfsx-data-files": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "vitest": "^2.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emdzej/nfsx.git",
+    "directory": "packages/resolver"
+  }
+}
