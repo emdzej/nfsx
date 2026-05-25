@@ -19,14 +19,17 @@ import {
   resolveByHwnr,
   resolveBySgTyp,
   resolveByDiagAddr,
+  resolveUpgrade,
   type FlashCandidate,
   type SpDaten,
 } from '@emdzej/nfsx-resolver';
+import type { NpvRow } from '@emdzej/nfsx-data-files';
 
 interface PlanFlags {
   hwnr?: string;
   sgTyp?: string;
   diagAddr?: number;
+  zbAlt?: string;
   spDaten: string;
   json: boolean;
   help: boolean;
@@ -35,19 +38,23 @@ interface PlanFlags {
 const HELP = `nfsx plan — resolve a BMW ECU through the SP-Daten lookup chain.
 
 Usage:
-  nfsx plan --hwnr <HWNR>      [--sp-daten <DIR>] [--json]
-  nfsx plan --sg-typ <NAME>    [--sp-daten <DIR>] [--json]
-  nfsx plan --diag-addr <HEX>  [--sp-daten <DIR>] [--json]
+  nfsx plan --hwnr <HWNR>      [--zb-alt <ZB>] [--sp-daten <DIR>] [--json]
+  nfsx plan --sg-typ <NAME>    [--zb-alt <ZB>] [--sp-daten <DIR>] [--json]
+  nfsx plan --diag-addr <HEX>  [--zb-alt <ZB>] [--sp-daten <DIR>] [--json]
 
 Inputs (one of):
   --hwnr <HWNR>        BMW part number (e.g. 4010581) — looks up via
-                       HWNR.DA2 → KFCONF10.DA2 → kmm_SIT.txt.
+                       HWNR.DA2 → KFCONF10.DA2 → kmm_SIT.txt → SGIDC/SGIDD
+                       → prgifsel.dat.
   --sg-typ <NAME>      SG short name (e.g. ACC65) — looks up via
                        KFCONF10.DA2 directly.
   --diag-addr <HEX>    Diagnostic address (e.g. 0x12 or 12) — looks
                        up via kmm_SIT.txt.
 
 Options:
+  --zb-alt <ZB>        Current ZB-Nummer on the ECU (e.g. 1703643).
+                       When supplied, also looks up the upgrade
+                       target in npv.dat (→ ZB-NEU + NP-SW).
   --sp-daten <DIR>     Path to SP-Daten chassis drop.
                        Default: $NFSX_SP_DATEN or ~/Downloads/E46_v74
   --json               Emit JSON instead of pretty text.
@@ -82,18 +89,23 @@ export function runPlan(args: string[]): number {
 
 function emitText(sp: SpDaten, flags: PlanFlags): number {
   const candidates = resolve(sp, flags);
+  const upgrade = flags.zbAlt ? resolveUpgrade(sp, flags.zbAlt) : undefined;
 
-  if (candidates.length === 0) {
+  if (candidates.length === 0 && !upgrade) {
     process.stderr.write(`No candidates found for ${describeLookup(flags)}.\n`);
     return 1;
   }
 
   process.stdout.write(`\nLookup: ${describeLookup(flags)}\n`);
   process.stdout.write(`SP-Daten: ${flags.spDaten}\n`);
-  process.stdout.write(`Candidates: ${candidates.length}\n\n`);
-
-  for (let i = 0; i < candidates.length; i++) {
-    printCandidate(candidates[i]!, i + 1, candidates.length);
+  if (candidates.length > 0) {
+    process.stdout.write(`Candidates: ${candidates.length}\n\n`);
+    for (let i = 0; i < candidates.length; i++) {
+      printCandidate(candidates[i]!, i + 1, candidates.length);
+    }
+  }
+  if (flags.zbAlt) {
+    printUpgrade(flags.zbAlt, upgrade);
   }
 
   return 0;
@@ -101,6 +113,7 @@ function emitText(sp: SpDaten, flags: PlanFlags): number {
 
 function emitJson(sp: SpDaten, flags: PlanFlags): number {
   const candidates = resolve(sp, flags);
+  const upgrade = flags.zbAlt ? resolveUpgrade(sp, flags.zbAlt) : undefined;
   process.stdout.write(
     JSON.stringify(
       {
@@ -108,12 +121,14 @@ function emitJson(sp: SpDaten, flags: PlanFlags): number {
         spDaten: flags.spDaten,
         warnings: sp.warnings,
         candidates,
+        zbAlt: flags.zbAlt ?? null,
+        upgrade: upgrade ?? null,
       },
       null,
       2,
     ) + '\n',
   );
-  return candidates.length === 0 ? 1 : 0;
+  return candidates.length === 0 && !upgrade ? 1 : 0;
 }
 
 function resolve(sp: SpDaten, flags: PlanFlags): FlashCandidate[] {
@@ -168,7 +183,50 @@ function printCandidate(c: FlashCandidate, idx: number, total: number): void {
   } else {
     process.stdout.write(`  kmm_SIT row:    (none — SP-Daten SIT doesn't cover this SG)\n`);
   }
+
+  if (c.prgIfSel) {
+    process.stdout.write(`  prgifsel row:\n`);
+    process.stdout.write(`      Protocol:   ${c.prgIfSel.protocol}\n`);
+    process.stdout.write(`      Interface:  ${c.prgIfSel.iface}\n`);
+    process.stdout.write(`      Hardware:   ${c.prgIfSel.hardware}\n`);
+    process.stdout.write(`      Info:       ${c.prgIfSel.information}\n`);
+  } else {
+    process.stdout.write(`  prgifsel row:   (none — no transport selector for this SG)\n`);
+  }
+
+  const totalAuth = c.sgIdc.length + c.sgIdd.length;
+  if (totalAuth > 0) {
+    process.stdout.write(`  Auth material:  ${c.sgIdc.length} SGIDC + ${c.sgIdd.length} SGIDD entries\n`);
+    for (const e of c.sgIdc) {
+      process.stdout.write(`      SGIDC (L3): ${truncatePayload(e.payload)}\n`);
+    }
+    for (const e of c.sgIdd) {
+      process.stdout.write(`      SGIDD (L4): ${truncatePayload(e.payload)}\n`);
+    }
+  } else {
+    process.stdout.write(`  Auth material:  (none — no SGIDC/SGIDD entries for this SG)\n`);
+  }
   process.stdout.write(`\n`);
+}
+
+function truncatePayload(p: string): string {
+  if (p.length <= 60) return p;
+  return `${p.slice(0, 40)}…(${p.length} chars total)`;
+}
+
+function printUpgrade(zbAlt: string, upgrade: NpvRow | undefined): void {
+  process.stdout.write(`Upgrade lookup (ZB-ALT=${zbAlt})\n`);
+  process.stdout.write(`${'─'.repeat(40)}\n`);
+  if (!upgrade) {
+    process.stdout.write(`  (no upgrade rule in npv.dat for this ZB)\n\n`);
+    return;
+  }
+  process.stdout.write(`  ZB-NEU:     ${upgrade.zbNeu}\n`);
+  process.stdout.write(`  NP-SW:      ${upgrade.npSw}\n`);
+  process.stdout.write(`  AM (mask):  ${upgrade.am}\n`);
+  process.stdout.write(`  S (status): ${upgrade.s ?? '(unset)'}\n`);
+  process.stdout.write(`  M:          ${upgrade.m ?? '(unset)'}\n`);
+  process.stdout.write(`  CS:         ${upgrade.cs}\n\n`);
 }
 
 function parseFlags(args: string[]): PlanFlags {
@@ -207,6 +265,10 @@ function parseFlags(args: string[]): PlanFlags {
         flags.diagAddr = parsed;
         break;
       }
+      case '--zb-alt':
+        flags.zbAlt = takeValue(args, i);
+        i++;
+        break;
       case '--sp-daten':
         flags.spDaten = takeValue(args, i);
         i++;

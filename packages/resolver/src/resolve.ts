@@ -19,7 +19,14 @@
  * the consumer decides whether to proceed.
  */
 
-import type { HwnrRow, KfConfRow, KmmSitRow } from '@emdzej/nfsx-data-files';
+import type {
+  HwnrRow,
+  KfConfRow,
+  KmmSitRow,
+  NpvRow,
+  PrgIfSelRow,
+  SgIdEntry,
+} from '@emdzej/nfsx-data-files';
 import type { SpDaten } from './load.js';
 
 export interface FlashCandidate {
@@ -54,6 +61,22 @@ export interface FlashCandidate {
    * limit / category from this lookup — those need other sources.
    */
   sit?: KmmSitRow;
+  /**
+   * SGIDC.AS2 (level 3) entries for this SG_TYP. Multi-valued
+   * because some SGs ship multiple key blobs per file. Empty when
+   * SGIDC isn't loaded or the SG isn't listed.
+   */
+  sgIdc: SgIdEntry[];
+  /** SGIDD.AS2 (level 4) entries for this SG_TYP. */
+  sgIdd: SgIdEntry[];
+  /**
+   * prgifsel.dat row for this SG, if any. Provides the
+   * transport / protocol selection (e.g. KWP2000*, DS2, KWP2000)
+   * plus per-protocol parameters. Joined by SG short name —
+   * may be undefined when the SG name doesn't match a prgifsel
+   * row exactly.
+   */
+  prgIfSel?: PrgIfSelRow;
 }
 
 /**
@@ -114,14 +137,13 @@ export function resolveByDiagAddr(spDaten: SpDaten, diagAddr: number): FlashCand
     // don't have a direct join key to SG_TYP, so the consumer of
     // this lookup gets the SIT row + has to bridge to KFCONF
     // through whichever heuristic fits (often SG_TYP starts-with
-    // shortName, or vice versa). We expose the SIT row alone for
-    // now.
-    out.push({
-      sgTyp: sit.shortName,
-      hwnrRows: [],
-      kfConfRows: [],
-      sit,
-    });
+    // shortName, or vice versa). Route through buildCandidate so
+    // the candidate gets the full shape (HWNR rows / KFCONF /
+    // SGIDC / SGIDD / prgifsel — mostly empty when shortName ≠
+    // SG_TYP, which is fine).
+    const candidate = buildCandidate(spDaten, sit.shortName);
+    candidate.sit = sit;
+    out.push(candidate);
   }
   return out;
 }
@@ -138,12 +160,50 @@ function buildCandidate(spDaten: SpDaten, sgTyp: string, hwnr?: string): FlashCa
   const sgTypLower = sgTyp.toLowerCase();
   const sit = spDaten.kmmSit?.rows.find((r) => r.shortName.toLowerCase() === sgTypLower);
 
+  // SGIDC / SGIDD use SG_TYP exactly (no case fuzzing needed —
+  // these files use the canonical KFCONF spelling).
+  const sgIdc = spDaten.sgIdc?.bySgTyp.get(sgTyp) ?? [];
+  const sgIdd = spDaten.sgIdd?.bySgTyp.get(sgTyp) ?? [];
+
+  // prgifsel.dat uses SG short names that match the KFCONF SG_TYP
+  // in most cases (EK924, EKB924, EK927) but not always (KFCONF
+  // ACC65 vs prgifsel may use a slightly different label).
+  // Try exact match first, then case-insensitive.
+  let prgIfSel = spDaten.prgIfSel?.bySgName.get(sgTyp);
+  if (!prgIfSel && spDaten.prgIfSel) {
+    for (const row of spDaten.prgIfSel.rows) {
+      if (row.sgName.toLowerCase() === sgTypLower) {
+        prgIfSel = row;
+        break;
+      }
+    }
+  }
+
   const candidate: FlashCandidate = {
     sgTyp,
     hwnrRows,
     kfConfRows,
-    sit,
+    sgIdc,
+    sgIdd,
   };
   if (hwnr !== undefined) candidate.hwnr = hwnr;
+  if (sit) candidate.sit = sit;
+  if (prgIfSel) candidate.prgIfSel = prgIfSel;
   return candidate;
+}
+
+/**
+ * Resolve a current ZB-Nummer to the upgrade rule in `npv.dat`,
+ * if any. Returns the `NpvRow` describing the target ZB-NEU +
+ * NP-SW + flash-mask, or undefined when no upgrade exists for
+ * this ZB.
+ *
+ * This is a separate lookup from `resolveByHwnr` / `resolveBySgTyp`
+ * because npv keys on the CURRENT ZB-Nummer (read from the ECU via
+ * IDENT), not on the part number or short name. The planner
+ * typically uses BOTH — `resolveByHwnr` for the IPO/SGBD/transport,
+ * `resolveUpgrade` for the target ZB.
+ */
+export function resolveUpgrade(spDaten: SpDaten, zbAlt: string): NpvRow | undefined {
+  return spDaten.npv?.byZbAlt.get(zbAlt);
 }

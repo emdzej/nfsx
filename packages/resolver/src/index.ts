@@ -10,5 +10,6 @@ export {
   resolveByHwnr,
   resolveBySgTyp,
   resolveByDiagAddr,
+  resolveUpgrade,
   type FlashCandidate,
 } from './resolve.js';

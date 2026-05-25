@@ -21,15 +21,29 @@ import {
   parseHwnr,
   parseKfConf,
   parseKmmSit,
+  parseNpv,
+  parsePrgIfSel,
+  parseSgId,
   type HwnrFile,
   type KfConfFile,
   type KmmSitFile,
+  type NpvFile,
+  type PrgIfSelFile,
+  type SgIdFile,
 } from '@emdzej/nfsx-data-files';
 
 export interface SpDaten {
   hwnr?: HwnrFile;
   kfConf?: KfConfFile;
   kmmSit?: KmmSitFile;
+  /** SGIDC.AS2 — level-3 authentication material. */
+  sgIdc?: SgIdFile;
+  /** SGIDD.AS2 — level-4 authentication material. */
+  sgIdd?: SgIdFile;
+  /** npv.dat — ZB upgrade rules. */
+  npv?: NpvFile;
+  /** prgifsel.dat — per-SG transport selection. */
+  prgIfSel?: PrgIfSelFile;
   /** Files that were expected but missing on disk. */
   warnings: string[];
   /**
@@ -47,6 +61,14 @@ export interface SpDatenPaths {
   kfConf: string;
   /** Absolute path to kmm_SIT.txt (or override). */
   kmmSit: string;
+  /** Absolute path to SGIDC.AS2 (or override). */
+  sgIdc: string;
+  /** Absolute path to SGIDD.AS2 (or override). */
+  sgIdd: string;
+  /** Absolute path to npv.dat (or override). */
+  npv: string;
+  /** Absolute path to prgifsel.dat (or override). */
+  prgIfSel: string;
 }
 
 /**
@@ -54,10 +76,15 @@ export interface SpDatenPaths {
  * three known paths today; this grows as more parsers land.
  */
 export function defaultSpDatenPaths(rootDir: string): SpDatenPaths {
+  const gdaten = join(rootDir, 'data', 'gdaten');
   return {
-    hwnr: join(rootDir, 'data', 'gdaten', 'HWNR.DA2'),
-    kfConf: join(rootDir, 'data', 'gdaten', 'KFCONF10.DA2'),
+    hwnr: join(gdaten, 'HWNR.DA2'),
+    kfConf: join(gdaten, 'KFCONF10.DA2'),
     kmmSit: join(rootDir, 'kmmData', 'kmm_SIT.txt'),
+    sgIdc: join(gdaten, 'SGIDC.AS2'),
+    sgIdd: join(gdaten, 'SGIDD.AS2'),
+    npv: join(gdaten, 'npv.dat'),
+    prgIfSel: join(gdaten, 'prgifsel.dat'),
   };
 }
 
@@ -114,6 +141,54 @@ export function loadSpDaten(paths: Partial<SpDatenPaths>): SpDaten {
       }
     } else {
       out.warnings.push(`kmm_SIT.txt not found at ${paths.kmmSit}`);
+    }
+  }
+
+  if (paths.sgIdc) {
+    if (existsSync(paths.sgIdc)) {
+      const content = readFileSync(paths.sgIdc, { encoding: 'latin1' });
+      out.sgIdc = parseSgId(content);
+      for (const u of out.sgIdc.unparsed) {
+        out.parseErrors.push({ source: paths.sgIdc, lineNo: u.lineNo, reason: u.reason });
+      }
+    } else {
+      out.warnings.push(`SGIDC.AS2 not found at ${paths.sgIdc}`);
+    }
+  }
+
+  if (paths.sgIdd) {
+    if (existsSync(paths.sgIdd)) {
+      const content = readFileSync(paths.sgIdd, { encoding: 'latin1' });
+      out.sgIdd = parseSgId(content);
+      for (const u of out.sgIdd.unparsed) {
+        out.parseErrors.push({ source: paths.sgIdd, lineNo: u.lineNo, reason: u.reason });
+      }
+    } else {
+      out.warnings.push(`SGIDD.AS2 not found at ${paths.sgIdd}`);
+    }
+  }
+
+  if (paths.npv) {
+    if (existsSync(paths.npv)) {
+      const content = readFileSync(paths.npv, { encoding: 'latin1' });
+      out.npv = parseNpv(content);
+      for (const u of out.npv.unparsed) {
+        out.parseErrors.push({ source: paths.npv, lineNo: u.lineNo, reason: u.reason });
+      }
+    } else {
+      out.warnings.push(`npv.dat not found at ${paths.npv}`);
+    }
+  }
+
+  if (paths.prgIfSel) {
+    if (existsSync(paths.prgIfSel)) {
+      const content = readFileSync(paths.prgIfSel, { encoding: 'latin1' });
+      out.prgIfSel = parsePrgIfSel(content);
+      for (const u of out.prgIfSel.unparsed) {
+        out.parseErrors.push({ source: paths.prgIfSel, lineNo: u.lineNo, reason: u.reason });
+      }
+    } else {
+      out.warnings.push(`prgifsel.dat not found at ${paths.prgIfSel}`);
     }
   }
 
