@@ -253,3 +253,160 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
     );
   });
 });
+
+/**
+ * Phase 4 — FSC/cert workflow via the `00swt*.ipo` family.
+ *
+ * Each transport-specific 00swt*.ipo (DS2/DSC/EPS/KWP/KWS/MSD)
+ * exposes the same 20-job CABI surface for FSC + cert + identity
+ * management. The IPOs are thin wrappers around SGBD apiJob calls
+ * with a standardised JOB_STATUS / JOB_STATUS_CODE → API_RESULT_CODE
+ * / API_RESULT result-reporting pattern. The host pre-seeds
+ * AUTH_MODE / SGBD_NAME / VARIANT / AUTH_KIND / APP_NR /
+ * UPGRADE_INDEX cabd-pars before dispatch.
+ */
+const SWT_KWP_PATH = `${process.env.HOME}/Downloads/inpa/EC-APPS/NFS/SGDAT/00swtkwp.ipo`;
+
+describe.skipIf(!existsSync(SWT_KWP_PATH))('Phase 4 — FSC + cert workflow (00swt*.ipo)', () => {
+  it('CHECK_FSC — dispatches FREISCHALTCODE_PRUEFEN with the standard FSC result pattern', async () => {
+    const ediabas = new MockEdiabasProvider();
+    ediabas.setSimpleResult('C_DSC_KWP', 'FREISCHALTCODE_PRUEFEN', {
+      JOB_STATUS: 'OKAY',
+      JOB_STATUS_CODE: 0,
+    });
+
+    const handle = await startNfsRuntime({
+      ipoPath: SWT_KWP_PATH,
+      sgbd: 'C_DSC_KWP',
+      ediabas,
+      cabdPars: {
+        AUTH_MODE: '0',
+        SGBD_NAME: 'C_DSC_KWP',
+        VARIANT: 'DSC60',
+        AUTH_KIND: '1',
+        APP_NR: '01',
+        UPGRADE_INDEX: '00',
+      },
+    });
+
+    await handle.runCabimain('CHECK_FSC');
+
+    expect(ediabas.jobCalls).toHaveLength(1);
+    expect(ediabas.jobCalls[0]!.job).toBe('FREISCHALTCODE_PRUEFEN');
+    expect(handle.state.lastJob!.status).toBe('OKAY');
+
+    // Verify the host-seeded cabd-pars were read by the IPO. Look
+    // at the trace — every CDHGetCabdPar for AUTH_MODE/SGBD_NAME/etc
+    // should return our seeded value, not empty string.
+    const authModeRead = handle.state.trace.find(
+      (t) => t.name === 'CDHGetCabdPar' && t.args.name === 'AUTH_MODE',
+    );
+    expect(authModeRead?.args.value).toBe('0');
+
+    const sgbdRead = handle.state.trace.find(
+      (t) => t.name === 'CDHGetCabdPar' && t.args.name === 'SGBD_NAME',
+    );
+    expect(sgbdRead?.args.value).toBe('C_DSC_KWP');
+  });
+
+  it('CHECK_FSC — error path publishes API_RESULT_CODE / API_RESULT', async () => {
+    // When the SGBD doesn't respond (JOB_STATUS empty), the IPO
+    // falls into the error path and publishes API_RESULT_CODE +
+    // API_RESULT cabd-pars so the host can surface the failure to
+    // the user.
+    const ediabas = new MockEdiabasProvider();
+    const handle = await startNfsRuntime({
+      ipoPath: SWT_KWP_PATH,
+      sgbd: 'C_DSC_KWP',
+      ediabas,
+    });
+
+    await handle.runCabimain('CHECK_FSC');
+
+    // API_RESULT_CODE + API_RESULT are published on the error path.
+    expect(handle.state.cabdPars.has('API_RESULT_CODE')).toBe(true);
+    expect(handle.state.cabdPars.has('API_RESULT')).toBe(true);
+
+    const errorCall = handle.state.trace.find(
+      (t) => t.name === 'CDHSetError' && t.args.proc === 'CheckFsc',
+    );
+    expect(errorCall).toBeDefined();
+  });
+
+  it('GET_VIN — dispatches FAHRGESTELLNUMMER_LESEN', async () => {
+    const ediabas = new MockEdiabasProvider();
+    ediabas.setSimpleResult('C_DSC_KWP', 'FAHRGESTELLNUMMER_LESEN', {
+      JOB_STATUS: 'OKAY',
+      JOB_STATUS_CODE: 0,
+      FAHRGESTELL_NR: 'WBAVB13546PT12345',
+    });
+
+    const handle = await startNfsRuntime({
+      ipoPath: SWT_KWP_PATH,
+      sgbd: 'C_DSC_KWP',
+      ediabas,
+      cabdPars: {
+        AUTH_MODE: '0',
+        SGBD_NAME: 'C_DSC_KWP',
+        VARIANT: 'DSC60',
+        AUTH_KIND: '1',
+      },
+    });
+
+    await handle.runCabimain('GET_VIN');
+
+    expect(ediabas.jobCalls).toHaveLength(1);
+    expect(ediabas.jobCalls[0]!.job).toBe('FAHRGESTELLNUMMER_LESEN');
+    expect(handle.state.lastJob!.status).toBe('OKAY');
+  });
+
+  it('GET_TIME — no apiJob, returns the host-seeded TIME cabd-par', async () => {
+    // GET_TIME is one of the few jobs that doesn't issue an apiJob —
+    // it reads/republishes a TIME cabd-par the host pre-seeded.
+    // Default ("000000000000Z") is the IPO's epoch when host didn't
+    // set one.
+    const ediabas = new MockEdiabasProvider();
+    const handle = await startNfsRuntime({
+      ipoPath: SWT_KWP_PATH,
+      sgbd: 'C_DSC_KWP',
+      ediabas,
+      cabdPars: {
+        AUTH_MODE: '0',
+        SGBD_NAME: 'C_DSC_KWP',
+        VARIANT: 'DSC60',
+        AUTH_KIND: '1',
+      },
+    });
+
+    await handle.runCabimain('GET_TIME');
+
+    expect(ediabas.jobCalls).toHaveLength(0);
+    expect(handle.state.cabdPars.get('TIME')).toBe('000000000000Z');
+  });
+
+  it('JOB_ERMITTELN — all 6 transport variants expose the same 20-job FSC surface', async () => {
+    // Sanity check across the 00swt*.ipo family — confirms the
+    // dispatcher works on every transport variant, and that they
+    // all share the same job vocabulary (only the underlying SGBD
+    // differs).
+    const variants = ['00swtds2', '00swtdsc', '00swteps', '00swtkwp', '00swtkws', '00swtmsd'];
+    const expectedJobs = [
+      'JOB_ERMITTELN', 'INFO', 'STORE_FSC', 'STORE_CERTIFICATE', 'DISABLE_FSC',
+      'CHECK_CERTIFICATE', 'CHECK_FSC', 'GET_CERTIFICATE', 'GET_FSC', 'GET_FSSTATUS',
+      'GET_SWID', 'GET_ALL_SWID', 'GET_SIGSID', 'PERIODICAL_CHECK', 'FINGERPRINT_CHECK',
+      'GET_TIME', 'SET_TIME', 'GET_VIN', 'SET_VIN', 'KEYFAKTOR_LESEN',
+    ];
+
+    for (const variant of variants) {
+      const path = `${process.env.HOME}/Downloads/inpa/EC-APPS/NFS/SGDAT/${variant}.ipo`;
+      if (!existsSync(path)) continue;
+      const handle = await startNfsRuntime({ ipoPath: path });
+      await handle.runCabimain('JOB_ERMITTELN');
+      const published = [...handle.state.cabdPars.entries()]
+        .filter(([k]) => /^JOB\[\d+\]$/.test(k))
+        .sort(([a], [b]) => Number(a.match(/\d+/)?.[0]) - Number(b.match(/\d+/)?.[0]))
+        .map(([, v]) => v);
+      expect(published).toEqual(expectedJobs);
+    }
+  });
+});

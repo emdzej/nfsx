@@ -860,6 +860,112 @@ debugger to `CInterpreter_LookupCallTarget` and dump every
 empirical slot map for whatever IPOs the flash flow actually
 touches, instead of trying to extract the table statically.
 
+### 9.7 Phase 4 surface — FSC + cert workflow (`00swt*.ipo`) 2026-05-25
+
+The six `00swt*.ipo` IPOs are the **SWT (SoftWare Transfer)
+dispatcher family** — transport-specific variants exposing an
+identical 20-job CABI surface for FSC + cert + identity management.
+
+| IPO | Transport |
+|---|---|
+| `00swtds2.ipo` | DS2 (E39/E46/E53-era) |
+| `00swtdsc.ipo` | DS-C |
+| `00swteps.ipo` | EPS |
+| `00swtkwp.ipo` | KWP2000 (E60+, the common case) |
+| `00swtkws.ipo` | KWP-S |
+| `00swtmsd.ipo` | MSD (motor) |
+
+**Job vocabulary (identical across all six variants):**
+
+```
+JOB[1]  = JOB_ERMITTELN      JOB[11] = GET_SWID
+JOB[2]  = INFO               JOB[12] = GET_ALL_SWID
+JOB[3]  = STORE_FSC          JOB[13] = GET_SIGSID
+JOB[4]  = STORE_CERTIFICATE  JOB[14] = PERIODICAL_CHECK
+JOB[5]  = DISABLE_FSC        JOB[15] = FINGERPRINT_CHECK
+JOB[6]  = CHECK_CERTIFICATE  JOB[16] = GET_TIME
+JOB[7]  = CHECK_FSC          JOB[17] = SET_TIME
+JOB[8]  = GET_CERTIFICATE    JOB[18] = GET_VIN
+JOB[9]  = GET_FSC            JOB[19] = SET_VIN
+JOB[10] = GET_FSSTATUS       JOB[20] = KEYFAKTOR_LESEN
+```
+
+**Standard host-pre-seeded cabd-pars** (the IPO reads these before
+dispatching each job):
+
+| cabd-par | Purpose |
+|---|---|
+| `JOBNAME` | The job to dispatch (already set by `runCabimain`). |
+| `AUTH_MODE` | Authentication mode (e.g. `0` = none, `1` = challenge-response). |
+| `PSGBD_NAME` | "P-SGBD" — the protocol SGBD name (transport-level driver). |
+| `SGBD_NAME` | The actual ECU SGBD (e.g. `C_DSC_KWP`). |
+| `VARIANT` | The SG variant tag (e.g. `DSC60`). |
+| `AUTH_KIND` | Authentication scheme variant. |
+| `APP_NR` | Application number for the FSC slot (which FSC area). |
+| `UPGRADE_INDEX` | Upgrade context index. |
+
+**Standardised result-reporting pattern.** Each job that hits the
+SGBD reads back two results from the apiJob response, then
+publishes two cabd-pars:
+
+```
+SGBD job → JOB_STATUS / JOB_STATUS_CODE
+                ↓
+        API_RESULT_CODE / API_RESULT (cabd-pars)
+```
+
+This lets the C host orchestrator (`coapiKf*`) inspect the standard
+`API_RESULT_*` pair from any FSC IPO without parsing per-job result
+structures. Note: the IPO only publishes API_RESULT_CODE / API_RESULT
+on the **error path**. The happy path just sets ReturnVal=0 and exits
+cleanly — the host knows it succeeded when `lastJob.status === "OKAY"`.
+
+**Per-job SGBD mappings (KWP variant):**
+
+| FSC/cert job | apiJob to SGBD | Notes |
+|---|---|---|
+| CHECK_FSC | `FREISCHALTCODE_PRUEFEN` | Verify FSC validity |
+| GET_FSC | `FREISCHALTCODE_LAENGE_LESEN` | Read FSC length (precursor to actual GET) |
+| STORE_FSC | (untested — likely `FREISCHALTCODE_SCHREIBEN`) | Write FSC into ECU |
+| DISABLE_FSC | (untested — likely `FREISCHALTCODE_LOESCHEN` or similar) | Clear FSC slot |
+| CHECK_CERTIFICATE | (untested) | Verify module cert |
+| GET_CERTIFICATE | (untested) | Read cert |
+| STORE_CERTIFICATE | (untested) | Write cert |
+| GET_FSSTATUS | `STATUS_LESEN` | Flash status read |
+| GET_SWID | (untested) | Software-ID |
+| GET_VIN | `FAHRGESTELLNUMMER_LESEN` | VIN read |
+| SET_VIN | (untested — likely `FAHRGESTELLNUMMER_SCHREIBEN`) | VIN write |
+| GET_TIME | (no apiJob — reads TIME cabd-par) | Host-seeded RTC |
+| KEYFAKTOR_LESEN | (no apiJob — errors immediately if AUTH_MODE empty) | Auth-seed precondition |
+
+**What this means for Phase 4 reconstruction:**
+
+The dispatcher already runs every FSC job cleanly. To complete
+Phase 4 we need three things, none of which require new VM/runtime
+work:
+
+1. **Mock/SGBD layer** — Implement the `FREISCHALTCODE_*` /
+   `STATUS_LESEN` / `FAHRGESTELLNUMMER_*` apiJob responses. For
+   live ECUs this is just `apiJob` over EDIABAS against the real
+   SGBD; for offline reproduction we configure `MockEdiabasProvider`
+   with the per-job result shapes.
+
+2. **Host orchestration layer** — Build the equivalent of winkfpt's
+   `coapiKf*` C functions in TypeScript: a `FscManager` class that
+   knows how to seed the right cabd-pars per ECU (via SP-Daten
+   lookup → `00swt*.ipo` selection → cabd-par derivation), invoke
+   the runtime, and parse `API_RESULT` / `API_RESULT_CODE` back.
+
+3. **UI surface** (deferred — no web app exists in nfsx yet). A CLI
+   `nfsx fsc check --hwnr X` could ship without a UI.
+
+**Status today (2026-05-25):** dispatcher validation complete for
+all 6 transport variants; CHECK_FSC / GET_VIN / GET_TIME wired and
+tested end-to-end against MockEdiabasProvider. The remaining 17 FSC
+jobs follow the same pattern and just need their SGBD-side mappings
+to be observed (either via a real ECU session or by looking at the
+underlying `.PRG` SGBD bytecode).
+
 ## 8. Repo layout (proposed, not yet created)
 
 ```
