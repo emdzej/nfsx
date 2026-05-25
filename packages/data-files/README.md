@@ -15,10 +15,10 @@ for the full format reference.
 | `kmm_SIT.txt` | `parseKmmSit` | ✅ |
 | `HWNR.DA2` | `parseHwnr` | ✅ |
 | `KFCONF10.DA2` | `parseKfConf` | ✅ |
+| `SGIDC.AS2`, `SGIDD.AS2` | `parseSgId` (shared) | ✅ |
+| `npv.dat` | `parseNpv` | ✅ |
+| `prgifsel.dat` | `parsePrgIfSel` | ✅ |
 | `kmm_SG.txt`, `kmm_SGK.txt`, `kmm_SWT.txt`, … (15 others) | — | ⏳ pending non-E46 SP-Daten samples |
-| `SGIDC.AS2`, `SGIDD.AS2` | — | ⏳ |
-| `npv.dat` | — | ⏳ |
-| `prgifsel.dat` | — | ⏳ |
 
 ## Usage
 
