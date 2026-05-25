@@ -699,23 +699,44 @@ before `SG_AIF_SCHREIBEN`:
 
 These get read back via `SG_AIF_LESEN` for verification + forensics.
 
-### 9.5 Why the slot-ID question is solvable empirically
+### 9.5 The slot-ID question — RESOLVED 2026-05-25
 
-Searching for the IPO interpreter's slot-dispatch table in
-`winkfpt.exe` is the heavy approach. The lighter approach:
+**No slot ID work is needed.** Confirmed by static analysis: all
+1798 IPO files under `EC-APPS/NFS/SGDAT/` (both `*.ipo` and
+`*.IPO`) were disassembled via `@emdzej/inpax-dis`, every `CALL sys`
+instruction was checked against inpax's slot table, and **zero
+unknown slots were found across the entire NFS IPO corpus.**
 
-1. **For the ~70 shared CDH syscalls**: assume slot IDs match
-   NCSEXPER's table (same VM, same CABI library, no incentive to
-   reassign). Confirm by running an NFS IPO that uses only
-   well-known syscalls and watching it complete.
-2. **For the 3 NFS-only syscalls** (`CDHGetReferenzProgramm`,
-   `CDHGetReferenzDaten`, `CDHDelay`): run an NFS IPO that uses them
-   (e.g. `25ACC65.IPO` from the KFCONF table) under our existing
-   cabi-provider; the unrecognised opcodes are logged with their
-   slot numbers. Probably 0x60–0x65 since NCSEXPER's table ends near
-   0x5F.
+What this means:
 
-This is a Phase-1 work item, not a blocker.
+- NFS IPOs use the **same syscall slot IDs** as INPA / NCSEXPER —
+  same VM, same CABI table, same numeric opcodes.
+- The 3 syscall names we found in winkfpt.exe strings
+  (`CDHGetReferenzProgramm`, `CDHGetReferenzDaten`, `CDHDelay`) are
+  **not invoked from inside any IPO**. They exist in winkfpt.exe
+  because they're called from the **host-side C code** as part of
+  winkfpt's IPO-host integration glue — they're not exposed to the
+  IPO bytecode at all.
+- The IPO interpreter (`@emdzej/inpax`) and the CABI host
+  (`@emdzej/inpax-cabi-provider`) are **drop-in compatible** with
+  NFS IPOs. No new syscalls, no slot-ID translation, no
+  cabi-provider work.
+
+The actual flash protocol lives in the **SGBD** (`*.PRG` files in
+`EDIABAS/Ecu/`), not the IPO. The IPO just calls
+`apiJob(sgbd, "FLASH_SCHREIBEN", payload, ...)` and the SGBD does
+the protocol-level transfer. The SGBD layer is already implemented
+by `@emdzej/ediabasx`.
+
+Reconstruction surface left:
+
+1. Remaining 4 data parsers (SGIDC.AS2, SGIDD.AS2, npv.dat,
+   prgifsel.dat).
+2. Wire an NFS IPO through inpax against a mock transport
+   (Phase 3 — actually run a read-only IPO job like `Ident`).
+3. Real-ECU read-only flows on hardware (Phase 3).
+4. FSC + certificate management UI (Phase 4).
+5. Actual flash + safety surface (Phase 5).
 
 ## 8. Repo layout (proposed, not yet created)
 

@@ -152,15 +152,17 @@ Most of the big unknowns are answered (see
 - The AIF (After-Information-File) protocol — the post-flash
   identity stamp — is enumerated (`§9.4`).
 
+**Resolved (cont'd):**
+- **CABI slot table: drop-in compatible.** All 1798 NFS IPOs
+  scanned, zero unknown syscall slots. NFS IPOs use the same slot
+  IDs as INPA / NCSEXPER. The 3 syscall names that appeared in
+  winkfpt.exe strings are host-side-only — not called from any
+  IPO. `§9.5` for details.
+
 **Open:**
 - Sample non-E46 SP-Daten drop to get the remaining 16
   `kmm_*.txt` file formats (E46 only ships `kmm_SIT.txt`).
-- Empirically discover the 3 NFS-only CABI slot IDs
-  (`CDHGetReferenzProgramm`, `CDHGetReferenzDaten`, `CDHDelay`) by
-  running an NFS IPO through `@emdzej/inpax-cabi-provider` and
-  catching the "unknown slot" exceptions — likely 0x60–0x65 since
-  NCSEXPER's table ends near 0x5F.
-- Confirm flash payload sourcing: the IPO calls
-  `CDHGetReferenzProgramm` to fetch bytes the host loaded from
-  somewhere. Trace where those bytes come from (probably the
-  per-ECU `.DAT` / `.HWH` working files in `data/<SG>/`).
+- Confirm flash payload sourcing: where do flash bytes get
+  loaded into winkfpt's host buffers (probably the per-ECU
+  `.DAT` / `.HWH` working files in `data/<SG>/`). Not blocking
+  the read-only flows but needed for Phase 5.
