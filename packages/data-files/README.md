@@ -13,9 +13,9 @@ for the full format reference.
 | File | Parser | Status |
 |---|---|---|
 | `kmm_SIT.txt` | `parseKmmSit` | ✅ |
+| `HWNR.DA2` | `parseHwnr` | ✅ |
+| `KFCONF10.DA2` | `parseKfConf` | ✅ |
 | `kmm_SG.txt`, `kmm_SGK.txt`, `kmm_SWT.txt`, … (15 others) | — | ⏳ pending non-E46 SP-Daten samples |
-| `HWNR.DA2` | — | ⏳ |
-| `KFCONF10.DA2` | — | ⏳ |
 | `SGIDC.AS2`, `SGIDD.AS2` | — | ⏳ |
 | `npv.dat` | — | ⏳ |
 | `prgifsel.dat` | — | ⏳ |
