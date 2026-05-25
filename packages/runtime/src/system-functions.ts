@@ -22,7 +22,7 @@
  * overrides — those live in `winkfpt.exe`'s slot table, not NCSEXPER's.
  */
 
-import type { ExecutionContext } from '@emdzej/inpax-interpreter';
+import type { ExecutionContext, VM } from '@emdzej/inpax-interpreter';
 import { StackEntryFlags, ValueType, type StackEntry, type Value } from '@emdzej/inpax-core';
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
 import {
@@ -34,6 +34,7 @@ import type { CabiState } from './state.js';
 
 type SystemFunctionOverride = (
   ctx: ExecutionContext,
+  vm: VM,
 ) => void | Promise<void>;
 
 const NCSEXPER_SUCCESS = 0;
@@ -65,9 +66,15 @@ function makeOverride(
   switch (slot.name) {
     // ── Flow control ─────────────────────────────────────────────────
     case 'exit':
-      return (ctx) => {
+      // NCSEXPER's RET-equivalent at the script level. Must halt the
+      // VM — without `vm.stop()` the IPO's error-path `exit` is a
+      // no-op and execution falls through into the happy path, which
+      // runs with stale/empty result data. Real NFS IPOs like
+      // IdentLesen / AifLesen rely on this for clean termination.
+      return (ctx, vm) => {
         popArgs(ctx, slot.params);
         state.trace.push({ slot: slot.id, name: slot.name, args: {} });
+        vm.stop();
       };
 
     // ── setjobstatus(in int JobStatus) — slot 0x0B in INPA, 0x0A here

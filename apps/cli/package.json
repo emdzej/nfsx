@@ -21,7 +21,8 @@
   "dependencies": {
     "@emdzej/nfsx-resolver": "workspace:*",
     "@emdzej/nfsx-data-files": "workspace:*",
-    "@emdzej/nfsx-runtime": "workspace:*"
+    "@emdzej/nfsx-runtime": "workspace:*",
+    "@emdzej/inpax-mock-provider": "^0.7.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.1",

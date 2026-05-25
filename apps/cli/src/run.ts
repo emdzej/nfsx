@@ -14,11 +14,15 @@
  * the jobs the IPO supports.
  */
 
+import { readFileSync } from 'node:fs';
+import { MockEdiabasProvider } from '@emdzej/inpax-mock-provider';
 import { startNfsRuntime } from '@emdzej/nfsx-runtime';
 
 interface RunFlags {
   ipoPath?: string;
   job: string;
+  sgbd?: string;
+  mockFile?: string;
   json: boolean;
   help: boolean;
   trace: boolean;
@@ -27,22 +31,27 @@ interface RunFlags {
 const HELP = `nfsx run — execute an NFS IPO's cabimain dispatcher.
 
 Usage:
-  nfsx run <ipo-path> [--job <name>] [--trace] [--json]
+  nfsx run <ipo-path> [--job <name>] [--sgbd <name>] [--mock-file <path>] [--trace] [--json]
 
 Arguments:
   <ipo-path>           Path to the .IPO file (e.g. ~/Downloads/inpa/EC-APPS/NFS/SGDAT/16ACC65.ipo)
 
 Options:
-  --job <name>         JOBNAME to dispatch. Default: JOB_ERMITTELN
-                       (the standard metadata-publishing job).
+  --job <name>         JOBNAME to dispatch. Default: JOB_ERMITTELN.
+  --sgbd <name>        SGBD basename returned by CDHGetSgbdName. Required for
+                       jobs that issue apiJob calls (HW_REFERENZ, SG_IDENT_LESEN,
+                       SG_AIF_LESEN, etc.). E.g. C_ACC65 for 16ACC65.ipo.
+  --mock-file <path>   Path to a JSON file with mock EDIABAS results. Schema:
+                         { "ECU_NAME": { "JOB_NAME": { "RESULT_KEY": value, ... } } }
+                       JOB_STATUS = "OKAY" is a sensible default per job.
   --trace              Print every CABI syscall the IPO made.
   --json               Emit machine-readable JSON.
   --help               Show this help.
 
 Examples:
   nfsx run 16ACC65.ipo
-  nfsx run 16ACC65.ipo --job INFO
-  nfsx run 16ACC65.ipo --trace
+  nfsx run 16ACC65.ipo --job HW_REFERENZ --sgbd C_ACC65 --mock-file mock.json
+  nfsx run 16ACC65.ipo --job SG_IDENT_LESEN --sgbd C_ACC65 --trace
 `;
 
 export async function runRun(args: string[]): Promise<number> {
@@ -57,7 +66,13 @@ export async function runRun(args: string[]): Promise<number> {
     return 2;
   }
 
-  const handle = await startNfsRuntime({ ipoPath: flags.ipoPath });
+  const ediabas = flags.mockFile ? loadMockProvider(flags.mockFile) : undefined;
+
+  const handle = await startNfsRuntime({
+    ipoPath: flags.ipoPath,
+    sgbd: flags.sgbd,
+    ediabas,
+  });
   await handle.runCabimain(flags.job);
 
   if (flags.json) {
@@ -145,6 +160,14 @@ function parseFlags(args: string[]): RunFlags {
         flags.job = takeValue(args, i);
         i++;
         break;
+      case '--sgbd':
+        flags.sgbd = takeValue(args, i);
+        i++;
+        break;
+      case '--mock-file':
+        flags.mockFile = takeValue(args, i);
+        i++;
+        break;
       default:
         if (a.startsWith('--')) {
           process.stderr.write(`error: unknown flag "${a}"\n\n`);
@@ -178,4 +201,26 @@ function collectJobEntries(cabdPars: Map<string, string>): Array<{ index: number
     if (m) jobs.push({ index: Number.parseInt(m[1]!, 10), name: v });
   }
   return jobs.sort((a, b) => a.index - b.index);
+}
+
+function loadMockProvider(path: string): MockEdiabasProvider {
+  const raw = readFileSync(path, 'utf-8');
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    process.stderr.write(`error: --mock-file ${path}: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(2);
+  }
+  if (!data || typeof data !== 'object') {
+    process.stderr.write(`error: --mock-file ${path}: expected an object\n`);
+    process.exit(2);
+  }
+  const provider = new MockEdiabasProvider();
+  for (const [ecu, jobs] of Object.entries(data as Record<string, Record<string, Record<string, unknown>>>)) {
+    for (const [job, results] of Object.entries(jobs)) {
+      provider.setSimpleResult(ecu, job, results);
+    }
+  }
+  return provider;
 }

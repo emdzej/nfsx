@@ -117,4 +117,139 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
           .join('\n'),
     );
   });
+
+  it('SG_IDENT_LESEN — dispatches IDENT and publishes identity fields on success', async () => {
+    const ediabas = new MockEdiabasProvider();
+    ediabas.setSimpleResult('C_ACC65', 'IDENT', {
+      JOB_STATUS: 'OKAY',
+      ID_BMW_NR: '6985684',
+      ID_HW_NR: '04',
+      ID_DIAG_INDEX: '03',
+      ID_COD_INDEX: '02',
+      ID_VAR_INDEX: '01',
+      ID_DATUM: '15.03.2008',
+      ID_LIEF_NR: '0152',
+      ID_LIEF_TEXT: 'Conti',
+      ID_SW_NR_MCV: 'A1B2C3',
+      ID_SW_NR_FSV: 'D4E5F6',
+      ID_SW_NR_OSV: '789ABC',
+      ID_SW_NR_RES: '000000',
+      ID_DATUM_TAG: 15,
+      ID_DATUM_MONAT: 3,
+      ID_DATUM_JAHR: 2008,
+    });
+
+    const handle = await startNfsRuntime({
+      ipoPath: IPO_PATH,
+      sgbd: 'C_ACC65',
+      ediabas,
+    });
+
+    await handle.runCabimain('SG_IDENT_LESEN');
+
+    expect(ediabas.jobCalls).toHaveLength(1);
+    expect(ediabas.jobCalls[0]!.job).toBe('IDENT');
+    expect(handle.state.lastJob!.status).toBe('OKAY');
+
+    // Spot-check published cabd-pars from the happy path.
+    expect(handle.state.cabdPars.get('ID_BMW_NR')).toBe('6985684');
+    expect(handle.state.cabdPars.get('ID_LIEF_TEXT')).toBe('Conti');
+    expect(handle.state.cabdPars.get('ID_SW_NR_MCV')).toBe('A1B2C3');
+
+    const apiJobs = handle.state.trace.filter((t) => t.name === 'CDHapiJob');
+    console.log(
+      `\n  SG_IDENT_LESEN (OK) — ${handle.state.trace.length} syscalls, ${apiJobs.length} apiJob, JOB_STATUS=${handle.state.lastJob!.status}`,
+    );
+  });
+
+  it('SG_IDENT_LESEN — error path terminates cleanly when JOB_STATUS is empty', async () => {
+    // No mock data → JOB_STATUS comes back empty → IPO takes the
+    // error path (SetError → SetReturnVal → exit). With vm.stop()
+    // wired, the trace ends right after the first exit instead of
+    // running through the happy-path reads with stale data.
+    const ediabas = new MockEdiabasProvider();
+    const handle = await startNfsRuntime({
+      ipoPath: IPO_PATH,
+      sgbd: 'C_ACC65',
+      ediabas,
+    });
+
+    await handle.runCabimain('SG_IDENT_LESEN');
+
+    const lastSlot = handle.state.trace.at(-1);
+    expect(lastSlot?.name).toBe('exit');
+
+    const errors = handle.state.trace.filter((t) => t.name === 'CDHSetError');
+    expect(errors.length).toBeGreaterThan(0);
+
+    // Happy-path reads should NOT have fired.
+    const happyReads = handle.state.trace.filter(
+      (t) => t.name === 'CDHapiResultText' && (t.args.name === 'ID_BMW_NR' || t.args.name === 'ID_LIEF_TEXT'),
+    );
+    expect(happyReads).toHaveLength(0);
+  });
+
+  it('SG_AIF_LESEN — happy path reads AIF metadata', async () => {
+    const ediabas = new MockEdiabasProvider();
+    ediabas.setSimpleResult('C_ACC65', 'AIF_LESEN', {
+      JOB_STATUS: 'OKAY',
+      AIF_GROESSE: 256,
+      AIF_ADRESSE_LOW: 0x1000,
+      AIF_ADRESSE_HIGH: 0,
+      AIF_ANZ_FREI: 4,
+      AIF_FG_NR_LANG: 'WBAAB12345CD67890',
+      AIF_DATUM: '15.03.2008',
+      AIF_SW_NR: 'SW-001',
+      AIF_BEHOERDEN_NR: 'B12345',
+      AIF_ZB_NR: 'ZB-9876',
+      AIF_SERIEN_NR: 'SN-12345',
+      AIF_HAENDLER_NR: 'D-007',
+      AIF_KM: '12345',
+      AIF_PROG_NR: 'P-001',
+    });
+
+    const handle = await startNfsRuntime({
+      ipoPath: IPO_PATH,
+      sgbd: 'C_ACC65',
+      ediabas,
+    });
+
+    await handle.runCabimain('SG_AIF_LESEN');
+
+    expect(ediabas.jobCalls).toHaveLength(1);
+    expect(ediabas.jobCalls[0]!.job).toBe('AIF_LESEN');
+    expect(handle.state.lastJob!.status).toBe('OKAY');
+
+    expect(handle.state.cabdPars.get('AIF_FG_NR')).toBe('WBAAB12345CD67890');
+    expect(handle.state.cabdPars.get('AIF_ZB_NR')).toBe('ZB-9876');
+    expect(handle.state.cabdPars.get('AIF_KM')).toBe('12345');
+
+    console.log(
+      `\n  SG_AIF_LESEN (OK) — ${handle.state.trace.length} syscalls, JOB_STATUS=${handle.state.lastJob!.status}`,
+    );
+  });
+
+  it('SG_STATUS_LESEN — reads flash programming status', async () => {
+    const ediabas = new MockEdiabasProvider();
+    ediabas.setSimpleResult('C_ACC65', 'FLASH_PROGRAMMIER_STATUS_LESEN', {
+      JOB_STATUS: 'OKAY',
+      FLASH_PROGRAMMIER_STATUS: 7, // arbitrary mock value
+    });
+
+    const handle = await startNfsRuntime({
+      ipoPath: IPO_PATH,
+      sgbd: 'C_ACC65',
+      ediabas,
+    });
+
+    await handle.runCabimain('SG_STATUS_LESEN');
+
+    expect(ediabas.jobCalls).toHaveLength(1);
+    expect(ediabas.jobCalls[0]!.job).toBe('FLASH_PROGRAMMIER_STATUS_LESEN');
+    expect(handle.state.lastJob!.status).toBe('OKAY');
+
+    console.log(
+      `\n  SG_STATUS_LESEN (OK) — ${handle.state.trace.length} syscalls, JOB_STATUS=${handle.state.lastJob!.status}`,
+    );
+  });
 });
