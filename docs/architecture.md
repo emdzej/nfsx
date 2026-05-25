@@ -1004,3 +1004,215 @@ External deps (workspace links to existing repos):
 Same monorepo shape as `ncsx` and `inpax`. No app code until phase 1
 work has a real ECU read to demo against — until then it's all
 research + parsers.
+
+## 10. Phase 5 design — flash + safety surface 2026-05-25
+
+Phase 5 reconstructs winkfpt's actual flash-programming flow in
+TypeScript. The Ghidra walk (§9.6) confirmed this lives **host-side**
+in C functions (`coapiKfProgSgD2`, `coapiKfProgSgDevelop`,
+`coapiKfProgSgDevelopWithAif`), NOT in the IPO slot table. Phase 5 is
+therefore an orchestrator on top of `@emdzej/nfsx-fsc` and direct
+`apiJob` calls against the SGBD — no new VM work, no new IPO slots.
+
+This section is a **design only** — no v0.5.0 implementation work has
+started.
+
+### 10.1 Inputs the operator supplies
+
+Modelled after the `BATCH/*.CTL` files in the NFS install (see
+`FLASHBSP.CTL`):
+
+```ini
+[FGNUMMER]
+FGN = WBAAB12345AB12345          ; chassis VIN
+
+[ZBNUMMER]
+ZBN0000 = 6915620                ; first ECU's target part number
+ZBN0001 = 6915621                ; second ECU's target part number
+ZBN0002 = 6915621                ; third ECU's target part number
+
+[SGADRESSE]
+SGADR0000 = 6A                   ; matching diagnostic addresses
+SGADR0001 = D0
+SGADR0002 = D1
+```
+
+The flash-binary files (`.S37`, BMW-specific containers) live in
+operator-supplied paths — these are delivered through BMW dealer
+channels, not bundled in the NFS install. nfsx takes the directory
+location as a CLI flag.
+
+### 10.2 The 7-stage flash pipeline
+
+Modelled after `coapiKfProgSgDevelopWithAif` (the most complete entry
+point, used when AIF write is required post-flash):
+
+```
+1. RESOLVE        — HWNR + ZBN → IPO + SGBD + transport (via
+                    @emdzej/nfsx-resolver, Phase 2 surface)
+2. PRECHECK       — battery voltage, ignition, ECU response, FSC valid
+                    (via @emdzej/nfsx-fsc: checkFsc + getFsStatus)
+3. AUTHENTICATE   — security access seed/key exchange (UDS 0x27 / 0x29)
+4. SESSION        — switch ECU to programming mode (UDS 0x10 0x02)
+5. TRANSFER       — block transfer of the firmware (UDS 0x34/0x36/0x37
+                    or ECU-specific equivalent via SGBD apiJob)
+6. AIF_WRITE      — write After-Information-File identity stamp
+                    post-flash (see §9.4 for protocol details)
+7. POSTCHECK      — ECU reset, status read, dependency rechecks
+```
+
+Each stage is a separate method on a `FlashSession` class so the
+orchestrator can:
+- emit progress events (per-stage start/finish)
+- support abort between stages (but NOT inside transfer — see §10.5)
+- run dry-run mode skipping stages 4-6 (the destructive ones)
+
+### 10.3 Package layout
+
+Two new packages on top of existing ones:
+
+```
+packages/flash-data/     @emdzej/nfsx-flash-data
+  src/
+    s37.ts               — S-record parser (Motorola S37 → memory map)
+    container.ts         — BMW container format wrapper (TBD —
+                           inspect a real flash file in v0.5 dev)
+    integrity.ts         — CRC32 / checksum verification
+
+packages/flash/          @emdzej/nfsx-flash
+  src/
+    session.ts           — FlashSession class (orchestrates the 7
+                           stages above)
+    precheck.ts          — Battery / ignition / FSC / status checks
+    auth.ts              — Security access seed/key (UDS 0x27)
+    transfer.ts          — Block transfer state machine
+    aif-write.ts         — AIF post-flash write
+    safety.ts            — Dry-run mode, abort gating, confirmation
+    types.ts             — FlashOptions / FlashResult / events
+```
+
+`@emdzej/nfsx-flash` depends on:
+- `@emdzej/nfsx-resolver`   for ECU → SGBD lookup
+- `@emdzej/nfsx-fsc`        for pre-flash safety checks
+- `@emdzej/nfsx-runtime`    for any IPO-driven sub-step (e.g. AIF write)
+- `@emdzej/nfsx-flash-data` for parsing the flash binaries
+- `@emdzej/ediabasx`        direct SGBD apiJob for the actual flash protocol
+
+### 10.4 The safety surface
+
+Programming an ECU's flash incorrectly **bricks the ECU**. We need
+several layers of defence:
+
+1. **Dry-run by default** — `FlashSession.run({dryRun: true})` is the
+   default; the operator must opt-in to writes via explicit
+   `{dryRun: false, confirmed: true}`.
+2. **Per-stage confirmation** — the CLI prompts for `yes/no` before
+   each destructive stage (TRANSFER, AIF_WRITE). Programmatic API
+   takes a `confirm: (stage) => Promise<boolean>` callback.
+3. **Vehicle precondition checks** — `precheck.ts`:
+   - Battery voltage must be > 12.5V (read via PEM if available, or
+     ECU's own battery DID)
+   - Ignition must be in the right state (KL15 on, engine off)
+   - Target ECU must respond to `IDENT` (basic comms sanity)
+   - FSC slot for this part number must be valid (`checkFsc`)
+4. **Firmware integrity check** — `flash-data/integrity.ts` verifies
+   the S37 file's checksum before transfer. Pre-flash, not mid-flash —
+   we never want to discover corruption halfway through.
+5. **Abort vs. continue boundaries** — abort is safe BEFORE
+   `SESSION` (stage 4); after that, ECU is in programming mode and
+   abort risks leaving it bricked. Once in programming mode, the
+   only way out is to finish OR to retry the transfer from scratch.
+6. **Backup before flash** — if the ECU supports reading its current
+   flash content (most modern ones do via UDS 0x23 or
+   ECU-specific), save a copy before writing. Restore path TBD.
+7. **No flash in CI / tests** — `FlashSession` requires a real
+   `IEdiabasProvider` (not `MockEdiabasProvider`) for destructive
+   stages. The mock throws if a destructive method is called.
+
+### 10.5 Block transfer protocol
+
+The TRANSFER stage is the load-bearing part — it streams kilobytes
+to megabytes of firmware to the ECU. The protocol varies by ECU
+family but follows the same shape:
+
+```
+Operator           Host (nfsx-flash)        ECU (via apiJob+SGBD)
+────────           ─────────────────        ─────────────────────
+                   beginTransfer()  ─────→  UDS 0x34 RequestDownload
+                                           (addr range + length)
+                                           ←──── max block size + ack
+                   for each block:
+                     transferBlock()  ──→  UDS 0x36 TransferData
+                                           ←──── block ack
+                   endTransfer()    ─────→  UDS 0x37 RequestTransferExit
+                                           ←──── final ack
+                   verify()         ─────→  UDS 0x31 RoutineControl
+                                           (CRC verification routine)
+                                           ←──── pass/fail
+```
+
+The exact UDS service IDs differ per ECU; the SGBD's `FLASH_SCHREIBEN`
+job (or equivalent) wraps these. `transfer.ts` is a thin
+state-machine wrapper around the per-ECU apiJob sequence — block size,
+chunking, retries, ack timeouts.
+
+**Block size negotiation** — most ECUs cap at 0x100..0x400 bytes per
+TransferData; the SGBD answers with the max during RequestDownload.
+nfsx-flash respects this; never assumes a value.
+
+**Retry behaviour** — single retry per block on transient error
+(NRC 0x21 BusyRepeatRequest, 0x23 ConditionsNotCorrect). Hard fail
+on anything else.
+
+**Progress reporting** — emit a `block-transferred` event per ack
+with `{block, totalBlocks, bytesSent, bytesTotal}`. The CLI renders
+a progress bar; programmatic API exposes the event for custom UIs.
+
+### 10.6 AIF write
+
+After a successful TRANSFER, the AIF write stamps the ECU with the
+new firmware's identity (date, software ID, programmer ID, etc.) so
+later read-flows (Phase 3's `SG_AIF_LESEN`) report the right values.
+
+See `architecture.md §9.4` for the AIF protocol details. The write
+side mirrors the read side: `apiJob("AIF_SCHREIBEN", para, ...)` with
+the ECU-specific parameter format.
+
+### 10.7 Reconstruction priorities
+
+Implementation order, smallest-first:
+
+1. **`@emdzej/nfsx-flash-data`** — S37 parser + integrity check. No
+   network, no ECU. Unit-testable. ~1 day.
+2. **`precheck.ts`** — wrap existing FscManager.checkFsc /
+   getFsStatus / direct apiJob for battery/ignition reads. ~0.5 day.
+3. **`auth.ts`** — security access seed/key. Requires real ECU to
+   validate, but algorithm structure (read seed → compute key →
+   send key) is well-known. ~1 day.
+4. **`transfer.ts`** — block-transfer state machine. Testable
+   against a mock provider that simulates RequestDownload /
+   TransferData responses. ~2 days.
+5. **`aif-write.ts`** — apiJob wrapper. ~0.5 day.
+6. **`session.ts`** — orchestrate the 7 stages. ~1 day.
+7. **CLI command** — `nfsx flash <ipo> --fgn X --zbn Y --flash-data
+   <dir>` with dry-run default. ~0.5 day.
+
+Total: ~6 days of pure TypeScript work, plus an open-ended
+real-ECU validation cycle that depends on hardware availability +
+willingness to brick test units.
+
+### 10.8 What blocks Phase 5
+
+- **No bricking budget** — without hardware we're willing to lose,
+  validation of TRANSFER + AIF_WRITE is gated on getting test ECUs.
+- **No real flash files** — the S37 / BMW container layout is
+  inferred; without a real flash file to parse, `flash-data` stays
+  speculative.
+- **Per-ECU SGBD quirks** — each ECU family (DSC, DDE, MSD, ACSM)
+  may have its own quirks in the flash protocol. Bringing up the
+  first ECU type will surface these; later types reuse the same
+  base + per-ECU adapters.
+
+**Status today (2026-05-25):** design only. No code. The Phase 3 +
+Phase 4 work that landed in v0.4.0 covers everything that's
+implementable without hardware.
