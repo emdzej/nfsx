@@ -1,41 +1,26 @@
 /**
- * `nfsx browse` — interactive TUI for exploring available updates
- * per HWNR.
+ * `nfsx browse` — full-screen multi-panel TUI for exploring HWNRs
+ * in a loaded SP-Daten drop.
  *
- * Pure presentation: resolution lives in `@emdzej/nfsx-resolver`.
- * The TUI just feeds HWNRs (and optional ZB-Alt) into the resolver
- * and renders the result. No business logic.
+ * Layout (3 columns + a header / footer):
  *
- * Layout (single-pane v1):
+ *   ┌─ nfsx browse ────────────────────────────  HWNRs: 1234   SP-Daten: …  ─┐
+ *   │ HWNRs                       │ SG_TYP: ACC65                            │
+ *   │ filter: [acc____]           │   Compatible HWNRs (8)                   │
+ *   │ ▸ 4010581                   │     ▶ 4010581   ← selected               │
+ *   │   4011919                   │       4011919                            │
+ *   │   4015295                   │       …                                  │
+ *   │   …                         │   Coding variants (1) …                  │
+ *   │                             │   Transport (KWP2000* via …)             │
+ *   │                             │   Upgrade for ZB-1703643 → ZB-1744493    │
+ *   └─ [↑↓] HWNR  [/] filter  [tab] HWNR/ZB-Alt  [Enter] resolve  [q] quit  ─┘
  *
- *   ┌─ HWNR: [_______]   ZB-Alt: [_______]  (tab to switch)
- *   │ Loaded ~/Downloads/E46_v74 (warnings: 0)
- *   │
- *   ├─ Candidate 1/3:  ACC65
- *   │   Compatible HWNRs (3 in family)
- *   │     ▶ 4010581  ← input
- *   │       4010582
- *   │       4010583  (replacement: 4011500)
- *   │   Coding variants (2)
- *   │     ACC65_v01
- *   │     ACC65_v02
- *   │   Transport: KWP2000 via C_ACC65
- *   │   Upgrade for ZB-1703643:
- *   │     → ZB-1744493 (NP-SW 1427105NA)
- *   │
- *   └─ [Tab] switch field   [↑↓] next/prev candidate   [q] quit
- *
- * Keystrokes:
- *   - Tab            switch focus between HWNR and ZB-Alt fields
- *   - typing         edits the focused field
- *   - Backspace      deletes last char of the focused field
- *   - Enter          re-resolve with the current input
- *   - ↑ / ↓          cycle through resolved SG_TYP candidates
- *   - q / Esc        quit
+ * Pure presentation — resolution lives in `@emdzej/nfsx-resolver`;
+ * the TUI just renders results.
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Text, useApp, useInput, render } from 'ink';
+import { Box, Text, useApp, useInput, useStdout, render } from 'ink';
 import chalk from 'chalk';
 import {
   loadSpDatenFromDir,
@@ -44,42 +29,50 @@ import {
   type FlashCandidate,
   type SpDaten,
 } from '@emdzej/nfsx-resolver';
-import type { NpvRow } from '@emdzej/nfsx-data-files';
+import type { HwnrRow, NpvRow } from '@emdzej/nfsx-data-files';
 import type { BrowseOptions } from './cli.js';
+import { resolveSpDaten, NfsxConfigError } from './config.js';
 
 export function runBrowse(opts: BrowseOptions): Promise<number> {
-  // Load SP-Daten synchronously up front. If the path is bad, fail
-  // before mounting the TUI — saves the user from staring at an
-  // empty screen.
+  let spDatenPath: string;
+  try {
+    spDatenPath = resolveSpDaten({ spDaten: opts.spDaten, configPath: opts.config });
+  } catch (err) {
+    process.stderr.write(
+      chalk.red(`error: ${err instanceof NfsxConfigError ? err.message : String(err)}\n`),
+    );
+    return Promise.resolve(2);
+  }
+
   let spDaten: SpDaten;
   try {
-    spDaten = loadSpDatenFromDir(opts.spDaten);
+    spDaten = loadSpDatenFromDir(spDatenPath);
   } catch (err) {
     process.stderr.write(
       chalk.red(
-        `error: could not load SP-Daten from ${opts.spDaten}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `error: could not load SP-Daten from ${spDatenPath}: ${err instanceof Error ? err.message : String(err)}\n`,
       ),
     );
     return Promise.resolve(2);
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolveDone) => {
     const instance = render(
       <BrowseApp
         spDaten={spDaten}
+        spDatenPath={spDatenPath}
         initialHwnr={opts.hwnr ?? ''}
         initialZbAlt={opts.zbAlt ?? ''}
-        spDatenPath={opts.spDaten}
         onExit={() => {
           instance.unmount();
-          resolve(0);
+          resolveDone(0);
         }}
       />,
     );
   });
 }
 
-type Field = 'hwnr' | 'zbAlt';
+type Focus = 'list' | 'filter' | 'zbAlt';
 
 interface BrowseAppProps {
   spDaten: SpDaten;
@@ -97,250 +90,408 @@ function BrowseApp({
   onExit,
 }: BrowseAppProps): React.JSX.Element {
   const { exit } = useApp();
-  const [hwnr, setHwnr] = useState(initialHwnr);
-  const [zbAlt, setZbAlt] = useState(initialZbAlt);
-  const [field, setField] = useState<Field>('hwnr');
-  const [candidateIdx, setCandidateIdx] = useState(0);
-  const [submittedHwnr, setSubmittedHwnr] = useState(initialHwnr);
-  const [submittedZbAlt, setSubmittedZbAlt] = useState(initialZbAlt);
+  const [cols, rows] = useStdoutDimensions();
 
-  // Resolve only on submit (Enter), not on every keystroke — the
-  // resolver scans the full SP-Daten on each call, so debouncing via
-  // explicit Enter keeps the UI snappy and avoids partial-input
-  // lookups (`401` would resolve to nothing then `4010581` would
-  // resolve correctly — confusing as you type).
+  // Stable, deduplicated HWNR list — `spDaten.hwnr.rows` may have
+  // duplicate `hwnr` values across multiple `sgTyp` rows; we want
+  // each HWNR listed once. Order is HWNR.DA2 file order, which is
+  // already roughly sorted in real drops.
+  const allHwnrs = useMemo<HwnrRow[]>(() => {
+    if (!spDaten.hwnr) return [];
+    const seen = new Set<string>();
+    const out: HwnrRow[] = [];
+    for (const row of spDaten.hwnr.rows) {
+      if (seen.has(row.hwnr)) continue;
+      seen.add(row.hwnr);
+      out.push(row);
+    }
+    return out;
+  }, [spDaten]);
+
+  const [filter, setFilter] = useState(initialHwnr);
+  const [zbAlt, setZbAlt] = useState(initialZbAlt);
+  const [focus, setFocus] = useState<Focus>(initialHwnr ? 'list' : 'filter');
+  const [selectedIdx, setSelectedIdx] = useState(0);
+
+  // Filter the HWNR list by prefix substring (case-insensitive) +
+  // SG_TYP substring. Empty filter = full list.
+  const filteredHwnrs = useMemo<HwnrRow[]>(() => {
+    if (filter.trim() === '') return allHwnrs;
+    const needle = filter.trim().toLowerCase();
+    return allHwnrs.filter(
+      (row) => row.hwnr.toLowerCase().includes(needle) || row.sgTyp.toLowerCase().includes(needle),
+    );
+  }, [allHwnrs, filter]);
+
+  // Snap selection into range when the filter changes.
+  useEffect(() => {
+    if (selectedIdx >= filteredHwnrs.length) {
+      setSelectedIdx(Math.max(0, filteredHwnrs.length - 1));
+    }
+  }, [filteredHwnrs.length, selectedIdx]);
+
+  const selectedRow = filteredHwnrs[selectedIdx];
+
+  // Resolve the selected HWNR through the full lookup chain whenever
+  // the selection changes.
   const candidates = useMemo<FlashCandidate[]>(() => {
-    if (!submittedHwnr) return [];
-    return resolveByHwnr(spDaten, submittedHwnr);
-  }, [spDaten, submittedHwnr]);
+    if (!selectedRow) return [];
+    return resolveByHwnr(spDaten, selectedRow.hwnr);
+  }, [spDaten, selectedRow]);
 
   const upgrade = useMemo<NpvRow | undefined>(() => {
-    if (!submittedZbAlt) return undefined;
-    return resolveUpgrade(spDaten, submittedZbAlt);
-  }, [spDaten, submittedZbAlt]);
-
-  // Snap the candidate cursor back into range whenever the candidate
-  // list changes — typing a new HWNR can leave it pointing past the
-  // end of a shorter list.
-  useEffect(() => {
-    if (candidateIdx >= candidates.length && candidates.length > 0) {
-      setCandidateIdx(0);
-    }
-  }, [candidates.length, candidateIdx]);
+    if (!zbAlt.trim()) return undefined;
+    return resolveUpgrade(spDaten, zbAlt.trim());
+  }, [spDaten, zbAlt]);
 
   useInput((input, key) => {
-    if (key.escape || input === 'q') {
+    if (key.escape || (input === 'q' && focus === 'list')) {
       exit();
       onExit();
       return;
     }
     if (key.tab) {
-      setField((f) => (f === 'hwnr' ? 'zbAlt' : 'hwnr'));
+      setFocus((f) => (f === 'list' ? 'filter' : f === 'filter' ? 'zbAlt' : 'list'));
       return;
     }
+    // List navigation
+    if (focus === 'list') {
+      if (key.upArrow) {
+        setSelectedIdx((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSelectedIdx((i) => Math.min(filteredHwnrs.length - 1, i + 1));
+        return;
+      }
+      if (key.pageUp) {
+        setSelectedIdx((i) => Math.max(0, i - 10));
+        return;
+      }
+      if (key.pageDown) {
+        setSelectedIdx((i) => Math.min(filteredHwnrs.length - 1, i + 10));
+        return;
+      }
+      if (input === '/') {
+        setFocus('filter');
+        return;
+      }
+      return;
+    }
+    // Filter / ZB-Alt editing
     if (key.return) {
-      setSubmittedHwnr(hwnr);
-      setSubmittedZbAlt(zbAlt);
-      setCandidateIdx(0);
-      return;
-    }
-    if (key.upArrow) {
-      if (candidates.length > 0) setCandidateIdx((i) => (i === 0 ? candidates.length - 1 : i - 1));
-      return;
-    }
-    if (key.downArrow) {
-      if (candidates.length > 0) setCandidateIdx((i) => (i + 1) % candidates.length);
+      setFocus('list');
       return;
     }
     if (key.backspace || key.delete) {
-      if (field === 'hwnr') setHwnr((s) => s.slice(0, -1));
+      if (focus === 'filter') setFilter((s) => s.slice(0, -1));
       else setZbAlt((s) => s.slice(0, -1));
       return;
     }
-    // Plain printable input — append. Allow only alnum + a few
-    // BMW-style separators (hyphens in ZB-numbers etc).
-    if (input && /^[A-Za-z0-9-]+$/.test(input)) {
-      if (field === 'hwnr') setHwnr((s) => s + input);
+    if (input && !key.ctrl && !key.meta && /^[A-Za-z0-9-]$/.test(input)) {
+      if (focus === 'filter') setFilter((s) => s + input);
       else setZbAlt((s) => s + input);
     }
   });
 
-  const current = candidates[candidateIdx];
+  // Layout maths — full-screen, two columns. Reserve 2 rows for
+  // header, 2 rows for footer.
+  const innerHeight = Math.max(8, rows - 4);
+  const leftWidth = Math.max(24, Math.floor(cols * 0.35));
+  const rightWidth = Math.max(40, cols - leftWidth - 1);
 
   return (
-    <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <Text bold color="cyan">
-          nfsx browse
-        </Text>
-        <Text dimColor> — available updates per HWNR</Text>
-      </Box>
+    <Box flexDirection="column" width={cols} height={rows}>
+      <Header
+        spDatenPath={spDatenPath}
+        warnings={spDaten.warnings.length}
+        hwnrTotal={allHwnrs.length}
+        filteredTotal={filteredHwnrs.length}
+        cols={cols}
+      />
 
-      <Box flexDirection="column" marginBottom={1}>
-        <InputRow label="HWNR" value={hwnr} focused={field === 'hwnr'} />
-        <InputRow label="ZB-Alt" value={zbAlt} focused={field === 'zbAlt'} />
-        <Box>
-          <Text dimColor>SP-Daten: </Text>
-          <Text>{spDatenPath}</Text>
-          {spDaten.warnings.length > 0 && (
-            <Text color="yellow"> ({spDaten.warnings.length} warning{spDaten.warnings.length === 1 ? '' : 's'})</Text>
-          )}
-        </Box>
-      </Box>
-
-      {submittedHwnr === '' ? (
-        <Text dimColor>Enter a HWNR above and press Enter to resolve.</Text>
-      ) : candidates.length === 0 ? (
-        <Text color="yellow">no SG_TYP found for HWNR "{submittedHwnr}"</Text>
-      ) : (
-        <CandidateView
-          candidate={current!}
-          candidateIdx={candidateIdx}
-          totalCandidates={candidates.length}
-          submittedHwnr={submittedHwnr}
-          upgrade={upgrade}
-          submittedZbAlt={submittedZbAlt}
+      <Box flexDirection="row" height={innerHeight}>
+        <HwnrListPanel
+          rows={filteredHwnrs}
+          selectedIdx={selectedIdx}
+          filter={filter}
+          focused={focus === 'list' || focus === 'filter'}
+          filterFocused={focus === 'filter'}
+          width={leftWidth}
+          height={innerHeight}
         />
-      )}
-
-      <Box marginTop={1}>
-        <Text dimColor>
-          [Tab] switch field   [Enter] resolve   [↑↓] next/prev SG_TYP   [q/Esc] quit
-        </Text>
+        <DetailsPanel
+          row={selectedRow}
+          candidates={candidates}
+          zbAlt={zbAlt}
+          zbAltFocused={focus === 'zbAlt'}
+          upgrade={upgrade}
+          width={rightWidth}
+          height={innerHeight}
+        />
       </Box>
+
+      <Footer focus={focus} cols={cols} />
     </Box>
   );
 }
 
-function InputRow({
-  label,
-  value,
-  focused,
+// ── header / footer ─────────────────────────────────────────────────
+
+function Header({
+  spDatenPath,
+  warnings,
+  hwnrTotal,
+  filteredTotal,
+  cols,
 }: {
-  label: string;
-  value: string;
-  focused: boolean;
+  spDatenPath: string;
+  warnings: number;
+  hwnrTotal: number;
+  filteredTotal: number;
+  cols: number;
 }): React.JSX.Element {
+  const left = ` nfsx browse `;
+  const right = ` HWNRs: ${filteredTotal}/${hwnrTotal}   SP-Daten: ${truncatePath(spDatenPath, Math.max(20, cols - left.length - 30))}${warnings > 0 ? `  (${warnings} warning${warnings === 1 ? '' : 's'})` : ''} `;
+  const fill = Math.max(1, cols - left.length - right.length);
   return (
     <Box>
-      <Text dimColor>{label.padEnd(7)}: </Text>
-      <Text color={focused ? 'cyan' : undefined} inverse={focused && value.length === 0}>
-        {value || (focused ? ' ' : '—')}
+      <Text bold color="cyan" inverse>
+        {left}
       </Text>
-      {focused && value.length > 0 && <Text color="cyan">▌</Text>}
+      <Text dimColor>{'─'.repeat(fill)}</Text>
+      <Text dimColor>{right}</Text>
     </Box>
   );
 }
 
-function CandidateView({
-  candidate,
-  candidateIdx,
-  totalCandidates,
-  submittedHwnr,
-  upgrade,
-  submittedZbAlt,
+function Footer({ focus, cols }: { focus: Focus; cols: number }): React.JSX.Element {
+  const hints =
+    focus === 'list'
+      ? '[↑↓ PgUp/PgDn] navigate  [/] filter  [Tab] focus  [q] quit'
+      : focus === 'filter'
+        ? '[type] filter  [Enter] back to list  [Tab] ZB-Alt  [Esc] quit'
+        : '[type] ZB-Alt  [Enter] back to list  [Tab] HWNR filter  [Esc] quit';
+  return (
+    <Box>
+      <Text dimColor>{'─'.repeat(cols)}</Text>
+      <Box position="absolute" marginLeft={2}>
+        <Text dimColor> {hints} </Text>
+      </Box>
+    </Box>
+  );
+}
+
+// ── left panel: HWNR list ───────────────────────────────────────────
+
+function HwnrListPanel({
+  rows,
+  selectedIdx,
+  filter,
+  focused,
+  filterFocused,
+  width,
+  height,
 }: {
-  candidate: FlashCandidate;
-  candidateIdx: number;
-  totalCandidates: number;
-  submittedHwnr: string;
+  rows: HwnrRow[];
+  selectedIdx: number;
+  filter: string;
+  focused: boolean;
+  filterFocused: boolean;
+  width: number;
+  height: number;
+}): React.JSX.Element {
+  // Inside-the-panel layout: 1 row for filter, rest for list (scrolling).
+  const listHeight = Math.max(1, height - 3); // -filter-row -2 borders
+  const halfWindow = Math.floor(listHeight / 2);
+  const scrollStart = Math.max(0, Math.min(rows.length - listHeight, selectedIdx - halfWindow));
+  const visible = rows.slice(scrollStart, scrollStart + listHeight);
+
+  return (
+    <Box flexDirection="column" width={width} borderStyle={focused ? 'round' : 'single'} borderColor={focused ? 'cyan' : undefined}>
+      <Box>
+        <Text dimColor>filter </Text>
+        <Text color={filterFocused ? 'cyan' : undefined} inverse={filterFocused && filter.length === 0}>
+          {filter || (filterFocused ? ' ' : '—')}
+        </Text>
+        {filterFocused && filter.length > 0 && <Text color="cyan">▌</Text>}
+      </Box>
+      <Box height={listHeight} flexDirection="column">
+        {visible.length === 0 ? (
+          <Text dimColor> (no matches)</Text>
+        ) : (
+          visible.map((row, i) => {
+            const absoluteIdx = scrollStart + i;
+            const isSelected = absoluteIdx === selectedIdx;
+            return (
+              <Box key={row.hwnr}>
+                <Text color={isSelected ? 'cyan' : undefined} inverse={isSelected && focused}>
+                  {isSelected ? '▸ ' : '  '}
+                  {row.hwnr}
+                  <Text dimColor>  {row.sgTyp}</Text>
+                </Text>
+              </Box>
+            );
+          })
+        )}
+      </Box>
+    </Box>
+  );
+}
+
+// ── right panel: details for selected HWNR ──────────────────────────
+
+function DetailsPanel({
+  row,
+  candidates,
+  zbAlt,
+  zbAltFocused,
+  upgrade,
+  width,
+  height,
+}: {
+  row: HwnrRow | undefined;
+  candidates: FlashCandidate[];
+  zbAlt: string;
+  zbAltFocused: boolean;
   upgrade: NpvRow | undefined;
-  submittedZbAlt: string;
+  width: number;
+  height: number;
 }): React.JSX.Element {
   return (
-    <Box flexDirection="column">
-      <Box>
-        <Text bold color="green">
-          [{candidateIdx + 1}/{totalCandidates}] SG_TYP: {candidate.sgTyp}
-        </Text>
-      </Box>
-
-      <Section title={`Compatible HWNRs (${candidate.hwnrRows.length})`}>
-        {candidate.hwnrRows.map((row) => {
-          const isInput = row.hwnr === submittedHwnr;
-          return (
-            <Box key={row.hwnr + ':' + row.lineNo}>
-              <Text color={isInput ? 'cyan' : undefined}>{isInput ? '▶ ' : '  '}{row.hwnr}</Text>
-              {row.atHwnr !== '0000000' && (
-                <Text dimColor>  (replacement: {row.atHwnr})</Text>
-              )}
-              {row.epTsnr !== '0000000' && (
-                <Text dimColor>  [ET: {row.epTsnr}]</Text>
-              )}
-            </Box>
-          );
-        })}
-      </Section>
-
-      {candidate.kfConfRows.length > 0 && (
-        <Section title={`Coding variants (${candidate.kfConfRows.length})`}>
-          {candidate.kfConfRows.map((row, i) => (
-            <Box key={i}>
-              <Text>  variant 0x{row.variantHex}</Text>
-              <Text dimColor>  v{row.version}</Text>
-              <Text dimColor>  IPO {row.ipoFile}</Text>
-              <Text dimColor>  SGBD {row.flashSgbd}</Text>
-            </Box>
-          ))}
-        </Section>
-      )}
-
-      <Section title="Transport">
-        {candidate.prgIfSel ? (
+    <Box flexDirection="column" width={width} height={height} borderStyle={zbAltFocused ? 'round' : 'single'} borderColor={zbAltFocused ? 'cyan' : undefined}>
+      {!row ? (
+        <Text dimColor>  no HWNR selected</Text>
+      ) : (
+        <>
           <Box>
-            <Text>  {candidate.prgIfSel.protocol}</Text>
-            <Text dimColor>  (via {candidate.prgIfSel.sgName})</Text>
+            <Text bold color="green"> HWNR </Text>
+            <Text>{row.hwnr}</Text>
+            <Text dimColor>   SG_TYP </Text>
+            <Text>{row.sgTyp}</Text>
+            {row.atHwnr !== '0000000' && (
+              <>
+                <Text dimColor>   replacement </Text>
+                <Text>{row.atHwnr}</Text>
+              </>
+            )}
           </Box>
-        ) : (
-          <Text dimColor>  no prgifsel row</Text>
-        )}
-        {candidate.sit && (
-          <Box flexDirection="column">
-            <Box>
-              <Text dimColor>  diag-addr </Text>
-              <Text>0x{candidate.sit.diagAddr.toString(16).toUpperCase().padStart(2, '0')}</Text>
-              <Text dimColor>  short </Text>
-              <Text>{candidate.sit.shortName}</Text>
-            </Box>
-          </Box>
-        )}
-      </Section>
 
-      {submittedZbAlt !== '' && (
-        <Section title={`Upgrade for ZB-${submittedZbAlt}`}>
-          {upgrade ? (
-            <Box flexDirection="column">
-              <Box>
-                <Text dimColor>  → </Text>
-                <Text bold color="green">ZB-{upgrade.zbNeu}</Text>
-                <Text dimColor>  via NP-SW </Text>
-                <Text>{upgrade.npSw}</Text>
-              </Box>
-              <Box>
-                <Text dimColor>  flash mask </Text>
-                <Text>{upgrade.am}</Text>
-              </Box>
-            </Box>
+          <Box>
+            <Text dimColor> ZB-Alt </Text>
+            <Text color={zbAltFocused ? 'cyan' : undefined} inverse={zbAltFocused && zbAlt.length === 0}>
+              {zbAlt || (zbAltFocused ? ' ' : '—')}
+            </Text>
+            {zbAltFocused && zbAlt.length > 0 && <Text color="cyan">▌</Text>}
+          </Box>
+
+          {candidates.length === 0 ? (
+            <Text color="yellow"> no SG_TYP resolved (HWNR is in HWNR.DA2 but not in KFCONF)</Text>
           ) : (
-            <Text color="yellow">  no NPV upgrade for this ZB-Alt</Text>
+            candidates.map((c, i) => (
+              <CandidateBlock key={c.sgTyp + i} candidate={c} index={i} total={candidates.length} hwnr={row.hwnr} />
+            ))
           )}
-        </Section>
+
+          {zbAlt.trim() !== '' && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text color="yellow"> Upgrade for ZB-{zbAlt.trim()}</Text>
+              {upgrade ? (
+                <Box>
+                  <Text>   → </Text>
+                  <Text bold color="green">ZB-{upgrade.zbNeu}</Text>
+                  <Text dimColor>   via NP-SW </Text>
+                  <Text>{upgrade.npSw}</Text>
+                  <Text dimColor>   mask </Text>
+                  <Text>{upgrade.am}</Text>
+                </Box>
+              ) : (
+                <Text dimColor>   no NPV row for this ZB-Alt</Text>
+              )}
+            </Box>
+          )}
+        </>
       )}
     </Box>
   );
 }
 
-function Section({
-  title,
-  children,
+function CandidateBlock({
+  candidate,
+  index,
+  total,
+  hwnr,
 }: {
-  title: string;
-  children: React.ReactNode;
+  candidate: FlashCandidate;
+  index: number;
+  total: number;
+  hwnr: string;
 }): React.JSX.Element {
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text color="yellow">{title}</Text>
-      {children}
+      <Text color="yellow"> [{index + 1}/{total}] {candidate.sgTyp}</Text>
+
+      <Text dimColor>   Compatible HWNRs ({candidate.hwnrRows.length})</Text>
+      {candidate.hwnrRows.slice(0, 8).map((r) => (
+        <Box key={r.hwnr + ':' + r.lineNo}>
+          <Text color={r.hwnr === hwnr ? 'cyan' : undefined}>
+            {r.hwnr === hwnr ? '   ▶ ' : '     '}
+            {r.hwnr}
+          </Text>
+          {r.atHwnr !== '0000000' && <Text dimColor> (→ {r.atHwnr})</Text>}
+        </Box>
+      ))}
+      {candidate.hwnrRows.length > 8 && (
+        <Text dimColor>     … {candidate.hwnrRows.length - 8} more</Text>
+      )}
+
+      {candidate.kfConfRows.length > 0 && (
+        <Box flexDirection="column">
+          <Text dimColor>   Coding variants ({candidate.kfConfRows.length})</Text>
+          {candidate.kfConfRows.slice(0, 3).map((k, i) => (
+            <Text key={i}>
+              <Text dimColor>     0x{k.variantHex}</Text>
+              <Text dimColor>  v{k.version}</Text>
+              <Text dimColor>  IPO </Text>
+              {k.ipoFile}
+              <Text dimColor>  SGBD </Text>
+              {k.flashSgbd}
+            </Text>
+          ))}
+          {candidate.kfConfRows.length > 3 && (
+            <Text dimColor>     … {candidate.kfConfRows.length - 3} more</Text>
+          )}
+        </Box>
+      )}
+
+      {candidate.prgIfSel && (
+        <Box>
+          <Text dimColor>   Transport </Text>
+          <Text>{candidate.prgIfSel.protocol}</Text>
+          <Text dimColor>  (via {candidate.prgIfSel.sgName})</Text>
+        </Box>
+      )}
     </Box>
   );
+}
+
+// ── helpers ─────────────────────────────────────────────────────────
+
+function useStdoutDimensions(): [number, number] {
+  const { stdout } = useStdout();
+  const [dims, setDims] = useState<[number, number]>([stdout.columns || 80, stdout.rows || 24]);
+  useEffect(() => {
+    const handler = () => setDims([stdout.columns || 80, stdout.rows || 24]);
+    stdout.on('resize', handler);
+    return () => {
+      stdout.off('resize', handler);
+    };
+  }, [stdout]);
+  return dims;
+}
+
+function truncatePath(path: string, max: number): string {
+  if (path.length <= max) return path;
+  if (max <= 3) return path.slice(-max);
+  return '…' + path.slice(-(max - 1));
 }

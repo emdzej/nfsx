@@ -3,22 +3,24 @@
  * `nfsx` — the BMW NFS / WinKFP reconstruction CLI.
  *
  * Stack: commander (arg parsing) + chalk (terminal styling) + ink
- * (browse TUI). Each subcommand is a thin orchestration layer over
- * the corresponding `@emdzej/nfsx-*` library package — no business
- * logic lives in this app.
+ * (full-screen `browse` + `configure` TUIs). Each subcommand is a
+ * thin orchestration layer over the corresponding `@emdzej/nfsx-*`
+ * library package — no business logic lives in this app.
+ *
+ * Config: `~/.config/nfsx/config.json` by default (mirrors
+ * ediabasx-cli's convention). Per-command `--config <path>` picks
+ * a different file. Per-command `--sp-daten <dir>` always wins
+ * over both. See `config.ts`.
  */
 
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
 import chalk from 'chalk';
 import { runPlan } from './plan.js';
 import { runRun } from './run.js';
 import { runFlash } from './flash.js';
 import { runBrowse } from './browse.js';
-
-const DEFAULT_SP_DATEN =
-  process.env.NFSX_SP_DATEN ?? join(homedir(), 'Downloads', 'E46_v74');
+import { runConfigure } from './configure.js';
+import { DEFAULT_CONFIG_PATH } from './config.js';
 
 const program = new Command();
 
@@ -26,6 +28,16 @@ program
   .name('nfsx')
   .description('BMW NFS / WinKFP reconstruction CLI — SP-Daten lookups, IPO dispatch, flash orchestration.')
   .version('0.1.0');
+
+// ── configure ───────────────────────────────────────────────────────
+program
+  .command('configure')
+  .description('Interactive config editor (writes to ~/.config/nfsx/config.json by default).')
+  .option('-o, --output <path>', 'config file path', DEFAULT_CONFIG_PATH)
+  .action(async (opts: { output: string }) => {
+    const code = await runConfigure(opts);
+    if (code !== 0) process.exit(code);
+  });
 
 // ── plan ────────────────────────────────────────────────────────────
 program
@@ -35,7 +47,8 @@ program
   .option('--sg-typ <name>', 'SG short name (e.g. ACC65)')
   .option('--diag-addr <hex>', 'diagnostic address (e.g. 0x12)', parseDiagAddr)
   .option('--zb-alt <zb>', 'current ZB-Nummer; also looks up the NPV upgrade target')
-  .option('--sp-daten <dir>', 'SP-Daten chassis drop', DEFAULT_SP_DATEN)
+  .option('--sp-daten <dir>', 'SP-Daten chassis drop (overrides config)')
+  .option('--config <path>', `config file path (default ${DEFAULT_CONFIG_PATH})`)
   .option('--json', 'machine-readable JSON output', false)
   .action(async (opts: PlanOptions) => {
     const code = runPlan(opts);
@@ -77,10 +90,11 @@ program
 // ── browse (ink TUI) ────────────────────────────────────────────────
 program
   .command('browse')
-  .description('Interactive TUI — browse available updates per HWNR.')
-  .option('--hwnr <hwnr>', 'initial HWNR (editable in the TUI)')
+  .description('Full-screen TUI — browse HWNRs in the SP-Daten drop with details + NPV upgrade lookup.')
+  .option('--hwnr <hwnr>', 'pre-fill the filter')
   .option('--zb-alt <zb>', 'initial ZB-Alt for NPV upgrade lookup')
-  .option('--sp-daten <dir>', 'SP-Daten chassis drop', DEFAULT_SP_DATEN)
+  .option('--sp-daten <dir>', 'SP-Daten chassis drop (overrides config)')
+  .option('--config <path>', `config file path (default ${DEFAULT_CONFIG_PATH})`)
   .action(async (opts: BrowseOptions) => {
     const code = await runBrowse(opts);
     if (code !== 0) process.exit(code);
@@ -109,7 +123,8 @@ export interface PlanOptions {
   sgTyp?: string;
   diagAddr?: number;
   zbAlt?: string;
-  spDaten: string;
+  spDaten?: string;
+  config?: string;
   json: boolean;
 }
 
@@ -136,5 +151,6 @@ export interface FlashOptions {
 export interface BrowseOptions {
   hwnr?: string;
   zbAlt?: string;
-  spDaten: string;
+  spDaten?: string;
+  config?: string;
 }

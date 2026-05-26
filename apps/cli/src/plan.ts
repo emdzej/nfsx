@@ -24,8 +24,14 @@ import {
 import type { NpvRow } from '@emdzej/nfsx-data-files';
 import chalk from 'chalk';
 import type { PlanOptions } from './cli.js';
+import { resolveSpDaten, NfsxConfigError } from './config.js';
 
-type PlanFlags = PlanOptions;
+interface ResolvedPlanOptions extends PlanOptions {
+  /** Effective SP-Daten path after merging --sp-daten, --config, env. */
+  spDatenResolved: string;
+}
+
+type PlanFlags = ResolvedPlanOptions;
 
 export function runPlan(opts: PlanOptions): number {
   if (!opts.hwnr && !opts.sgTyp && opts.diagAddr === undefined) {
@@ -35,7 +41,18 @@ export function runPlan(opts: PlanOptions): number {
     return 2;
   }
 
-  const sp = loadSpDatenFromDir(opts.spDaten);
+  let spDatenResolved: string;
+  try {
+    spDatenResolved = resolveSpDaten({ spDaten: opts.spDaten, configPath: opts.config });
+  } catch (err) {
+    process.stderr.write(
+      chalk.red(`error: ${err instanceof NfsxConfigError ? err.message : String(err)}\n`),
+    );
+    return 2;
+  }
+
+  const resolvedOpts: ResolvedPlanOptions = { ...opts, spDatenResolved };
+  const sp = loadSpDatenFromDir(spDatenResolved);
 
   if (sp.warnings.length > 0) {
     for (const w of sp.warnings) {
@@ -44,9 +61,9 @@ export function runPlan(opts: PlanOptions): number {
   }
 
   if (opts.json) {
-    return emitJson(sp, opts);
+    return emitJson(sp, resolvedOpts);
   }
-  return emitText(sp, opts);
+  return emitText(sp, resolvedOpts);
 }
 
 function emitText(sp: SpDaten, flags: PlanFlags): number {
@@ -59,7 +76,7 @@ function emitText(sp: SpDaten, flags: PlanFlags): number {
   }
 
   process.stdout.write(`\nLookup: ${describeLookup(flags)}\n`);
-  process.stdout.write(`SP-Daten: ${flags.spDaten}\n`);
+  process.stdout.write(`SP-Daten: ${flags.spDatenResolved}\n`);
   if (candidates.length > 0) {
     process.stdout.write(`Candidates: ${candidates.length}\n\n`);
     for (let i = 0; i < candidates.length; i++) {
@@ -80,7 +97,7 @@ function emitJson(sp: SpDaten, flags: PlanFlags): number {
     JSON.stringify(
       {
         lookup: describeLookup(flags),
-        spDaten: flags.spDaten,
+        spDaten: flags.spDatenResolved,
         warnings: sp.warnings,
         candidates,
         zbAlt: flags.zbAlt ?? null,
