@@ -12,8 +12,6 @@
  * read-only resolver demo.
  */
 
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import {
   loadSpDatenFromDir,
   resolveByHwnr,
@@ -24,56 +22,20 @@ import {
   type SpDaten,
 } from '@emdzej/nfsx-resolver';
 import type { NpvRow } from '@emdzej/nfsx-data-files';
+import chalk from 'chalk';
+import type { PlanOptions } from './cli.js';
 
-interface PlanFlags {
-  hwnr?: string;
-  sgTyp?: string;
-  diagAddr?: number;
-  zbAlt?: string;
-  spDaten: string;
-  json: boolean;
-  help: boolean;
-}
+type PlanFlags = PlanOptions;
 
-const HELP = `nfsx plan — resolve a BMW ECU through the SP-Daten lookup chain.
-
-Usage:
-  nfsx plan --hwnr <HWNR>      [--zb-alt <ZB>] [--sp-daten <DIR>] [--json]
-  nfsx plan --sg-typ <NAME>    [--zb-alt <ZB>] [--sp-daten <DIR>] [--json]
-  nfsx plan --diag-addr <HEX>  [--zb-alt <ZB>] [--sp-daten <DIR>] [--json]
-
-Inputs (one of):
-  --hwnr <HWNR>        BMW part number (e.g. 4010581) — looks up via
-                       HWNR.DA2 → KFCONF10.DA2 → kmm_SIT.txt → SGIDC/SGIDD
-                       → prgifsel.dat.
-  --sg-typ <NAME>      SG short name (e.g. ACC65) — looks up via
-                       KFCONF10.DA2 directly.
-  --diag-addr <HEX>    Diagnostic address (e.g. 0x12 or 12) — looks
-                       up via kmm_SIT.txt.
-
-Options:
-  --zb-alt <ZB>        Current ZB-Nummer on the ECU (e.g. 1703643).
-                       When supplied, also looks up the upgrade
-                       target in npv.dat (→ ZB-NEU + NP-SW).
-  --sp-daten <DIR>     Path to SP-Daten chassis drop.
-                       Default: $NFSX_SP_DATEN or ~/Downloads/E46_v74
-  --json               Emit JSON instead of pretty text.
-  --help               Show this help.
-`;
-
-export function runPlan(args: string[]): number {
-  const flags = parseFlags(args);
-  if (flags.help) {
-    process.stdout.write(HELP);
-    return 0;
-  }
-  if (!flags.hwnr && !flags.sgTyp && flags.diagAddr === undefined) {
-    process.stderr.write('error: one of --hwnr / --sg-typ / --diag-addr is required\n\n');
-    process.stderr.write(HELP);
+export function runPlan(opts: PlanOptions): number {
+  if (!opts.hwnr && !opts.sgTyp && opts.diagAddr === undefined) {
+    process.stderr.write(
+      chalk.red('error: one of --hwnr / --sg-typ / --diag-addr is required (see `nfsx plan --help`)\n'),
+    );
     return 2;
   }
 
-  const sp = loadSpDatenFromDir(flags.spDaten);
+  const sp = loadSpDatenFromDir(opts.spDaten);
 
   if (sp.warnings.length > 0) {
     for (const w of sp.warnings) {
@@ -81,10 +43,10 @@ export function runPlan(args: string[]): number {
     }
   }
 
-  if (flags.json) {
-    return emitJson(sp, flags);
+  if (opts.json) {
+    return emitJson(sp, opts);
   }
-  return emitText(sp, flags);
+  return emitText(sp, opts);
 }
 
 function emitText(sp: SpDaten, flags: PlanFlags): number {
@@ -229,66 +191,3 @@ function printUpgrade(zbAlt: string, upgrade: NpvRow | undefined): void {
   process.stdout.write(`  CS:         ${upgrade.cs}\n\n`);
 }
 
-function parseFlags(args: string[]): PlanFlags {
-  const defaultDir =
-    process.env.NFSX_SP_DATEN ?? join(homedir(), 'Downloads', 'E46_v74');
-  const flags: PlanFlags = { spDaten: defaultDir, json: false, help: false };
-
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i]!;
-    switch (a) {
-      case '--help':
-      case '-h':
-        flags.help = true;
-        break;
-      case '--json':
-        flags.json = true;
-        break;
-      case '--hwnr':
-        flags.hwnr = takeValue(args, i);
-        i++;
-        break;
-      case '--sg-typ':
-        flags.sgTyp = takeValue(args, i);
-        i++;
-        break;
-      case '--diag-addr': {
-        const v = takeValue(args, i);
-        i++;
-        const parsed = v.toLowerCase().startsWith('0x')
-          ? Number.parseInt(v.slice(2), 16)
-          : Number.parseInt(v, 16); // default to hex like the file format
-        if (!Number.isFinite(parsed) || parsed < 0 || parsed > 0xff) {
-          process.stderr.write(`error: --diag-addr "${v}" is not a valid hex byte\n`);
-          process.exit(2);
-        }
-        flags.diagAddr = parsed;
-        break;
-      }
-      case '--zb-alt':
-        flags.zbAlt = takeValue(args, i);
-        i++;
-        break;
-      case '--sp-daten':
-        flags.spDaten = takeValue(args, i);
-        i++;
-        break;
-      default:
-        process.stderr.write(`error: unknown flag "${a}"\n\n`);
-        process.stderr.write(HELP);
-        process.exit(2);
-    }
-  }
-
-  return flags;
-}
-
-/** Read the value at `args[idx + 1]`; bail if missing or another flag. */
-function takeValue(args: string[], idx: number): string {
-  const v = args[idx + 1];
-  if (v === undefined || v.startsWith('--')) {
-    process.stderr.write(`error: ${args[idx]} requires a value\n`);
-    process.exit(2);
-  }
-  return v;
-}
