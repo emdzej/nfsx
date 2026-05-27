@@ -1657,3 +1657,97 @@ goes sideways, recovery comes from:
 If neither path works, the ECU is bricked. WinKFP makes the same
 trade-off; we don't have a way to do better without breaking the
 IPO-driven principle.
+
+### 11.11 First real bench flash — what we learned (2026-05-27)
+
+First end-to-end flash attempt against the bench GS20 (HWNR
+7544721, K+DCAN 9600 baud). PROGRAM stage completed in ~42 s with
+all stages green, **but instrumentation surfaced two host-side
+bugs and a third structural issue that means almost no bytes
+actually changed in the ECU's flash region.**
+
+**Bug 1 — `loadSgbd` missing `.prg` suffix.**
+
+`runtime/system-functions.ts` slot 0x0E (`CDHapiJobData`) calls
+`ed.loadSgbd(ecu)` on the underlying `Ediabas` instance to ensure
+the right SGBD is loaded before each binary-payload dispatch. The
+slot was passing the raw SG name (`10GD20`); `Ediabas.loadSgbd`
+opens `<ecuPath>/<name>` literally, hitting ENOENT. `EdiabasXProvider`
+wraps `Ediabas.loadSgbd` with a `resolveSgbdFile` helper that
+appends `.prg` (or `.grp`); our direct call bypassed it.
+
+Fix: replicate the suffix logic in slot 0x0E. Bare names get
+`.prg` appended; names with `.prg`/`.grp` extensions pass through
+unchanged.
+
+**Bug 2 — silent failures masked by stale provider cache.**
+
+When `ed.loadSgbd` threw, slot 0x0E caught the exception, recorded
+the error in `state.lastJob.status`, set `state.lastJobSets =
+undefined`, and returned. The IPO then called `CDHapiResultText`
+to read `JOB_STATUS`. With `state.lastJobSets === undefined`, the
+slot falls back to `safeResultText(provider, ...)` — which reads
+the EDIABAS-X provider's cache, **still holding `OKAY` from the
+prior successful `SEED_KEY` call**. The IPO saw `OKAY` for 1071
+silent failures and "completed" successfully.
+
+Diagnostic counters now surface this directly:
+- `FirmwareSourceStats` (calls / bytes / drained) instruments the
+  slot 0x55 iterator;
+- `EdiabasJobCounters` instruments both `provider.job()` and
+  `getEdiabas().executeJob()` — the binary-path bypass is no
+  longer invisible;
+- Slot 0x0E now pushes explicit `:result` / `:error` / `:fallback`
+  trace markers so the post-mortem can pinpoint which branch fired
+  and what the wire actually returned.
+
+**Bug 3 (open) — raw bytes don't match SGBD's `pary` opcode.**
+
+After the Bug 1+2 fixes, the second real-bench attempt revealed:
+- 1068 × `FLASH_SCHREIBEN` dispatches over the wire (~36 s of
+  K+DCAN binary-path traffic);
+- 1046 returned `ERROR_INVALID_BIN_BUFFER`;
+- 7 returned `ERROR_SG_PARAMETER`;
+- 7 returned `ERROR_WRITE_DATA`;
+- 9 returned `OKAY` (at scattered chunk indices — likely no-op
+  writes where the existing flash already matched the new bytes);
+- `FLASH_LOESCHEN` returned `ERROR_SG_PARAMETER` — **the erase
+  never happened**.
+
+GD20's flash loop is best-effort: each `FLASH_SCHREIBEN` failure
+gets logged via `CDHSetError` but doesn't abort the loop. The IPO
+runs to completion regardless of how many chunks the SGBD
+rejected.
+
+**Root cause**: `paDaToRegions` strips Intel-HEX framing from each
+record into a contiguous byte array — it collapses
+`<len><addr><type><data><checksum>` into just `<data>`. Our
+firmware-source then chunks that raw byte stream into 246-byte
+slices.
+
+The SGBD's `pary` opcode for `FLASH_SCHREIBEN` expects framed
+records (length + target address + payload, with some BMW-specific
+header structure). When it receives raw bytes it rejects them with
+`ERROR_INVALID_BIN_BUFFER`. The IPO does NO `CDHBinBufWrite*` calls
+between the slot 0x55 record pop and the `FLASH_SCHREIBEN` dispatch
+— meaning slot 0x55 is responsible for placing **already-framed**
+bytes into the BinBuf.
+
+The exact frame format is the open question. Three candidates:
+1. Raw Intel-HEX record bytes (just `<len><addr><type><data><cs>`,
+   no `:` prefix).
+2. A BMW-specific binary record header with extended-linear address
+   from prior `:04 0000 04 <addr_high><cs>` records.
+3. Length-prefixed `<u16 len><u32 addr><N bytes data>`.
+
+Next step: decompile `10GD20.PRG`'s `FLASH_SCHREIBEN` job (the
+SGBD-side decoder) to read the `pary` opcode's expected layout
+directly, or trace `winkfpt.exe`'s `coapiKfProgSgD2` byte-prep
+to see what it writes into the BinBuf.
+
+**ECU safety state**: erase failed → old firmware intact. 9
+"successful" writes most likely no-ops (programming `1`-bits to
+`1`). POSTCHECK `HW_REFERENZ` came back identical (`kennung=G22
+projekt=10_00`) → ECU bootloader + identity region untouched. The
+bench is in the same functional state it was before the flash
+attempt. Tracked as task #246.

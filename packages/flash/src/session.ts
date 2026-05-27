@@ -52,11 +52,14 @@ export class FlashSession {
    */
   async run(runOpts: RunOptions = {}): Promise<FlashResult> {
     const dryRun = runOpts.dryRun ?? true;
+    const skipBackup = runOpts.skipBackup ?? false;
+    const skipPostcheck = runOpts.skipPostcheck ?? false;
     const confirm = runOpts.confirm ?? rejectAllConfirmation;
 
     let totalBytes = 0;
     let backupPath: string | undefined;
     const stagesRun: Stage[] = [];
+    let programDiagnostics: FlashResult['programDiagnostics'];
 
     // ── RESOLVE ───────────────────────────────────────────────────
     // Parse the firmware file for integrity. Doesn't pass bytes to
@@ -115,8 +118,12 @@ export class FlashSession {
       const t0 = Date.now();
       this.emit({ type: 'stage:start', stage: 'BACKUP' });
       try {
-        if (this.opts.backup?.skip) {
-          this.emit({ type: 'stage:skipped', stage: 'BACKUP', reason: 'backup.skip = true' });
+        if (skipBackup || this.opts.backup?.skip) {
+          this.emit({
+            type: 'stage:skipped',
+            stage: 'BACKUP',
+            reason: skipBackup ? '--no-backup' : 'backup.skip = true',
+          });
         } else {
           const report = await runBackup(this.opts.ecu, this.opts.ediabas);
           const outputDir = this.opts.backup?.outputDir ?? './backups';
@@ -159,8 +166,14 @@ export class FlashSession {
             this.opts.program,
             firmwareSource,
           );
+          programDiagnostics = {
+            firmwareStats: report.firmwareStats,
+            ediabasJobs: report.ediabasJobs,
+            slotTrace: report.slotTrace,
+          };
+          this.emitProgramDiagnostics(report);
           if (!report.ok) {
-            return this.abortAt('PROGRAM', report.reason ?? 'SG_PROGRAMMIEREN failed', stagesRun, totalBytes, backupPath, dryRun);
+            return this.abortAt('PROGRAM', report.reason ?? 'SG_PROGRAMMIEREN failed', stagesRun, totalBytes, backupPath, dryRun, programDiagnostics);
           }
           stagesRun.push('PROGRAM');
           this.emit({ type: 'stage:done', stage: 'PROGRAM', durationMs: Date.now() - t0 });
@@ -172,9 +185,13 @@ export class FlashSession {
 
     // ── POSTCHECK ─────────────────────────────────────────────────
     // Re-run identity reads to confirm the ECU still responds. Skipped
-    // in dry-run (nothing changed, so no need to verify). Fail-soft:
-    // errors here are diagnostic, not flash failures.
-    {
+    // in dry-run (nothing changed, so no need to verify) and when the
+    // operator passed `--no-verify`. Fail-soft: errors here are
+    // diagnostic, not flash failures.
+    if (skipPostcheck) {
+      this.emit({ type: 'stage:skipped', stage: 'POSTCHECK', reason: '--no-verify' });
+      stagesRun.push('POSTCHECK');
+    } else {
       const t0 = Date.now();
       this.emit({ type: 'stage:start', stage: 'POSTCHECK' });
       try {
@@ -214,14 +231,16 @@ export class FlashSession {
       }
     }
 
-    return {
+    const result: FlashResult = {
       ok: true,
       stagesRun,
-      backupPath,
       totalBytes,
       dryRun,
       events: [...this.events],
     };
+    if (backupPath) result.backupPath = backupPath;
+    if (programDiagnostics) result.programDiagnostics = programDiagnostics;
+    return result;
   }
 
   // ── Firmware parsing helpers ────────────────────────────────────
@@ -294,6 +313,68 @@ export class FlashSession {
     for (const l of this.listeners) l(e);
   }
 
+  private emitProgramDiagnostics(r: Awaited<ReturnType<typeof runProgramSg>>): void {
+    if (r.firmwareStats) {
+      const s = r.firmwareStats;
+      this.emit({
+        type: 'log',
+        level: s.bytesDelivered > 0 ? 'info' : 'warn',
+        message: `firmware iterator: ${s.calls} calls, ${s.bytesDelivered} bytes delivered, drained=${s.drained}`,
+      });
+      if (s.calls === 0 || s.bytesDelivered === 0) {
+        this.emit({
+          type: 'log',
+          level: 'warn',
+          message: `⚠ IPO never drained the firmware source — the flash loop body did not execute. NO BYTES WERE WRITTEN.`,
+        });
+      }
+    } else {
+      this.emit({
+        type: 'log',
+        level: 'warn',
+        message: `firmware iterator: not instrumented (firmwareSource missing)`,
+      });
+    }
+    const j = r.ediabasJobs;
+    const totalDispatches = j.byJob.size + j.binByJob.size;
+    if (totalDispatches === 0) {
+      this.emit({
+        type: 'log',
+        level: 'warn',
+        message: `⚠ ediabas: 0 jobs dispatched during PROGRAM. The IPO did not talk to the ECU.`,
+      });
+    } else {
+      // String-path (CDHapiJob) and binary-path (CDHapiJobData) live in
+      // separate counters — FLASH_LOESCHEN/SCHREIBEN typically go via
+      // the binary path. Show both.
+      const stringJobs: string[] = [];
+      for (const [name, count] of j.byJob) stringJobs.push(`${name}×${count}`);
+      const binJobs: string[] = [];
+      for (const [name, count] of j.binByJob) binJobs.push(`${name}×${count}`);
+
+      this.emit({
+        type: 'log',
+        level: 'info',
+        message: `ediabas string-path: ${stringJobs.join(', ') || '(none)'} | totalMs=${j.totalMs}`,
+      });
+      this.emit({
+        type: 'log',
+        level: 'info',
+        message: `ediabas binary-path: ${binJobs.join(', ') || '(none)'} | ${j.binBytesPushed} bytes pushed | totalMs=${j.binTotalMs}`,
+      });
+
+      const sawFlashWrite =
+        j.byJob.has('FLASH_SCHREIBEN') || j.binByJob.has('FLASH_SCHREIBEN');
+      if (!sawFlashWrite) {
+        this.emit({
+          type: 'log',
+          level: 'warn',
+          message: `⚠ FLASH_SCHREIBEN was never dispatched (neither string nor binary path). The IPO didn't write any bytes.`,
+        });
+      }
+    }
+  }
+
   private emitPrecheckSummary(r: Awaited<ReturnType<typeof runPrecheck>>): void {
     if (r.hwReferenz.ok && !r.hwReferenz.skipped && r.hwReferenz.kennung) {
       this.emit({
@@ -339,18 +420,21 @@ export class FlashSession {
     totalBytes: number,
     backupPath: string | undefined,
     dryRun: boolean,
+    programDiagnostics?: FlashResult['programDiagnostics'],
   ): FlashResult {
     const msg = reason instanceof Error ? reason.message : String(reason);
     this.emit({ type: 'log', level: 'error', message: `aborting at ${stage}: ${msg}` });
-    return {
+    const result: FlashResult = {
       ok: false,
       stagesRun,
       abortedAt: stage,
       abortReason: msg,
-      backupPath,
       totalBytes,
       dryRun,
       events: [...this.events],
     };
+    if (backupPath) result.backupPath = backupPath;
+    if (programDiagnostics) result.programDiagnostics = programDiagnostics;
+    return result;
   }
 }

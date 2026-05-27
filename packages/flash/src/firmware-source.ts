@@ -10,6 +10,41 @@ import type { FirmwareSource } from '@emdzej/nfsx-runtime';
 import type { MemoryRegion } from '@emdzej/nfsx-flash-data';
 
 /**
+ * Diagnostic counters — what the firmware source actually delivered.
+ * The orchestrator surfaces this so the operator can tell whether the
+ * IPO drained the iterator (real flash) or asked once and exited (no
+ * bytes wrote / silent failure).
+ */
+export interface FirmwareSourceStats {
+  /** Number of `nextChunk` calls (including the EOF call). */
+  calls: number;
+  /** Total bytes returned across all calls (excludes EOF zero-byte). */
+  bytesDelivered: number;
+  /** Whether the iterator reached EOF before being abandoned. */
+  drained: boolean;
+}
+
+export interface InstrumentedFirmwareSource extends FirmwareSource {
+  readonly stats: FirmwareSourceStats;
+}
+
+export function buildInstrumentedFirmwareSource(
+  inner: FirmwareSource,
+): InstrumentedFirmwareSource {
+  const stats: FirmwareSourceStats = { calls: 0, bytesDelivered: 0, drained: false };
+  return {
+    stats,
+    nextChunk(maxBytes: number) {
+      stats.calls++;
+      const chunk = inner.nextChunk(maxBytes);
+      stats.bytesDelivered += chunk.bytes.length;
+      if (chunk.eof) stats.drained = true;
+      return chunk;
+    },
+  };
+}
+
+/**
  * Build a `FirmwareSource` from parsed-firmware memory regions.
  *
  * Behaviour:

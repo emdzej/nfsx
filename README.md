@@ -128,14 +128,11 @@ purposes only. See `docs/architecture.md` §11.6 for why BMW's
 design doesn't include host-side firmware backup.
 
 ```bash
-nfsx backup \
-  --ipo  ~/Downloads/E46_v74/sgdat/10GD20.ipo \
-  --sgbd 10GD20 \
-  --expected-hwnr 7544721 \
-  --output-dir ./backups
+nfsx backup --hwnr 7544721 --output-dir ./backups
 ```
 
 ```
+HWNR 7544721 → IPO=~/Downloads/E46_v74/sgdat/10GD20.IPO SGBD=10GD20
 ✓ backup saved → backups/7544721-7543058-2026-05-27T08-56-58Z.json
   ID_BMW_NR:  7544721
   AIF_ZB_NR:  7543058
@@ -147,25 +144,30 @@ nfsx backup \
 
 ### 6. Dry-run the flash pipeline
 
-`--dry-run` is the default; `--write` is opt-in. Always start
-with a dry-run to surface PRECHECK / RESOLVE / BACKUP issues
-**before** touching anything destructive.
+Dry-run is the default; `--write` is opt-in. Always start with a
+dry-run to surface PRECHECK / RESOLVE / BACKUP issues **before**
+touching anything destructive.
 
 ```bash
-nfsx flash \
-  --swt       ~/Downloads/E46_v74/sgdat/00swtds2.ipo \
-  --ipo       ~/Downloads/E46_v74/sgdat/10GD20.ipo \
-  --sgbd      10GD20 \
-  --firmware  ~/Downloads/E46_v74/data/GD20/7544721A.0PA \
-  --expected-hwnr 7544721
+nfsx flash --hwnr 7544721 --zb 7552752
 ```
 
+`--hwnr` resolves the target IPO, the SGBD, the SWT IPO, the
+per-SG working directory, and the firmware `.0PA` from SP-Daten.
+`--zb` is only needed when the HWNR maps to multiple ZB rows
+(use `nfsx plan --hwnr X` to list them).
+
 ```
+HWNR 7544721 → SG_TYP=GD20 ZB=7552752
+  IPO: ~/Downloads/E46_v74/sgdat/10GD20.IPO
+  SGBD: 10GD20
+  SWT: ~/Downloads/E46_v74/sgdat/00swtds2.ipo
+  workingDir: ~/Downloads/E46_v74/data/GD20
+  firmware: ~/Downloads/E46_v74/data/GD20/7544721A.0PA
   ▶ RESOLVE
     info: firmware: $REFERENZ G2210_0089D0 Q
     info: firmware: $CHECKSUMME 7029 R
   ✓ RESOLVE (54ms)
-    info: firmware: 4 region(s), 262016 bytes total
   ▶ PRECHECK
     info: HW_REFERENZ: kennung=G22 projekt=10_00
     info: SG_IDENT: bmwnr=7544721 sw=89 hw=29 prod=001264844
@@ -191,14 +193,12 @@ Anything that fails here must be resolved before `--write`.
 When ready:
 
 ```bash
-nfsx flash \
-  --swt       ~/Downloads/E46_v74/sgdat/00swtds2.ipo \
-  --ipo       ~/Downloads/E46_v74/sgdat/10GD20.ipo \
-  --sgbd      10GD20 \
-  --firmware  ~/Downloads/E46_v74/data/GD20/7544721A.0PA \
-  --expected-hwnr 7544721 \
-  --write
+nfsx flash --hwnr 7544721 --zb 7552752 --write
 ```
+
+`--no-backup` skips the BACKUP stage (otherwise: always taken).
+`--no-verify` skips POSTCHECK (otherwise: always taken). The
+operator opts out explicitly.
 
 The PROGRAM stage pauses and prompts:
 
@@ -228,16 +228,29 @@ Estimated wall-clock at K+DCAN 9600 baud: ~5-10 minutes for a
 
 ### 8. Verify
 
-Compare post-flash identity reads against the pre-flash snapshot:
+Re-read identity and diff against the pre-flash backup:
 
 ```bash
-nfsx run ~/Downloads/E46_v74/sgdat/10GD20.ipo --job HW_REFERENZ    --sgbd 10GD20
-nfsx run ~/Downloads/E46_v74/sgdat/10GD20.ipo --job SG_IDENT_LESEN --sgbd 10GD20
-nfsx run ~/Downloads/E46_v74/sgdat/10GD20.ipo --job SG_AIF_LESEN   --sgbd 10GD20
+nfsx verify --hwnr 7544721 --against ./backups/7544721-7543058-2026-05-27T08-56-58Z.json
+```
+
+```
+HWNR 7544721 → IPO=~/Downloads/E46_v74/sgdat/10GD20.IPO SGBD=10GD20
+Current ECU state:
+  ID_BMW_NR            7544721
+  AIF_ZB_NR            7552752
+  AIF_SW_NR            7552753
+  AIF_FG_NR            WBAEP31060PE84104
+  HW_REF_SG_KENNUNG    G22
+  HW_REF_PROJEKT       10_00
+
+Diff vs ./backups/7544721-7543058-2026-05-27T08-56-58Z.json:
+  AIF_ZB_NR            7543058 → 7552752
+  AIF_SW_NR            7543059 → 7552753
 ```
 
 If you re-flashed the same `.0PA` (recommended for a first
-flash), all three reads should match the pre-flash snapshot.
+flash), the diff should be empty.
 
 ---
 
@@ -248,18 +261,22 @@ flash), all three reads should match the pre-flash snapshot.
 | `nfsx configure` | Interactive editor for `~/.config/nfsx/config.json` (SP-Daten path) |
 | `nfsx plan --hwnr X` | SP-Daten lookup: HWNR → SG_TYP → IPO + SGBD + ZB-row flash files |
 | `nfsx browse` | Full-screen ink TUI for HWNR exploration |
-| `nfsx run <ipo> --job <name> --sgbd <name>` | Execute one IPO job (e.g. `HW_REFERENZ`) against a live ECU |
-| `nfsx backup --ipo … --sgbd …` | Audit snapshot of ECU identity + `ZIF_BACKUP` to JSON |
-| `nfsx flash --swt … --ipo … --sgbd … --firmware …` | Full 5-stage flash pipeline; dry-run by default, `--write` to commit |
+| `nfsx run <ipo> --job <name>` | Execute one IPO job (e.g. `HW_REFERENZ`) against a live ECU |
+| `nfsx backup --hwnr X` | Audit snapshot of ECU identity + `ZIF_BACKUP` to JSON |
+| `nfsx flash --hwnr X` | Full 5-stage flash pipeline; dry-run by default, `--write` to commit |
+| `nfsx verify --hwnr X [--against backup.json]` | Re-read identity; optionally diff against a saved backup |
+
+`flash` / `backup` / `verify` take `--hwnr` and derive everything
+else from SP-Daten (target IPO, SGBD, SWT IPO, per-SG working
+directory, firmware `.0PA`). Per-field overrides (`--ipo`,
+`--swt`, `--sgbd`, `--firmware`, `--working-dir`) skip the auto-
+resolve for that field — useful for non-standard layouts or
+power-user flows.
 
 All commands accept `--ediabas-config <path>` / `--interface <name>` /
 `--serial-port <path>` / `--serial-baud <rate>` / `--gateway <host:port>`
 overrides on top of the ediabasx config, plus `--mock-file <path>`
 to bypass EDIABAS entirely (rehearsal / unit-test path).
-
-`--working-dir <dir>` overrides the per-SG data directory used by
-the IPO's `fileopen` syscalls and the firmware-source iterator
-(default: derived from the IPO path as `<sp-daten>/data/<SG_TYP>/`).
 
 ---
 

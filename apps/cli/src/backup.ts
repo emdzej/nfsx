@@ -3,6 +3,9 @@
  * JSON snapshot. Mirrors WinKFP's audit-backup behaviour (no raw
  * flash dump — that doesn't exist in WinKFP either, see architecture
  * doc §11.6). Useful as a pre-flash forensic record.
+ *
+ * UX: take just `--hwnr` and resolve IPO + SGBD via the SP-Daten
+ * lookup. `--ipo` / `--sgbd` are power-user overrides.
  */
 
 import chalk from 'chalk';
@@ -12,11 +15,53 @@ import {
   writeBackupFile,
   ZIF_BACKUP_NOT_AVAILABLE,
 } from '@emdzej/nfsx-flash';
+import {
+  resolveFlashContextLite,
+  FlashContextError,
+} from '@emdzej/nfsx-resolver';
 import { MockEdiabasProvider } from '@emdzej/inpax-mock-provider';
 import type { BackupOptions } from './cli.js';
 import { buildEdiabasProvider } from './ediabasx-provider.js';
+import { resolveSpDaten, NfsxConfigError } from './config.js';
 
 export async function runBackupCmd(opts: BackupOptions): Promise<number> {
+  // Resolve SP-Daten + flash context (lite — no ZB selection; backup
+  // doesn't pick a target firmware).
+  let spDatenRoot: string;
+  try {
+    spDatenRoot = resolveSpDaten({ spDaten: opts.spDaten, configPath: opts.config });
+  } catch (err) {
+    process.stderr.write(
+      chalk.red(`error: ${err instanceof NfsxConfigError ? err.message : String(err)}\n`),
+    );
+    return 2;
+  }
+
+  let ipoPath: string;
+  let sgbd: string;
+  try {
+    const ctx = resolveFlashContextLite(spDatenRoot, opts.hwnr);
+    ipoPath = opts.ipo ?? ctx.ipoPath;
+    sgbd = opts.sgbd ?? ctx.sgbd;
+  } catch (err) {
+    if (err instanceof FlashContextError) {
+      // Fall back to overrides if both are passed; otherwise surface.
+      if (opts.ipo && opts.sgbd) {
+        ipoPath = opts.ipo;
+        sgbd = opts.sgbd;
+      } else {
+        process.stderr.write(chalk.red(`error: ${err.message}\n`));
+        return 2;
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  if (!opts.json) {
+    process.stderr.write(chalk.dim(`HWNR ${opts.hwnr} → IPO=${ipoPath} SGBD=${sgbd}\n`));
+  }
+
   // Same provider plumbing as `run` / `flash` — `--mock-file` bypasses
   // ediabasx entirely; otherwise build the real EDIABAS-X chain.
   let provider:
@@ -41,10 +86,10 @@ export async function runBackupCmd(opts: BackupOptions): Promise<number> {
   try {
     const report = await runBackup(
       {
-        sgbd: opts.sgbd,
-        ipoPath: opts.ipo,
+        sgbd,
+        ipoPath,
         swtIpoPath: '', // backup doesn't need the SWT IPO
-        expectedHwnr: opts.expectedHwnr,
+        expectedHwnr: opts.hwnr,
       },
       provider.provider,
     );

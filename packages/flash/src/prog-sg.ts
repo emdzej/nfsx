@@ -21,6 +21,15 @@
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
 import { startNfsRuntime, type FirmwareSource } from '@emdzej/nfsx-runtime';
 import type { EcuTarget } from './types.js';
+import {
+  buildInstrumentedFirmwareSource,
+  type FirmwareSourceStats,
+} from './firmware-source.js';
+import {
+  newEdiabasJobCounters,
+  wrapWithJobCounter,
+  type EdiabasJobCounters,
+} from './ediabas-counter.js';
 
 /**
  * Cabd-pars `SG_PROGRAMMIEREN` reads. Matches what
@@ -90,6 +99,27 @@ export interface ProgramReport {
    * dispatch threw before publishing anything.
    */
   cabdPars: Record<string, string>;
+  /**
+   * What the firmware iterator actually delivered. Empty `calls`/
+   * `bytesDelivered` on a "successful" run is the unambiguous
+   * signature of an IPO that ran-but-didn't-flash (loop body never
+   * executed). Undefined when `firmwareSource` wasn't supplied.
+   */
+  firmwareStats?: FirmwareSourceStats;
+  /**
+   * Per-job counters on the wire. For a real flash, expect
+   * `FLASH_SCHREIBEN` ≈ `firmwareStats.calls - 1` (one less than
+   * the iterator-call count because the EOF call doesn't trigger
+   * a write).
+   */
+  ediabasJobs: EdiabasJobCounters;
+  /**
+   * Full per-slot trace from the IPO run — every CABI slot call in
+   * order, with its arguments. Use to diagnose flows where the
+   * counters look wrong (e.g. IPO drained the firmware iterator but
+   * never dispatched FLASH_SCHREIBEN).
+   */
+  slotTrace: ReadonlyArray<{ slot: number; name: string; args: Record<string, unknown> }>;
 }
 
 /**
@@ -131,30 +161,44 @@ export async function runProgramSg(
     if (opts.aifAdresse !== undefined) cabdPars['AIF_ADRESSE'] = opts.aifAdresse;
   }
 
+  const ediabasJobs = newEdiabasJobCounters();
+  const countingProvider = wrapWithJobCounter(ediabas, ediabasJobs);
+  const instrumented = firmwareSource
+    ? buildInstrumentedFirmwareSource(firmwareSource)
+    : undefined;
+
   try {
     const handle = await startNfsRuntime({
       ipoPath: ecu.ipoPath,
       sgbd: ecu.sgbd,
-      ediabas,
+      ediabas: countingProvider,
       cabdPars,
       workingDir: ecu.workingDir,
-      firmwareSource,
+      firmwareSource: instrumented ?? firmwareSource,
     });
     await handle.runCabimain('SG_PROGRAMMIEREN');
     const status = handle.state.lastJobStatus;
-    return {
+    const report: ProgramReport = {
       ok: status === 0,
       setjobstatus: status,
-      reason: status !== 0 ? `SG_PROGRAMMIEREN setjobstatus=${status}` : undefined,
       cabdPars: Object.fromEntries(handle.state.cabdPars),
+      ediabasJobs,
+      slotTrace: [...handle.state.trace],
     };
+    if (status !== 0) report.reason = `SG_PROGRAMMIEREN setjobstatus=${status}`;
+    if (instrumented) report.firmwareStats = instrumented.stats;
+    return report;
   } catch (err) {
-    return {
+    const report: ProgramReport = {
       ok: false,
       setjobstatus: -1,
       reason: err instanceof Error ? err.message : String(err),
       cabdPars: {},
+      ediabasJobs,
+      slotTrace: [],
     };
+    if (instrumented) report.firmwareStats = instrumented.stats;
+    return report;
   }
 }
 
@@ -184,28 +228,35 @@ export async function runAifSchreiben(
   if (opts.aifProgNr !== undefined) cabdPars['AIF_PROG_NR'] = opts.aifProgNr;
   if (opts.aifAdresse !== undefined) cabdPars['AIF_ADRESSE'] = opts.aifAdresse;
 
+  const ediabasJobs = newEdiabasJobCounters();
+  const countingProvider = wrapWithJobCounter(ediabas, ediabasJobs);
   try {
     const handle = await startNfsRuntime({
       ipoPath: ecu.ipoPath,
       sgbd: ecu.sgbd,
-      ediabas,
+      ediabas: countingProvider,
       cabdPars,
       workingDir: ecu.workingDir,
     });
     await handle.runCabimain('SG_AIF_SCHREIBEN');
     const status = handle.state.lastJobStatus;
-    return {
+    const report: ProgramReport = {
       ok: status === 0,
       setjobstatus: status,
-      reason: status !== 0 ? `SG_AIF_SCHREIBEN setjobstatus=${status}` : undefined,
       cabdPars: Object.fromEntries(handle.state.cabdPars),
+      ediabasJobs,
+      slotTrace: [...handle.state.trace],
     };
+    if (status !== 0) report.reason = `SG_AIF_SCHREIBEN setjobstatus=${status}`;
+    return report;
   } catch (err) {
     return {
       ok: false,
       setjobstatus: -1,
       reason: err instanceof Error ? err.message : String(err),
       cabdPars: {},
+      slotTrace: [],
+      ediabasJobs,
     };
   }
 }

@@ -1,21 +1,25 @@
 /**
  * `nfsx flash` — drive the FlashSession orchestrator from the CLI.
  *
- * **Defaults are safe**: dry-run is implicit unless `--write` is
- * explicitly passed. Even with `--write`, the operator is prompted
- * before each destructive stage (AUTHENTICATE / SESSION / TRANSFER
- * / AIF_WRITE). `--yes` opts out of prompts but is rejected unless
- * `--write` is also set.
+ * UX shape: the operator passes `--hwnr` and everything else is
+ * derived via `resolveFlashContext` from the SP-Daten drop:
+ *   - target IPO (KFCONF.ipoFile under sgdat/)
+ *   - SGBD name (KFCONF.flashSgbd minus `.PRG`)
+ *   - SWT IPO (glob `sgdat/00swt*.ipo`)
+ *   - working dir (`<sp>/data/<SG_TYP>/`)
+ *   - firmware `.0PA` (chosen from `<SG_TYP>.DAT` via single-candidate
+ *     auto-pick / NPV upgrade / `--zb`)
  *
- * Provider: by default, builds an EDIABAS-X provider from
- * `~/.config/ediabasx/config.json` (real-vs-sim is ediabasx's call,
- * see [[feedback-ediabasx-responsibility]]). `--mock-file <path>` is
- * the one escape hatch — it BYPASSES ediabasx entirely with a
- * `MockEdiabasProvider`, handy for rehearsals.
+ * Per-field overrides (`--ipo`, `--swt`, `--sgbd`, `--firmware`,
+ * `--working-dir`) skip auto-resolve for that field. The operator
+ * never needs them on a normal SP-Daten drop.
+ *
+ * Defaults: dry-run unless `--write` is passed. Even with `--write`,
+ * the operator is prompted before each destructive stage. `--yes`
+ * skips the prompt but requires `--write`.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
-import { basename, dirname, resolve as resolvePath } from 'node:path';
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { createInterface as createReadlineInterface } from 'node:readline/promises';
 import chalk from 'chalk';
 import { MockEdiabasProvider } from '@emdzej/inpax-mock-provider';
@@ -26,8 +30,14 @@ import {
   type Stage,
   type ConfirmContext,
 } from '@emdzej/nfsx-flash';
+import {
+  resolveFlashContext,
+  FlashContextError,
+  type FlashContext,
+} from '@emdzej/nfsx-resolver';
 import type { FlashOptions } from './cli.js';
 import { buildEdiabasProvider, type BuiltEdiabasProvider } from './ediabasx-provider.js';
+import { resolveSpDaten, NfsxConfigError } from './config.js';
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
 
 export async function runFlash(opts: FlashOptions): Promise<number> {
@@ -36,7 +46,55 @@ export async function runFlash(opts: FlashOptions): Promise<number> {
     return 2;
   }
 
-  // EDIABAS provider — `--mock-file` bypasses ediabasx-x entirely
+  // 1. Resolve SP-Daten + flash context from --hwnr.
+  let spDatenRoot: string;
+  try {
+    spDatenRoot = resolveSpDaten({ spDaten: opts.spDaten, configPath: opts.config });
+  } catch (err) {
+    process.stderr.write(
+      chalk.red(`error: ${err instanceof NfsxConfigError ? err.message : String(err)}\n`),
+    );
+    return 2;
+  }
+
+  let ctx: FlashContext;
+  try {
+    ctx = resolveFlashContext(spDatenRoot, opts.hwnr, {
+      zb: opts.zb,
+      zbAlt: opts.zbAlt,
+      swtIpoPath: opts.swt,
+      transport: opts.transport,
+    });
+  } catch (err) {
+    if (err instanceof FlashContextError) {
+      process.stderr.write(chalk.red(`error: ${err.message}\n`));
+      return 2;
+    }
+    throw err;
+  }
+
+  // Apply per-field overrides on top of the resolved context.
+  const ipoPath = opts.ipo ?? ctx.ipoPath;
+  const swtIpoPath = opts.swt ?? ctx.swtIpoPath;
+  const sgbd = opts.sgbd ?? ctx.sgbd;
+  const firmwarePath = opts.firmware ?? ctx.firmwarePath;
+  const workingDir = opts.workingDir ?? ctx.workingDir;
+
+  if (!opts.json) {
+    process.stderr.write(chalk.dim(`HWNR ${opts.hwnr} → SG_TYP=${ctx.sgTyp} ZB=${ctx.selectedZb.zbNr}\n`));
+    process.stderr.write(chalk.dim(`  IPO: ${ipoPath}\n`));
+    process.stderr.write(chalk.dim(`  SGBD: ${sgbd}\n`));
+    process.stderr.write(chalk.dim(`  SWT: ${swtIpoPath}\n`));
+    process.stderr.write(chalk.dim(`  workingDir: ${workingDir}\n`));
+    process.stderr.write(chalk.dim(`  firmware: ${firmwarePath}\n`));
+    if (ctx.npvUpgrade) {
+      process.stderr.write(
+        chalk.dim(`  NPV upgrade: ZB ${ctx.npvUpgrade.zbAlt} → ${ctx.npvUpgrade.zbNeu}\n`),
+      );
+    }
+  }
+
+  // 2. EDIABAS provider — `--mock-file` bypasses ediabasx-x entirely
   // and supplies a hand-fed MockEdiabasProvider; everything else
   // routes through ediabasx (real or sim is its decision based on
   // the config file's `interface` field).
@@ -60,27 +118,22 @@ export async function runFlash(opts: FlashOptions): Promise<number> {
     }
   }
 
-  if (!existsSync(opts.firmware)) {
-    process.stderr.write(chalk.red(`error: firmware not found: ${opts.firmware}\n`));
+  if (!existsSync(firmwarePath)) {
+    process.stderr.write(chalk.red(`error: firmware not found: ${firmwarePath}\n`));
     if (cleanup) await cleanup().catch(() => undefined);
     return 2;
   }
-  const fwBytes = readFileSync(opts.firmware);
+  const fwBytes = readFileSync(firmwarePath);
   const fwSlice = new Uint8Array(fwBytes.buffer, fwBytes.byteOffset, fwBytes.byteLength);
-  const firmware = isPaDa(opts.firmware) ? { paDaBytes: fwSlice } : { s37Bytes: fwSlice };
-
-  const workingDir = opts.workingDir ?? deriveWorkingDir(opts.ipo);
-  if (!opts.json && workingDir) {
-    process.stderr.write(chalk.dim(`workingDir: ${workingDir}\n`));
-  }
+  const firmware = isPaDa(firmwarePath) ? { paDaBytes: fwSlice } : { s37Bytes: fwSlice };
 
   const session = new FlashSession({
     ecu: {
-      sgbd: opts.sgbd,
+      sgbd,
       diagAddr: opts.diagAddr,
-      ipoPath: opts.ipo,
-      swtIpoPath: opts.swt,
-      expectedHwnr: opts.expectedHwnr,
+      ipoPath,
+      swtIpoPath,
+      expectedHwnr: opts.hwnr,
       workingDir,
     },
     firmware,
@@ -100,14 +153,14 @@ export async function runFlash(opts: FlashOptions): Promise<number> {
   });
 
   const dryRun = !opts.write;
+  let prompt: { confirm: (stage: Stage, ctx: ConfirmContext) => Promise<boolean>; close: () => void } | undefined;
+  if (!dryRun && !opts.yes) prompt = buildPromptFromStdin();
   try {
     const result = await session.run({
       dryRun,
-      confirm: dryRun
-        ? undefined
-        : opts.yes
-          ? allowAllConfirmation
-          : buildPromptFromStdin(),
+      skipBackup: opts.backup === false,
+      skipPostcheck: opts.verify === false,
+      confirm: dryRun ? undefined : opts.yes ? allowAllConfirmation : prompt!.confirm,
     });
 
     if (opts.json) {
@@ -140,8 +193,43 @@ export async function runFlash(opts: FlashOptions): Promise<number> {
       process.stdout.write(`  totalBytes: ${result.totalBytes}\n`);
     }
 
+    if (opts.traceFile && result.programDiagnostics) {
+      try {
+        writeFileSync(
+          opts.traceFile,
+          JSON.stringify(
+            {
+              firmwareStats: result.programDiagnostics.firmwareStats,
+              ediabasJobs: {
+                byKey: Object.fromEntries(result.programDiagnostics.ediabasJobs.byKey),
+                byJob: Object.fromEntries(result.programDiagnostics.ediabasJobs.byJob),
+                totalMs: result.programDiagnostics.ediabasJobs.totalMs,
+                binByJob: Object.fromEntries(result.programDiagnostics.ediabasJobs.binByJob),
+                binBytesPushed: result.programDiagnostics.ediabasJobs.binBytesPushed,
+                binTotalMs: result.programDiagnostics.ediabasJobs.binTotalMs,
+              },
+              slotTrace: result.programDiagnostics.slotTrace,
+            },
+            null,
+            2,
+          ),
+        );
+        if (!opts.json) {
+          process.stderr.write(chalk.dim(`trace dumped → ${opts.traceFile}\n`));
+        }
+      } catch (err) {
+        process.stderr.write(
+          chalk.yellow(`warning: failed to write --trace-file ${opts.traceFile}: ${err instanceof Error ? err.message : String(err)}\n`),
+        );
+      }
+    }
+
     return result.ok ? 0 : 1;
   } finally {
+    // Release stdin listener so the process can exit. The readline
+    // interface (when allocated for the FLASH prompt) keeps the event
+    // loop alive otherwise.
+    if (prompt) prompt.close();
     if (cleanup) {
       try {
         await cleanup();
@@ -202,35 +290,14 @@ function isPaDa(path: string): boolean {
   return /\.0(PA|DA)$/i.test(path);
 }
 
-/**
- * Derive the per-SG working directory from the IPO path.
- *
- * SP-Daten layout: `<spDaten>/sgdat/<NN><SG_TYP>.ipo`, and per-SG data
- * files live at `<spDaten>/data/<SG_TYP>/`. Strip the leading digits
- * from the IPO basename (e.g. `10GD20.ipo` → `GD20`), then sibling-
- * navigate from `sgdat/` to `data/<SG_TYP>/`.
- *
- * Returns `undefined` if the IPO path doesn't follow the SP-Daten
- * convention — the operator can pass `--working-dir` explicitly.
- */
-function deriveWorkingDir(ipoPath: string): string | undefined {
-  const ipoDir = dirname(resolvePath(ipoPath));
-  const ipoName = basename(ipoPath);
-  // Strip leading non-letter chars (digit prefix on NFS IPOs) and the
-  // `.ipo` / `.ips` extension.
-  const m = /^[^A-Za-z]*([A-Za-z][A-Za-z0-9_]*)\.ip[os]$/i.exec(ipoName);
-  if (!m) return undefined;
-  const sgTyp = m[1]!;
-  // SP-Daten convention: sibling of `sgdat/` is `data/`.
-  // dirname('<root>/sgdat') === '<root>' — the sibling-navigation pattern.
-  const root = dirname(ipoDir);
-  return resolvePath(root, 'data', sgTyp);
-}
-
-function buildPromptFromStdin(): (stage: Stage, ctx: ConfirmContext) => Promise<boolean> {
+function buildPromptFromStdin(): {
+  confirm: (stage: Stage, ctx: ConfirmContext) => Promise<boolean>;
+  close: () => void;
+} {
   const rl = createReadlineInterface({ input: process.stdin, output: process.stderr });
-  return buildPromptConfirmation(async (q: string) => rl.question(q)) as (
+  const confirm = buildPromptConfirmation(async (q: string) => rl.question(q)) as (
     stage: Stage,
     ctx: ConfirmContext,
   ) => Promise<boolean>;
+  return { confirm, close: () => rl.close() };
 }

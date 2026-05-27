@@ -208,7 +208,12 @@ function makeOverride(
         const ed = getEdiabasInstance(ediabas);
         if (ed && bytes.length > 0) {
           try {
-            await ed.loadSgbd(ecu);
+            // Match EdiabasXProvider.resolveSgbdFile: BMW SGBDs are .prg
+            // (or .grp). Bare names like "10GD20" hit the filesystem as
+            // ENOENT — `provider.job()` does this resolution internally
+            // but our direct `ed.loadSgbd()` bypasses it.
+            const sgbdFile = /\.(prg|grp)$/i.test(ecu) ? ecu : `${ecu}.prg`;
+            await ed.loadSgbd(sgbdFile);
             const sets = await ed.executeJob(job, { params: [bytes] });
             state.lastJobSets = sets.map((set) => {
               const m = new Map<string, unknown>();
@@ -217,13 +222,28 @@ function makeOverride(
             });
             const status = pickResultText(state.lastJobSets, 'JOB_STATUS', '');
             state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status, ok: true };
+            state.trace.push({
+              slot: slot.id,
+              name: `${slot.name}:result`,
+              args: { job, path: 'binary', status, sets: state.lastJobSets.length },
+            });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status: `ERROR: ${message}`, ok: false };
             state.lastJobSets = undefined;
+            state.trace.push({
+              slot: slot.id,
+              name: `${slot.name}:error`,
+              args: { job, path: 'binary', error: message },
+            });
           }
           return;
         }
+        state.trace.push({
+          slot: slot.id,
+          name: `${slot.name}:fallback`,
+          args: { job, reason: !ed ? 'getEdiabas-null' : 'no-bytes', bytesLength: bytes.length },
+        });
         // Mock / string-only fallback. Empty-string params keep the
         // IPO moving; real bench requires `getEdiabas()` to be
         // available (i.e. `EdiabasXProvider`).

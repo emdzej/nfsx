@@ -123,6 +123,17 @@ export interface RunOptions {
    */
   dryRun?: boolean;
   /**
+   * Skip the BACKUP stage. Off by default — backups are cheap and
+   * useful as an audit record. The operator opts out explicitly
+   * (CLI: `--no-backup`).
+   */
+  skipBackup?: boolean;
+  /**
+   * Skip the POSTCHECK stage (the post-flash identity re-read). Off
+   * by default. The operator opts out explicitly (CLI: `--no-verify`).
+   */
+  skipPostcheck?: boolean;
+  /**
    * Called before the PROGRAM stage in non-dry-run mode. Return `true`
    * to proceed, `false` to abort. Default rejects everything.
    */
@@ -166,6 +177,15 @@ export interface FlashResult {
   dryRun: boolean;
   /** Full event log. */
   events: FlashEvent[];
+  /**
+   * Diagnostics from the PROGRAM stage (populated even on abort
+   * inside PROGRAM). Undefined for dry-run / skipped PROGRAM.
+   */
+  programDiagnostics?: {
+    firmwareStats?: import('./firmware-source.js').FirmwareSourceStats;
+    ediabasJobs: import('./ediabas-counter.js').EdiabasJobCounters;
+    slotTrace: ReadonlyArray<{ slot: number; name: string; args: Record<string, unknown> }>;
+  };
 }
 
 /** Input descriptor for a flash session. */

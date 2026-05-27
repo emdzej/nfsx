@@ -21,6 +21,7 @@ import { runFlash } from './flash.js';
 import { runBrowse } from './browse.js';
 import { runConfigure } from './configure.js';
 import { runBackupCmd } from './backup.js';
+import { runVerifyCmd } from './verify.js';
 import { DEFAULT_CONFIG_PATH } from './config.js';
 
 const program = new Command();
@@ -82,24 +83,30 @@ program
 // ── flash ───────────────────────────────────────────────────────────
 program
   .command('flash')
-  .description('Drive the 7-stage FlashSession orchestrator (DRY-RUN by default).')
-  .requiredOption('--swt <ipo>', 'path to the 00swt*.ipo for the ECU transport (FSC stage)')
-  .requiredOption('--ipo <path>', 'path to the target SG IPO (e.g. 10GD20.ipo) — used by PRECHECK')
-  .requiredOption('--sgbd <name>', 'ECU SGBD basename (e.g. C_DSC_KWP)')
-  .requiredOption('--firmware <path>', 'S37 firmware payload to flash')
-  .option('--expected-hwnr <hwnr>', 'cross-check `ID_BMW_NR` from SG_IDENT_LESEN against this expected HWNR')
-  .option('--working-dir <dir>', 'override the per-SG working directory (default: derive from --ipo as <spDaten>/data/<SG_TYP>/)')
+  .description('Drive the 5-stage FlashSession (RESOLVE / PRECHECK / BACKUP / PROGRAM / POSTCHECK). DRY-RUN by default.')
+  .requiredOption('--hwnr <hwnr>', 'BMW part number — resolves SG_TYP + IPO + SGBD + SWT + working dir + firmware from SP-Daten')
+  .option('--zb <zbnr>', 'target ZB-Nummer when the HWNR maps to multiple (use `nfsx plan --hwnr X` to list)')
+  .option('--zb-alt <zb>', 'currently-burned ZB; lets npv.dat pick the upgrade target automatically')
+  .option('--no-backup', 'skip the BACKUP stage (otherwise: always taken)')
+  .option('--no-verify', 'skip POSTCHECK re-read of identity (otherwise: always taken)')
+  .option('--ipo <path>', 'override the auto-resolved target SG IPO')
+  .option('--swt <ipo>', 'override the auto-resolved 00swt*.ipo for the FSC stage')
+  .option('--sgbd <name>', 'override the auto-resolved SGBD basename')
+  .option('--firmware <path>', 'override the auto-resolved .0PA firmware file')
+  .option('--working-dir <dir>', 'override the auto-resolved per-SG working directory')
+  .option('--transport <name>', 'disambiguate when multiple 00swt*.ipo exist (e.g. ds2, kwp)')
   .option('--mock-file <path>', 'bypass EDIABAS-X entirely with a JSON-fed MockEdiabasProvider (rehearsal / unit-test path)')
   .option('--ediabas-config <path>', 'EDIABAS-X config file (default: ~/.config/ediabasx/config.json)')
   .option('--interface <name>', 'override `interface` from config (simulation|serial|kdcan|enet|gateway)')
   .option('--serial-port <path>', 'override `options.port` from config (serial device path)')
   .option('--serial-baud <rate>', 'override `options.baudRate` from config', parseBaud)
   .option('--gateway <host:port>', 'shortcut: switch to gateway interface with this address')
-  .option('--sp-daten <dir>', 'SP-Daten chassis drop (overrides config) — provides the SGBD/ecu/ directory')
+  .option('--sp-daten <dir>', 'SP-Daten chassis drop (overrides config)')
   .option('--config <path>', `nfsx config file path (default ${DEFAULT_CONFIG_PATH})`)
   .option('--diag-addr <hex>', 'diagnostic address (audit/logging only)', parseDiagAddr)
   .option('--write', 'allow destructive operations (without this, dry-run only)', false)
   .option('--yes', 'skip per-stage confirmation prompts (requires --write)', false)
+  .option('--trace-file <path>', 'dump the full IPO slot trace + counters to JSON for diagnostics')
   .option('--json', 'machine-readable JSON output', false)
   .action(async (opts: FlashOptions) => {
     const code = await runFlash(opts);
@@ -110,12 +117,12 @@ program
 program
   .command('backup')
   .description(
-    'Capture target SG identity + ZIF backup region via IPO dispatches (mirrors WinKFP\'s audit backup; not a brick-recovery image).',
+    "Capture target SG identity + ZIF backup region (mirrors WinKFP's audit backup; not a brick-recovery image).",
   )
-  .requiredOption('--ipo <path>', 'path to the target SG IPO (e.g. 10GD20.ipo)')
-  .requiredOption('--sgbd <name>', 'ECU SGBD basename (e.g. 10GD20)')
+  .requiredOption('--hwnr <hwnr>', 'BMW part number — resolves IPO + SGBD from SP-Daten')
   .option('-o, --output-dir <dir>', 'where to write the JSON snapshot', './backups')
-  .option('--expected-hwnr <hwnr>', 'expected HWNR (cross-check vs ID_BMW_NR)')
+  .option('--ipo <path>', 'override the auto-resolved target SG IPO')
+  .option('--sgbd <name>', 'override the auto-resolved SGBD basename')
   .option('--mock-file <path>', 'bypass EDIABAS-X entirely with a JSON-fed MockEdiabasProvider')
   .option('--ediabas-config <path>', 'EDIABAS-X config file (default: ~/.config/ediabasx/config.json)')
   .option('--interface <name>', 'override `interface` from config')
@@ -127,6 +134,26 @@ program
   .option('--json', 'machine-readable JSON output', false)
   .action(async (opts: BackupOptions) => {
     const code = await runBackupCmd(opts);
+    if (code !== 0) process.exit(code);
+  });
+
+// ── verify ──────────────────────────────────────────────────────────
+program
+  .command('verify')
+  .description('Read the ECU\'s current identity and compare against a backup snapshot or the expected HWNR.')
+  .requiredOption('--hwnr <hwnr>', 'BMW part number — resolves IPO + SGBD from SP-Daten')
+  .option('--against <path>', 'a previous backup JSON to diff against (otherwise: just print current state)')
+  .option('--mock-file <path>', 'bypass EDIABAS-X entirely with a JSON-fed MockEdiabasProvider')
+  .option('--ediabas-config <path>', 'EDIABAS-X config file (default: ~/.config/ediabasx/config.json)')
+  .option('--interface <name>', 'override `interface` from config')
+  .option('--serial-port <path>', 'override serial port from config')
+  .option('--serial-baud <rate>', 'override serial baud rate', parseBaud)
+  .option('--gateway <host:port>', 'shortcut: gateway interface')
+  .option('--sp-daten <dir>', 'SP-Daten chassis drop (overrides config)')
+  .option('--config <path>', `nfsx config file path (default ${DEFAULT_CONFIG_PATH})`)
+  .option('--json', 'machine-readable JSON output', false)
+  .action(async (opts: VerifyOptions) => {
+    const code = await runVerifyCmd(opts);
     if (code !== 0) process.exit(code);
   });
 
@@ -199,12 +226,23 @@ export interface RunOptions {
 }
 
 export interface FlashOptions {
-  swt: string;
-  ipo: string;
-  sgbd: string;
-  firmware: string;
-  expectedHwnr?: string;
+  /** Primary input — resolves the rest. */
+  hwnr: string;
+  /** Pick a specific ZB row when the HWNR has multiple candidates. */
+  zb?: string;
+  /** Currently-burned ZB; enables NPV upgrade-target lookup. */
+  zbAlt?: string;
+  /** false when `--no-backup` was passed (default true). */
+  backup: boolean;
+  /** false when `--no-verify` was passed (default true). */
+  verify: boolean;
+  /** Optional override paths/names (skip auto-resolve for that field). */
+  ipo?: string;
+  swt?: string;
+  sgbd?: string;
+  firmware?: string;
   workingDir?: string;
+  transport?: string;
   /** Bypass EDIABAS-X entirely — supply a MockEdiabasProvider built from the JSON file. */
   mockFile?: string;
   /** EDIABAS-X config (path or per-field overrides). */
@@ -218,6 +256,7 @@ export interface FlashOptions {
   diagAddr?: number;
   write: boolean;
   yes: boolean;
+  traceFile?: string;
   json: boolean;
 }
 
@@ -229,10 +268,25 @@ export interface BrowseOptions {
 }
 
 export interface BackupOptions {
-  ipo: string;
-  sgbd: string;
+  hwnr: string;
   outputDir: string;
-  expectedHwnr?: string;
+  ipo?: string;
+  sgbd?: string;
+  mockFile?: string;
+  ediabasConfig?: string;
+  interface?: string;
+  serialPort?: string;
+  serialBaud?: number;
+  gateway?: string;
+  spDaten?: string;
+  config?: string;
+  json: boolean;
+}
+
+export interface VerifyOptions {
+  hwnr: string;
+  /** Path to a previous backup JSON file to diff against. */
+  against?: string;
   mockFile?: string;
   ediabasConfig?: string;
   interface?: string;

@@ -5,6 +5,15 @@ flash is destructive; a failure mid-transfer bricks the ECU. We
 have no host-side firmware backup (BMW's design — see
 `architecture.md` §11.6).
 
+> **Status (2026-05-27):** first real bench flash attempted on GS20.
+> Pipeline runs end-to-end; bytes go over the wire (~36 s of binary-
+> path traffic), but the SGBD rejects most `FLASH_SCHREIBEN` calls
+> with `ERROR_INVALID_BIN_BUFFER` because our firmware-source emits
+> raw payload bytes instead of framed records. ECU survived unchanged
+> (erase failed → old firmware intact). See `architecture.md` §11.11
+> for the full post-mortem; the framing fix is tracked as task #246.
+> **Do not expect a successful flash until that's resolved.**
+
 ---
 
 ## Pre-flight checklist
@@ -26,12 +35,13 @@ Every box must be ✓ before `--write`.
       `<sp-daten>/data/<SG_TYP>/`. See "Firmware decision" below.
 - [ ] **`nfsx plan --hwnr <HWNR>`** resolves cleanly — SG_TYP,
       KFCONF row, and at least one ZB row visible in the output.
-- [ ] **`nfsx run --job HW_REFERENZ`** against the bench reports
-      a sane kennung + projekt (matches the firmware's
-      `$REFERENZ` header).
-- [ ] **`nfsx flash --dry-run`** completes through all 5 stages.
-      RESOLVE parses the firmware without skipped lines or bad
-      checksums. PRECHECK passes. BACKUP writes a non-empty JSON.
+- [ ] **`nfsx verify --hwnr <HWNR>`** against the bench reports a
+      sane kennung + projekt (matches the firmware's `$REFERENZ`
+      header).
+- [ ] **`nfsx flash --hwnr <HWNR> --zb <ZB>`** (dry-run, the
+      default) completes through all 5 stages. RESOLVE parses
+      the firmware without skipped lines or bad checksums.
+      PRECHECK passes. BACKUP writes a non-empty JSON.
 - [ ] **No other CAN traffic** on the bus while the flash runs.
       WinKFP requires this; we mirror.
 - [ ] **Bricking budget accepted.** This is a spare ECU. Worst-case
@@ -114,18 +124,24 @@ should be possible. Not via our toolchain (yet).
 ### Command
 
 ```bash
-nfsx flash \
-  --swt    ~/Downloads/E46_v74/sgdat/00swtds2.ipo \
-  --ipo    ~/Downloads/E46_v74/sgdat/10GD20.ipo \
-  --sgbd   10GD20 \
-  --firmware ~/Downloads/E46_v74/data/GD20/7544721A.0PA \
-  --expected-hwnr 7544721 \
-  --write
+nfsx flash --hwnr 7544721 --zb 7552752 --write
 ```
+
+`--hwnr` resolves the target IPO, SGBD, SWT IPO, working dir, and
+the firmware `.0PA` from SP-Daten. `--zb 7552752` disambiguates
+between the two ZB candidates for this HWNR (use `nfsx plan
+--hwnr 7544721` to list them); 7552752 has the CS=G "Gelb"
+(standard) flag — for a first re-flash this is the safer pick
+since its program file (`7544721A.0PA`) is identical to ZB
+7552754's, and the calibration `.0DA` is not part of the
+recommended re-flash payload.
 
 Note: omit `--yes`. The confirm prompt requires typing literally
 `FLASH` (case-sensitive) to proceed — deliberate friction. The
 prompt shows the full pre-flash summary.
+
+If you want to skip BACKUP or POSTCHECK, pass `--no-backup` or
+`--no-verify` respectively. Both are enabled by default.
 
 ---
 
@@ -175,17 +191,11 @@ The current `nfsx backup` JSON snapshot helps re-stamp identity
 
 ## Post-flash verification
 
-After a successful PROGRAM + POSTCHECK:
+After a successful PROGRAM + POSTCHECK, diff against the pre-flash
+backup the BACKUP stage just wrote:
 
 ```bash
-# Verify burned identity matches what we flashed
-nfsx run ~/Downloads/E46_v74/sgdat/10GD20.ipo --job SG_IDENT_LESEN --sgbd 10GD20
-
-# Verify HW reference matches the .0PA's $REFERENZ
-nfsx run ~/Downloads/E46_v74/sgdat/10GD20.ipo --job HW_REFERENZ --sgbd 10GD20
-
-# Compare a fresh AIF read vs the pre-flash backup JSON
-nfsx run ~/Downloads/E46_v74/sgdat/10GD20.ipo --job SG_AIF_LESEN --sgbd 10GD20
+nfsx verify --hwnr 7544721 --against ./backups/<latest>.json
 ```
 
 Expected: `HW_REF_SG_KENNUNG = G22`, `HW_REF_PROJEKT = 10_00`,
