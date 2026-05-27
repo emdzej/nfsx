@@ -1534,7 +1534,85 @@ rather than depending on it — the file already follows a
 manual-handler pattern. Full migration to a CabiProvider-adapter
 shape is filed as #236.
 
-**Next blocker (task #237):** with BinBuf wired, `SG_PROGRAMMIEREN`
+### 11.9 GD20Prog walkthrough — what the flash loop expects (2026-05-27)
+
+Decompiling `GD20Prog` (the IPO's `SG_PROGRAMMIEREN` body for the
+bench GS20) reveals the flash loop shape:
+
+```c
+PEMTrennLinie("SCHNELLE_BAUDRATE", l_04);  // get cabd-par
+PEMTrennLinie("TEST_CHECKSUMME", l_10);
+
+CDHBinBufCreate(out l_0B);                  // alloc firmware buffer (slot 0x4B)
+// (host preamble must pre-load .0PA bytes into l_0B somehow)
+
+CDHapiJob("IDENT");                         // BLOCKLAENGE_MAX, SEED_KEY, etc.
+CDHapiJob("BLOCKLAENGE_MAX") → l_05;        // max block size
+CDHapiJob("SEED_KEY");                      // security access
+
+CDHGetApiJobByteData(                       // slot 0x55 — IPO's "next chunk" iterator
+    MaxData = l_05,                         //   block size
+    BufHandle = l_0B,                       //   firmware BinBuf
+    out BufSize,
+    out NrOfData = l_0D,                    //   = blocks remaining; 0 → stop
+    out RetVal);
+
+CDHapiJobData("FLASH_SCHREIBEN_ENDE", binbuf);  // clear pending writes
+CDHapiJobData("FLASH_LOESCHEN", binbuf);        // erase
+
+if (SCHNELLE_BAUDRATE == "ON") {
+    CDHapiJob("BAUDRATEN_UMSTELLUNG", "125000;3");
+    CDHapiJob("SET_EDIC_BAUDRATE", "125000");
+}
+
+while (l_0D > 0) {                          // main write loop
+    CDHapiJobData("FLASH_SCHREIBEN", binbuf);
+    // ...status checks via FLASH_SCHREIBEN_STATUS
+    CDHGetApiJobByteData(                   // advance to next chunk
+        MaxData = l_05, BufHandle = l_0B,
+        out BufSize, out l_0D, out err);
+}
+
+if (SCHNELLE_BAUDRATE == "ON") {
+    CDHapiJob("BAUDRATEN_UMSTELLUNG", "9600;3");
+    CDHapiJob("SET_EDIC_BAUDRATE", "9600");
+}
+
+CDHapiJobData("FLASH_SCHREIBEN_ENDE", binbuf);  // final
+if (TEST_CHECKSUMME == "ON") {
+    CDHapiJob("STATUS_CODIER_CHECKSUMME");
+}
+```
+
+**Key insight: `CDHGetApiJobByteData` (slot 0x55) is the IPO's
+"next chunk of firmware" iterator.** NCSEXPER labels it "drain SGBD
+binary result", but NFS reuses it as **paginate-through-pre-loaded-
+firmware-buffer**. The IPO calls it once before the loop to learn
+the initial block count, then again at the end of each loop iteration
+to advance.
+
+**Critical missing piece (task #241):** the host preamble that
+pre-loads `.0PA` bytes into the BinBuf at `l_0B` BEFORE the IPO is
+dispatched. Without it, `CDHGetApiJobByteData` returns `NrOfData=0`,
+the `while` loop never executes, and the flash is a no-op (just
+FLASH_LOESCHEN + ENDE with no payload). Likely lives in WinKFP's
+`coapiKfProgSgD2` preamble — `FUN_00491e30` / `FUN_00492870`
+(AIF-symbol mods to the in-memory `.DAT` buffer) or an even earlier
+hook that streams `.0PA` content into a buffer mapped to the
+IPO-visible BinBuf.
+
+This is why our current trace shows:
+- 3× `CDHapiJobData` (FLASH_SCHREIBEN_ENDE × 2, FLASH_LOESCHEN × 1)
+- 1× `CDHGetApiJobByteData` (returns NrOfData=0)
+- 0× `FLASH_SCHREIBEN` (the loop never enters)
+
+Mock mode looks fine because the SGBD-side mock returns OKAY; the
+real semantic damage (no flash payload) is invisible until we go
+write-mode against the real ECU.
+
+### 11.10 Next blocker
+
+Pre-2026-05-27 (#237):** with BinBuf wired, `SG_PROGRAMMIEREN`
 gets deeper into the IPO but throws a VM stack error in
 `TestApiFehlerNoExit#7` (`Stack index out of bounds: 30 ...
 pc=2 op=0x07 frameOffset=21 stackLen=28`). Hypothesis: a slot
