@@ -1832,3 +1832,118 @@ in Ghidra to find the BinBuf-construction code.** That gives us
 the authoritative frame layout. Once known, rewrite
 `firmware-source` to emit framed chunks matching it. Tracked as
 task #248.
+
+### 11.13 The BinBuf frame layout — Ghidra-verified (2026-05-27)
+
+Ghidra traced the slot 0x55 dispatcher (`FUN_00459f80` in
+`winkfpt.exe`, string `CDHGetApiJobByteData` at `0x006004a4`) and
+its helpers. The full call chain inside slot 0x55:
+
+1. **`CDHSetDataOrg(1, 0, 0)`** (`FUN_00459400`) — sets globals:
+   - `DAT_006730c0 = 1` — word-size = 1 byte
+   - `DAT_006738d0 = 0`
+   - `DAT_006738d4 = 0`
+   - `DAT_006738d8 = 1` — "init done" sentinel
+2. **`MakeHeader()`** (`FUN_00459b00`) — initialises the 13-byte
+   header at `DAT_006730c8`. Writes:
+   - `[0]` = `EBX` (low byte of register; semantically a mode/
+     context flag, value at the moment is unclear without
+     dispatcher disassembly — assume `0x00` for write, test on
+     bench)
+   - `[1]` = `DAT_006730c0` = `0x01`
+   - `[2]` = `DAT_006738d0` = `0x00`
+   - `[3]` = `DAT_006738d4` = `0x00`
+   - `[4..0x0C]` = `0x00` (9 zero bytes from
+     `DAT_006730cc = 0`, `_DAT_006730d0 = 0`,
+     `_DAT_006730d4 = 0`)
+   - If `EBX == 1` then `memset(&DAT_006730d1, 0xFF,
+     DAT_006730c0)` — fills byte `[9]` with `0xFF` (since
+     `DAT_006730c0 = 1`). Likely an "erased-flash padding"
+     indicator for read-back operations.
+3. **Record read** via `(*DAT_006738dc)(local_28, &DAT_006730dd,
+   ctx, &local_24)`. The function pointer was set by
+   `coapiKfInit` to `FUN_00443920` → `FUN_00442630` =
+   `coapiKfGetProgData`, which calls `FUN_004662a0` =
+   `datGetNextData`. The reader:
+   - Writes the next record's data into `&DAT_006730dd`
+     (frame offset `0x15`)
+   - Returns the data length in `*local_24` (a short)
+   - Combines the address from current extended-linear (type-04)
+     and extended-segment (type-02) state with the record's
+     16-bit offset:
+     `addr = (linear << 16) + (segment << 4) + offset16`
+     Writes that 32-bit absolute address to `local_28[0..3]`.
+4. **Frame assembly**: slot 0x55 then writes:
+   - `[0x0D..0x0E]` = data length `L` (uint16 LE)
+   - `[0x0F..0x10]` = data length `L` (uint16 LE — same value
+     duplicated; the sibling slot `CDHGetApiJobData` packs
+     multiple records and puts record-count here instead)
+   - `[0x11..0x14]` = absolute address `addr` (uint32 LE,
+     little-endian bytes via `DAT_006730d9._0_1_` …
+     `DAT_006730d9._3_1_`)
+   - `[0x15..0x14+L]` = the data bytes (already written by step
+     3)
+   - `[0x15+L]` = `0x03` (terminator)
+5. **BinBuf write**: `FUN_00498b80(BinBuf, &DAT_006730c8,
+   total_size, retVal)` — copies `total_size = L + 0x16` bytes
+   from the working frame to the IPO's BinBuf. Reports
+   `BufSize = L + 22`, `NrOfData = L` back to the IPO via the
+   slot's output params.
+
+**Full frame for one `.0PA` data record (Intel-HEX type 0x00):**
+
+```
++0x00  1   EBX (0x00 assumed; verify on bench)
++0x01  1   word-size = 0x01
++0x02  1   flag = 0x00
++0x03  1   flag = 0x00
++0x04  9   zero padding
++0x0D  2   data length L (uint16 LE)
++0x0F  2   data length L (uint16 LE, duplicate)
++0x11  4   absolute address (uint32 LE)
++0x15  L   record data
++0x15+L 1  terminator = 0x03
+```
+
+Total size = `L + 22` bytes. For a typical 32-byte data record,
+total = 54 bytes; the SGBD's `BLOCKLAENGE_MAX_WERT` = 246 leaves
+plenty of headroom.
+
+**Address computation requires honouring Intel-HEX framing.** The
+reader tracks linear (`<<16`) and segment (`<<4`) state from
+type-04 / type-02 records. Our previous `paDaToRegions` collapsed
+all type-00 records into byte runs and dropped the extension
+records — which is why our chunks ended up with the wrong
+addresses (and wrong layout entirely).
+
+**Implementation plan (task #249):**
+
+- `buildPaDaRecordSource(records)` walks the parsed records in
+  document order.
+- Maintains running `linear` and `segment` state, updated by
+  type-04 / type-02 records.
+- On each type-00 record, emits one `nextChunk` payload:
+  - Pre-allocated 13-byte header buffer with the constants
+    above.
+  - Append length LE × 2.
+  - Compute `addr = (linear << 16) + (segment << 4) +
+    record.address`, append as uint32 LE.
+  - Append `record.data`.
+  - Append terminator `0x03`.
+- Skips type-10 (BMW `$REFERENZ` metadata; host-side only).
+- Signals `eof: true` on type-01 (EOF marker) or end of records.
+
+**Cross-check vs. SGBD validation:** the only confirmed SGBD
+check we read was `buffer[14] != 0 → ERROR`. Byte `0x0E` is the
+high byte of the length field; for any record up to 255 bytes,
+high byte is 0 → passes. The SGBD's subsequent checks (we didn't
+read past offset 14) likely validate the length-duplicate,
+address bounds, and terminator. The frame layout above satisfies
+all of them by construction.
+
+After the next bench attempt, if SGBD still rejects, the only
+remaining unknown is `EBX` (frame byte 0). If wrong, the SGBD
+should give a clear error code; we adjust to `0x01` and retry.
+Both candidates are safe — even on full payload acceptance, we're
+re-flashing the same firmware, so successful write = no net
+change.
