@@ -112,6 +112,22 @@ export class CabiState {
    * notes in [[feedback-sg-programmieren-primitive]].
    */
   pendingBinBufPayload?: { handle: number; size: number };
+
+  /**
+   * Result sets from the most-recent binary-param SGBD dispatch
+   * (`CDHapiJobData`). Cached here because the binary path bypasses
+   * `IEdiabasProvider.job()` (which is string-only) and goes
+   * straight to the underlying `Ediabas.executeJob()` — meaning the
+   * provider's own result cache is stale until the next string-mode
+   * dispatch.
+   *
+   * Each set is a `Map<name, value>` — values mirror what
+   * `EdiabasJobResult.value` would carry (string / number / boolean
+   * / Uint8Array). Subsequent `CDHapiResultText` / `Int` slots prefer
+   * this over the provider when set. Cleared by the next
+   * string-param `CDHapiJob` (provider becomes authoritative again).
+   */
+  lastJobSets?: ReadonlyArray<ReadonlyMap<string, unknown>>;
 }
 
 export interface BinBuf {

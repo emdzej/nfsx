@@ -120,6 +120,10 @@ function makeOverride(
           state.lastJob = { ecu, job, para, status: 'NO_EDIABAS', ok: false };
           return;
         }
+        // String-mode dispatch — provider's result cache becomes the
+        // authoritative source, so clear any binary-path cache from a
+        // prior `CDHapiJobData` call.
+        state.lastJobSets = undefined;
         try {
           await ediabas.job(ecu, job, para, result);
           const status = readJobStatus(ediabas);
@@ -136,36 +140,67 @@ function makeOverride(
       // SGBD's `pary` opcode reads the bytes from the binary param
       // channel (not the indexed-string args of plain `apiJob`).
       //
-      // Wire surface: IEdiabasProvider.job(ecu, job, arg1, arg2) only
-      // takes strings. Real binary param plumbing needs either an
-      // IEdiabasProvider extension (upstream inpax change) or a
-      // duck-typed `getEdiabas()` escape to Ediabas.executeJob. Both
-      // tracked separately. For now: dispatch via the string path so
-      // mock-mode (no binary) keeps the IPO flow moving + JOB_STATUS
-      // populates. Real-bench binary param is task #240.
+      // Wire path: `IEdiabasProvider.job()` is string-only, so we
+      // duck-type to the underlying `Ediabas` via `getEdiabas()` (the
+      // `EdiabasXProvider` escape hatch). On hit we call
+      // `Ediabas.executeJob(job, { params: [bytes] })` directly + cache
+      // the returned sets in `state.lastJobSets`. Subsequent
+      // CDHapiResultText/Int slots prefer that cache (provider's own
+      // cache is stale because we bypassed `provider.job()`).
+      //
+      // No-hit (mock + any string-only provider) falls back to
+      // `provider.job(ecu, job, '', '')` — mock returns whatever was
+      // seeded for the job name, lets the trace progress through the
+      // IPO without hitting `ERROR_NO_BIN_BUFFER`.
       return async (ctx) => {
         const args = popArgs(ctx, slot.params);
         const ecu = String(args.ecu || defaultSgbd);
         const job = String(args.job);
         const handle = Number(args.BufHandle) | 0;
         const buf = state.binBufs.get(handle);
-        const bufSize = buf?.size ?? 0;
+        const bytes = buf ? buf.bytes.slice(0, buf.size) : new Uint8Array(0);
         state.trace.push({
           slot: slot.id,
           name: slot.name,
-          args: { ecu, job, handle, bufSize },
+          args: { ecu, job, handle, bufSize: bytes.length },
         });
         if (!ediabas) {
           state.lastJob = { ecu, job, para: '', status: 'NO_EDIABAS', ok: false };
+          state.lastJobSets = undefined;
           return;
         }
+        // Try real binary path via getEdiabas() duck-type.
+        const ed = getEdiabasInstance(ediabas);
+        if (ed && bytes.length > 0) {
+          try {
+            await ed.loadSgbd(ecu);
+            const sets = await ed.executeJob(job, { params: [bytes] });
+            state.lastJobSets = sets.map((set) => {
+              const m = new Map<string, unknown>();
+              for (const r of set) m.set(r.name, r.value);
+              return m;
+            });
+            const status = pickResultText(state.lastJobSets, 'JOB_STATUS', '');
+            state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status, ok: true };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status: `ERROR: ${message}`, ok: false };
+            state.lastJobSets = undefined;
+          }
+          return;
+        }
+        // Mock / string-only fallback. Empty-string params keep the
+        // IPO moving; real bench requires `getEdiabas()` to be
+        // available (i.e. `EdiabasXProvider`).
         try {
           await ediabas.job(ecu, job, '', '');
           const status = readJobStatus(ediabas);
-          state.lastJob = { ecu, job, para: `binbuf[${bufSize}]`, status, ok: true };
+          state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status, ok: true };
+          state.lastJobSets = undefined; // provider cache is authoritative
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          state.lastJob = { ecu, job, para: `binbuf[${bufSize}]`, status: `ERROR: ${message}`, ok: false };
+          state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status: `ERROR: ${message}`, ok: false };
+          state.lastJobSets = undefined;
         }
       };
 
@@ -244,33 +279,39 @@ function makeOverride(
     case 'CDHapiResultText':
       return (ctx) => {
         const args = popArgs(ctx, slot.params);
-        const value = ediabas
-          ? safeResultText(
-              ediabas,
-              String(args.ApiResult),
-              Number(args.ApiSet) | 0,
-              String(args.ApiFormat ?? ''),
-            )
-          : '';
+        const name = String(args.ApiResult);
+        const set = Number(args.ApiSet) | 0;
+        // Prefer the binary-path cache when set (last call was
+        // `CDHapiJobData`); fall back to the provider for string-mode
+        // dispatches.
+        const value = state.lastJobSets
+          ? pickResultText(state.lastJobSets, name, '', set)
+          : ediabas
+            ? safeResultText(ediabas, name, set, String(args.ApiFormat ?? ''))
+            : '';
         writeOut(ctx, args.ResultText, 'string', value);
         state.trace.push({
           slot: slot.id,
           name: slot.name,
-          args: { name: String(args.ApiResult), set: Number(args.ApiSet), value },
+          args: { name, set, value },
         });
       };
 
     case 'CDHapiResultInt':
       return (ctx) => {
         const args = popArgs(ctx, slot.params);
-        const value = ediabas
-          ? safeResultInt(ediabas, String(args.ApiResult), Number(args.ApiSet) | 0)
-          : 0;
+        const name = String(args.ApiResult);
+        const set = Number(args.ApiSet) | 0;
+        const value = state.lastJobSets
+          ? pickResultInt(state.lastJobSets, name, 0, set)
+          : ediabas
+            ? safeResultInt(ediabas, name, set)
+            : 0;
         writeOut(ctx, args.ResultVal, 'int', value);
         state.trace.push({
           slot: slot.id,
           name: slot.name,
-          args: { name: String(args.ApiResult), set: Number(args.ApiSet), value },
+          args: { name, set, value },
         });
       };
 
@@ -902,4 +943,80 @@ function safeResultInt(ediabas: IEdiabasProvider, name: string, set: number): nu
   } catch {
     return 0;
   }
+}
+
+/**
+ * Duck-typed Ediabas-instance escape hatch. `EdiabasXProvider`
+ * exposes `getEdiabas(): Ediabas | null`; other providers (mock,
+ * Inp1Adapter, etc.) don't. Returns the underlying instance on hit,
+ * `undefined` on miss. Typed loosely on purpose — we can't import
+ * `@emdzej/ediabasx-ediabas` from nfsx-runtime without adding a
+ * dependency that contaminates browser builds.
+ */
+interface EdiabasInstance {
+  loadSgbd(filename: string): Promise<void>;
+  executeJob(
+    jobName: string,
+    options?: { params?: (string | Uint8Array)[]; timeout?: number },
+  ): Promise<Array<Array<{ name: string; value: unknown }>>>;
+}
+
+function getEdiabasInstance(provider: IEdiabasProvider): EdiabasInstance | undefined {
+  const getter = (provider as unknown as { getEdiabas?: () => unknown }).getEdiabas;
+  if (typeof getter !== 'function') return undefined;
+  const ed = getter.call(provider);
+  if (!ed || typeof (ed as { executeJob?: unknown }).executeJob !== 'function') return undefined;
+  return ed as EdiabasInstance;
+}
+
+/**
+ * Read a named field from a cached job-set snapshot, coercing to
+ * text. Used after `CDHapiJobData` to read result fields without
+ * going through the provider (which has a stale cache because we
+ * bypassed `provider.job()`).
+ */
+function pickResultText(
+  sets: ReadonlyArray<ReadonlyMap<string, unknown>>,
+  name: string,
+  fallback: string,
+  set: number = 1,
+): string {
+  const s = sets[set - 1];
+  if (!s) return fallback;
+  const v = s.get(name);
+  if (v === undefined || v === null) return fallback;
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (v instanceof Uint8Array) {
+    // Try UTF-8 decode for text-like binary results; fall back to hex.
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(v);
+    } catch {
+      return Array.from(v, (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+  }
+  return String(v);
+}
+
+/**
+ * Read a named field from a cached job-set snapshot, coercing to
+ * integer. Companion to `pickResultText`.
+ */
+function pickResultInt(
+  sets: ReadonlyArray<ReadonlyMap<string, unknown>>,
+  name: string,
+  fallback: number,
+  set: number = 1,
+): number {
+  const s = sets[set - 1];
+  if (!s) return fallback;
+  const v = s.get(name);
+  if (v === undefined || v === null) return fallback;
+  if (typeof v === 'number') return Math.trunc(v);
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (typeof v === 'string') {
+    const n = Number.parseInt(v, 10);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  return fallback;
 }
