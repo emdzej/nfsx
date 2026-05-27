@@ -4,4 +4,8 @@ export {
   type StartNfsRuntimeOptions,
 } from './runtime.js';
 export { CabiState } from './state.js';
-export { buildSystemFunctions } from './system-functions.js';
+export {
+  buildSystemFunctions,
+  type FirmwareSource,
+  type BuildSystemFunctionsOptions,
+} from './system-functions.js';

@@ -108,6 +108,13 @@ export interface StartNfsRuntimeOptions {
    * accidentally opening process.cwd()-relative paths).
    */
   workingDir?: string;
+  /**
+   * Firmware-record iterator for the IPO's flash loop. See
+   * `BuildSystemFunctionsOptions.firmwareSource` in
+   * `./system-functions.ts` for the contract. Wire from
+   * `@emdzej/nfsx-flash` after parsing the `.0PA`.
+   */
+  firmwareSource?: import('./system-functions.js').FirmwareSource;
 }
 
 export async function startNfsRuntime(
@@ -133,6 +140,7 @@ export async function startNfsRuntime(
     ediabas,
     defaultSgbd: options.sgbd,
     workingDir: options.workingDir,
+    firmwareSource: options.firmwareSource,
   });
 
   // 5. Build the VM. All UI / simulation / etc. providers are

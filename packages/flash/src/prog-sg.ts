@@ -19,7 +19,7 @@
  */
 
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
-import { startNfsRuntime } from '@emdzej/nfsx-runtime';
+import { startNfsRuntime, type FirmwareSource } from '@emdzej/nfsx-runtime';
 import type { EcuTarget } from './types.js';
 
 /**
@@ -97,11 +97,17 @@ export interface ProgramReport {
  * the ONLY wire-level call the host makes for a flash — the IPO
  * handles everything from security access to block transfer to
  * post-flash verification internally.
+ *
+ * `firmwareSource` is what the IPO's flash loop pops chunks from
+ * via slot 0x55 — typically built via `buildRegionsFirmwareSource`
+ * over the parsed `.0PA`. Without it, the loop exits immediately
+ * (no payload), which is the safe degenerate path.
  */
 export async function runProgramSg(
   ecu: EcuTarget,
   ediabas: IEdiabasProvider,
   opts: ProgramOptions = {},
+  firmwareSource?: FirmwareSource,
 ): Promise<ProgramReport> {
   const cabdPars: Record<string, string> = {
     DOMINANTE: String(opts.dominante ?? 0),
@@ -132,6 +138,7 @@ export async function runProgramSg(
       ediabas,
       cabdPars,
       workingDir: ecu.workingDir,
+      firmwareSource,
     });
     await handle.runCabimain('SG_PROGRAMMIEREN');
     const status = handle.state.lastJobStatus;

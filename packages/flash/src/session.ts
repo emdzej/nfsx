@@ -19,6 +19,7 @@ import {
 import { runPrecheck } from './precheck.js';
 import { runBackup, writeBackupFile } from './backup.js';
 import { runProgramSg } from './prog-sg.js';
+import { buildRegionsFirmwareSource } from './firmware-source.js';
 import { rejectAllConfirmation } from './safety.js';
 import type {
   ConfirmContext,
@@ -149,10 +150,14 @@ export class FlashSession {
         const t0 = Date.now();
         this.emit({ type: 'stage:start', stage: 'PROGRAM' });
         try {
+          // The IPO pops one record per call from this iterator via
+          // slot 0x55. See packages/runtime/src/system-functions.ts.
+          const firmwareSource = buildRegionsFirmwareSource(regions);
           const report = await runProgramSg(
             this.opts.ecu,
             this.opts.ediabas,
             this.opts.program,
+            firmwareSource,
           );
           if (!report.ok) {
             return this.abortAt('PROGRAM', report.reason ?? 'SG_PROGRAMMIEREN failed', stagesRun, totalBytes, backupPath, dryRun);

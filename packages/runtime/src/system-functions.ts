@@ -58,6 +58,41 @@ export interface BuildSystemFunctionsOptions {
    * KFCONF + ZB-NR table.
    */
   workingDir?: string;
+  /**
+   * Firmware-record iterator the IPO's flash loop pops from via slot
+   * 0x55 (`CDHGetApiJobByteData`). NFS reuses that slot — NCSEXPER's
+   * "drain SGBD result" label is wrong here. The iterator hands back
+   * one record at a time (`bytes` plus `eof` flag); when set, the
+   * slot 0x55 handler ignores its NCSEXPER-style SGBD-result lookup
+   * and reads from this source instead.
+   *
+   * Verified via winkfpt Ghidra walk 2026-05-27 — the host opens
+   * `.0PA` via `datDekompOpen` (FUN_00468220) before dispatching
+   * SG_PROGRAMMIEREN; slot 0x55 calls `dlReadRecord` (FUN_0046c510)
+   * each time the IPO wants the next record.
+   */
+  firmwareSource?: FirmwareSource;
+}
+
+/**
+ * One-shot, stateful iterator over a host-opened firmware archive
+ * (`.0PA`). The IPO drives a `while (NrOfData > 0)` loop and pops
+ * one record per call. Implementations choose how to chunk the
+ * archive — by parsed BMW records, by fixed-size windows, etc. —
+ * as long as each chunk fits within the SGBD's `BLOCKLAENGE_MAX`.
+ */
+export interface FirmwareSource {
+  /**
+   * Pop the next record from the firmware. `maxBytes` is the SGBD's
+   * `BLOCKLAENGE_MAX` — the IPO will reject a chunk that exceeds it.
+   *
+   * Return `{ bytes, eof: false }` on a successful pop. Return
+   * `{ bytes: Uint8Array(0), eof: true }` when the source is
+   * exhausted — the IPO interprets that as the loop terminator.
+   *
+   * Stateful — called repeatedly from the same FlashSession run.
+   */
+  nextChunk(maxBytes: number): { bytes: Uint8Array; eof: boolean };
 }
 
 export function buildSystemFunctions(
@@ -205,53 +240,105 @@ function makeOverride(
       };
 
     case 'CDHGetApiJobByteData':
-      // Pull SGBD result bytes into a BinBuf. NCSEXPER ships a
-      // distribute-into-slot-table variant; NFS's semantic is the
-      // simpler "drain the result-set's binary blob into the buffer".
-      // The IPO passes `MaxData` (max records to read per call) and
-      // gets back (BufSize, NrOfData, RetVal).
+      // NFS reuses slot 0x55 as the IPO's "give me the next firmware
+      // record" iterator. NCSEXPER's "drain SGBD binary result" label
+      // doesn't apply — the canonical NFS path is:
       //
-      // SGBD binary results typically arrive in result-set 1 under a
-      // well-known name (`TELEGRAMM` is the GS20 convention; varies
-      // by ECU family). We read the first binary-typed result and
-      // write its bytes into the BinBuf at position 0.
+      //   1. Host opens .0PA via datDekompOpen (FUN_00468220 in
+      //      winkfpt.exe) before SG_PROGRAMMIEREN dispatch.
+      //   2. IPO calls this slot once before the flash loop to learn
+      //      the initial block count.
+      //   3. Inside the loop, the IPO dispatches FLASH_SCHREIBEN with
+      //      the BinBuf contents + calls this slot again to advance.
+      //   4. When NrOfData hits 0, the IPO exits the loop.
       //
-      // Until we observe what FLASH_LESEN / FLASH_SCHREIBEN_ENDE
-      // actually publishes on the bench, this is best-effort:
-      // - returns BufSize = #bytes written, NrOfData = 1, RetVal = 0
-      //   when we found a binary result;
-      // - returns all zeros + RetVal = 0 otherwise (the IPO branches
-      //   on RetVal != 0, so empty is safer than fail).
+      // We expose `opts.firmwareSource` for the host (nfsx-flash) to
+      // hand in a chunked-iterator view of the .0PA. When set, this
+      // is the authoritative branch.
+      //
+      // Falls back to the SGBD-result-drain path (NCSEXPER's
+      // documented semantic) when `firmwareSource` is absent — kept
+      // for coding-style use cases where the SGBD ships bytes back
+      // as a binary result.
       return (ctx) => {
         const args = popArgs(ctx, slot.params);
         const handle = Number(args.BufHandle) | 0;
         const maxData = Number(args.MaxData) | 0;
         const buf = state.binBufs.get(handle);
-        if (!buf || !ediabas) {
+        if (!buf) {
           writeOut(ctx, args.BufSize, 'int', 0);
           writeOut(ctx, args.NrOfData, 'int', 0);
-          writeOut(ctx, args.RetVal, 'int', buf ? NCSEXPER_SUCCESS : 1);
+          writeOut(ctx, args.RetVal, 'int', 1);
           state.trace.push({
             slot: slot.id,
             name: slot.name,
-            args: { handle, maxData, error: buf ? 'no-ediabas' : 'invalid-handle' },
+            args: { handle, maxData, error: 'invalid-handle' },
           });
           return;
         }
-        // Probe the most-recent job's binary result. NCSEXPER's
-        // `resultBinary` throws if the name/type doesn't match;
-        // fall back to result-set introspection if the canonical
-        // name misses.
+        // NFS happy path — host firmware source.
+        if (opts.firmwareSource) {
+          const chunk = opts.firmwareSource.nextChunk(maxData);
+          if (chunk.bytes.length === 0 || chunk.eof) {
+            writeOut(ctx, args.BufSize, 'int', 0);
+            writeOut(ctx, args.NrOfData, 'int', 0);
+            writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+            state.trace.push({
+              slot: slot.id,
+              name: slot.name,
+              args: { handle, maxData, source: 'firmware', eof: true },
+            });
+            return;
+          }
+          if (chunk.bytes.length > maxData) {
+            // IPO would reject this; bail with an error code rather
+            // than silently truncating.
+            writeOut(ctx, args.BufSize, 'int', 0);
+            writeOut(ctx, args.NrOfData, 'int', 0);
+            writeOut(ctx, args.RetVal, 'int', 2);
+            state.trace.push({
+              slot: slot.id,
+              name: slot.name,
+              args: { handle, maxData, error: 'chunk-exceeds-maxData', got: chunk.bytes.length },
+            });
+            return;
+          }
+          // Reset the buffer's effective size so each record starts
+          // at position 0 — the IPO sends `buf[0..size]` as the
+          // FLASH_SCHREIBEN binary payload.
+          buf.size = 0;
+          writeBinBufBytes(state, handle, 0, chunk.bytes);
+          writeOut(ctx, args.BufSize, 'int', chunk.bytes.length);
+          writeOut(ctx, args.NrOfData, 'int', 1);
+          writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+          state.trace.push({
+            slot: slot.id,
+            name: slot.name,
+            args: { handle, maxData, source: 'firmware', bytesWritten: chunk.bytes.length },
+          });
+          return;
+        }
+        // NCSEXPER fallback — drain SGBD binary result if present.
+        if (!ediabas) {
+          writeOut(ctx, args.BufSize, 'int', 0);
+          writeOut(ctx, args.NrOfData, 'int', 0);
+          writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+          state.trace.push({
+            slot: slot.id,
+            name: slot.name,
+            args: { handle, maxData, note: 'no firmwareSource + no ediabas' },
+          });
+          return;
+        }
         let bytes: Uint8Array | undefined;
-        const candidateNames = ['TELEGRAMM', 'BIN_DATA', 'DATA'];
-        for (const name of candidateNames) {
+        for (const name of ['TELEGRAMM', 'BIN_DATA', 'DATA']) {
           try {
             if (ediabas.hasResult(name, 1)) {
               bytes = ediabas.resultBinary(name, 1);
               break;
             }
           } catch {
-            /* try next name */
+            /* try next */
           }
         }
         if (!bytes) {
@@ -265,6 +352,7 @@ function makeOverride(
           });
           return;
         }
+        buf.size = 0;
         writeBinBufBytes(state, handle, 0, bytes);
         writeOut(ctx, args.BufSize, 'int', bytes.length);
         writeOut(ctx, args.NrOfData, 'int', 1);
@@ -272,7 +360,7 @@ function makeOverride(
         state.trace.push({
           slot: slot.id,
           name: slot.name,
-          args: { handle, maxData, bytesWritten: bytes.length },
+          args: { handle, maxData, source: 'sgbd-result', bytesWritten: bytes.length },
         });
       };
 
