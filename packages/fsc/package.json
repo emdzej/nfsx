@@ -17,10 +17,10 @@
   },
   "dependencies": {
     "@emdzej/nfsx-runtime": "workspace:*",
-    "@emdzej/inpax-interfaces": "^0.7.1"
+    "@emdzej/inpax-interfaces": "^0.8.1"
   },
   "devDependencies": {
-    "@emdzej/inpax-mock-provider": "^0.7.1",
+    "@emdzej/inpax-mock-provider": "^0.8.1",
     "@types/node": "^22.13.1",
     "vitest": "^2.1.8"
   },

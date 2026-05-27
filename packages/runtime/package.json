@@ -16,16 +16,16 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@emdzej/inpax-parser": "^0.7.1",
-    "@emdzej/inpax-interpreter": "^0.7.1",
-    "@emdzej/inpax-core": "^0.7.1",
-    "@emdzej/inpax-providers": "^0.7.1",
-    "@emdzej/inpax-mock-provider": "^0.7.1",
-    "@emdzej/inpax-interfaces": "^0.7.1",
-    "@emdzej/ncsx-inpax-cabi-provider": "^0.4.0",
-    "@emdzej/ncsx-chassis": "^0.4.0",
-    "@emdzej/ncsx-fa-asw": "^0.4.0",
-    "@emdzej/ncsx-wire": "^0.4.0",
+    "@emdzej/inpax-parser": "^0.8.1",
+    "@emdzej/inpax-interpreter": "^0.8.1",
+    "@emdzej/inpax-core": "^0.8.1",
+    "@emdzej/inpax-providers": "^0.8.1",
+    "@emdzej/inpax-mock-provider": "^0.8.1",
+    "@emdzej/inpax-interfaces": "^0.8.1",
+    "@emdzej/ncsx-inpax-cabi-provider": "^0.5.1",
+    "@emdzej/ncsx-chassis": "^0.5.1",
+    "@emdzej/ncsx-fa-asw": "^0.5.1",
+    "@emdzej/ncsx-wire": "^0.5.1",
     "@emdzej/bimmerz-logger": "^0.1.2"
   },
   "devDependencies": {
