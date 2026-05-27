@@ -130,6 +130,117 @@ function makeOverride(
         }
       };
 
+    case 'CDHapiJobData':
+      // CDHapiJob with a BinBuf binary payload. WinKFP uses this for
+      // FLASH_LOESCHEN / FLASH_SCHREIBEN / FLASH_SCHREIBEN_ENDE — the
+      // SGBD's `pary` opcode reads the bytes from the binary param
+      // channel (not the indexed-string args of plain `apiJob`).
+      //
+      // Wire surface: IEdiabasProvider.job(ecu, job, arg1, arg2) only
+      // takes strings. Real binary param plumbing needs either an
+      // IEdiabasProvider extension (upstream inpax change) or a
+      // duck-typed `getEdiabas()` escape to Ediabas.executeJob. Both
+      // tracked separately. For now: dispatch via the string path so
+      // mock-mode (no binary) keeps the IPO flow moving + JOB_STATUS
+      // populates. Real-bench binary param is task #240.
+      return async (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const ecu = String(args.ecu || defaultSgbd);
+        const job = String(args.job);
+        const handle = Number(args.BufHandle) | 0;
+        const buf = state.binBufs.get(handle);
+        const bufSize = buf?.size ?? 0;
+        state.trace.push({
+          slot: slot.id,
+          name: slot.name,
+          args: { ecu, job, handle, bufSize },
+        });
+        if (!ediabas) {
+          state.lastJob = { ecu, job, para: '', status: 'NO_EDIABAS', ok: false };
+          return;
+        }
+        try {
+          await ediabas.job(ecu, job, '', '');
+          const status = readJobStatus(ediabas);
+          state.lastJob = { ecu, job, para: `binbuf[${bufSize}]`, status, ok: true };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          state.lastJob = { ecu, job, para: `binbuf[${bufSize}]`, status: `ERROR: ${message}`, ok: false };
+        }
+      };
+
+    case 'CDHGetApiJobByteData':
+      // Pull SGBD result bytes into a BinBuf. NCSEXPER ships a
+      // distribute-into-slot-table variant; NFS's semantic is the
+      // simpler "drain the result-set's binary blob into the buffer".
+      // The IPO passes `MaxData` (max records to read per call) and
+      // gets back (BufSize, NrOfData, RetVal).
+      //
+      // SGBD binary results typically arrive in result-set 1 under a
+      // well-known name (`TELEGRAMM` is the GS20 convention; varies
+      // by ECU family). We read the first binary-typed result and
+      // write its bytes into the BinBuf at position 0.
+      //
+      // Until we observe what FLASH_LESEN / FLASH_SCHREIBEN_ENDE
+      // actually publishes on the bench, this is best-effort:
+      // - returns BufSize = #bytes written, NrOfData = 1, RetVal = 0
+      //   when we found a binary result;
+      // - returns all zeros + RetVal = 0 otherwise (the IPO branches
+      //   on RetVal != 0, so empty is safer than fail).
+      return (ctx) => {
+        const args = popArgs(ctx, slot.params);
+        const handle = Number(args.BufHandle) | 0;
+        const maxData = Number(args.MaxData) | 0;
+        const buf = state.binBufs.get(handle);
+        if (!buf || !ediabas) {
+          writeOut(ctx, args.BufSize, 'int', 0);
+          writeOut(ctx, args.NrOfData, 'int', 0);
+          writeOut(ctx, args.RetVal, 'int', buf ? NCSEXPER_SUCCESS : 1);
+          state.trace.push({
+            slot: slot.id,
+            name: slot.name,
+            args: { handle, maxData, error: buf ? 'no-ediabas' : 'invalid-handle' },
+          });
+          return;
+        }
+        // Probe the most-recent job's binary result. NCSEXPER's
+        // `resultBinary` throws if the name/type doesn't match;
+        // fall back to result-set introspection if the canonical
+        // name misses.
+        let bytes: Uint8Array | undefined;
+        const candidateNames = ['TELEGRAMM', 'BIN_DATA', 'DATA'];
+        for (const name of candidateNames) {
+          try {
+            if (ediabas.hasResult(name, 1)) {
+              bytes = ediabas.resultBinary(name, 1);
+              break;
+            }
+          } catch {
+            /* try next name */
+          }
+        }
+        if (!bytes) {
+          writeOut(ctx, args.BufSize, 'int', 0);
+          writeOut(ctx, args.NrOfData, 'int', 0);
+          writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+          state.trace.push({
+            slot: slot.id,
+            name: slot.name,
+            args: { handle, maxData, note: 'no binary result on last job' },
+          });
+          return;
+        }
+        writeBinBufBytes(state, handle, 0, bytes);
+        writeOut(ctx, args.BufSize, 'int', bytes.length);
+        writeOut(ctx, args.NrOfData, 'int', 1);
+        writeOut(ctx, args.RetVal, 'int', NCSEXPER_SUCCESS);
+        state.trace.push({
+          slot: slot.id,
+          name: slot.name,
+          args: { handle, maxData, bytesWritten: bytes.length },
+        });
+      };
+
     case 'CDHapiResultText':
       return (ctx) => {
         const args = popArgs(ctx, slot.params);
