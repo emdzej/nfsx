@@ -22,6 +22,7 @@ import { runBrowse } from './browse.js';
 import { runConfigure } from './configure.js';
 import { runBackupCmd } from './backup.js';
 import { runVerifyCmd } from './verify.js';
+import { runCheckCmd } from './check.js';
 import { DEFAULT_CONFIG_PATH } from './config.js';
 
 const program = new Command();
@@ -134,6 +135,27 @@ program
   .option('--json', 'machine-readable JSON output', false)
   .action(async (opts: BackupOptions) => {
     const code = await runBackupCmd(opts);
+    if (code !== 0) process.exit(code);
+  });
+
+// ── check ───────────────────────────────────────────────────────────
+program
+  .command('check')
+  .description('Read live ECU identity (HW_REFERENZ + SG_IDENT + SG_AIF + ZIF_BACKUP). Same dispatches as `backup` but no JSON output — quick sanity probe.')
+  .requiredOption('--hwnr <hwnr>', 'BMW part number — resolves IPO + SGBD from SP-Daten')
+  .option('--ipo <path>', 'override the auto-resolved target SG IPO')
+  .option('--sgbd <name>', 'override the auto-resolved SGBD basename')
+  .option('--mock-file <path>', 'bypass EDIABAS-X entirely with a JSON-fed MockEdiabasProvider')
+  .option('--ediabas-config <path>', 'EDIABAS-X config file (default: ~/.config/ediabasx/config.json)')
+  .option('--interface <name>', 'override `interface` from config')
+  .option('--serial-port <path>', 'override serial port from config')
+  .option('--serial-baud <rate>', 'override serial baud rate', parseBaud)
+  .option('--gateway <host:port>', 'shortcut: gateway interface')
+  .option('--sp-daten <dir>', 'SP-Daten chassis drop (overrides config)')
+  .option('--config <path>', `nfsx config file path (default ${DEFAULT_CONFIG_PATH})`)
+  .option('--json', 'machine-readable JSON output', false)
+  .action(async (opts: CheckOptions) => {
+    const code = await runCheckCmd(opts);
     if (code !== 0) process.exit(code);
   });
 
@@ -270,6 +292,21 @@ export interface BrowseOptions {
 export interface BackupOptions {
   hwnr: string;
   outputDir: string;
+  ipo?: string;
+  sgbd?: string;
+  mockFile?: string;
+  ediabasConfig?: string;
+  interface?: string;
+  serialPort?: string;
+  serialBaud?: number;
+  gateway?: string;
+  spDaten?: string;
+  config?: string;
+  json: boolean;
+}
+
+export interface CheckOptions {
+  hwnr: string;
   ipo?: string;
   sgbd?: string;
   mockFile?: string;

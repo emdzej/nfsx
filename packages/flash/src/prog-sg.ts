@@ -138,6 +138,7 @@ export async function runProgramSg(
   ediabas: IEdiabasProvider,
   opts: ProgramOptions = {},
   firmwareSource?: FirmwareSource,
+  onProgress?: (stats: import('./firmware-source.js').FirmwareSourceStats) => void,
 ): Promise<ProgramReport> {
   const cabdPars: Record<string, string> = {
     DOMINANTE: String(opts.dominante ?? 0),
@@ -164,7 +165,10 @@ export async function runProgramSg(
   const ediabasJobs = newEdiabasJobCounters();
   const countingProvider = wrapWithJobCounter(ediabas, ediabasJobs);
   const instrumented = firmwareSource
-    ? buildInstrumentedFirmwareSource(firmwareSource)
+    ? buildInstrumentedFirmwareSource(
+        firmwareSource,
+        onProgress ? { onProgress } : {},
+      )
     : undefined;
 
   try {

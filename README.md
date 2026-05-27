@@ -262,6 +262,7 @@ flash), the diff should be empty.
 | `nfsx plan --hwnr X` | SP-Daten lookup: HWNR → SG_TYP → IPO + SGBD + ZB-row flash files |
 | `nfsx browse` | Full-screen ink TUI for HWNR exploration |
 | `nfsx run <ipo> --job <name>` | Execute one IPO job (e.g. `HW_REFERENZ`) against a live ECU |
+| `nfsx check --hwnr X` | Quick live-ECU sanity probe (HW_REFERENZ + SG_IDENT + SG_AIF + ZIF_BACKUP, no file write) |
 | `nfsx backup --hwnr X` | Audit snapshot of ECU identity + `ZIF_BACKUP` to JSON |
 | `nfsx flash --hwnr X` | Full 5-stage flash pipeline; dry-run by default, `--write` to commit |
 | `nfsx verify --hwnr X [--against backup.json]` | Re-read identity; optionally diff against a saved backup |

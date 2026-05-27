@@ -177,11 +177,16 @@ export class FlashSession {
           const firmwareSource = this.paDaRecords
             ? buildPaDaRecordSource(this.paDaRecords)
             : buildRegionsFirmwareSource(regions);
+          const totalChunks = this.paDaRecords
+            ? this.paDaRecords.filter((r) => r.type === 0x00 && r.data.length > 0).length
+            : regions.reduce((n, r) => n + Math.ceil(r.bytes.length / 246), 0);
+          const onProgress = this.makeProgressEmitter(totalChunks, totalBytes);
           const report = await runProgramSg(
             this.opts.ecu,
             this.opts.ediabas,
             this.opts.program,
             firmwareSource,
+            onProgress,
           );
           programDiagnostics = {
             firmwareStats: report.firmwareStats,
@@ -334,6 +339,51 @@ export class FlashSession {
     for (const l of this.listeners) l(e);
   }
 
+  /**
+   * Build a throttled progress emitter the firmware-source can call
+   * after every chunk it delivers. Logs at most every ~2 seconds OR
+   * every 5% of chunks (whichever comes first), so the operator sees
+   * steady output during the multi-minute PROGRAM stage without
+   * spamming the console.
+   */
+  private makeProgressEmitter(
+    totalChunks: number,
+    totalBytes: number,
+  ): (stats: { calls: number; bytesDelivered: number }) => void {
+    const t0 = Date.now();
+    let lastLogTime = t0;
+    let lastLogCalls = 0;
+    const chunkStep = Math.max(1, Math.floor(totalChunks / 20)); // 5%
+    return (stats) => {
+      const now = Date.now();
+      const elapsed = now - t0;
+      const sinceLastLog = now - lastLogTime;
+      const sinceLastChunk = stats.calls - lastLogCalls;
+      // Throttle: log when EITHER 2s have passed OR we've crossed the
+      // next 5% bucket. Always log the very first chunk so the
+      // operator knows the wire is alive.
+      if (stats.calls === 1 || sinceLastChunk >= chunkStep || sinceLastLog >= 2000) {
+        lastLogTime = now;
+        lastLogCalls = stats.calls;
+        const pct = totalChunks > 0 ? (stats.calls / totalChunks) * 100 : 0;
+        const kbDone = (stats.bytesDelivered / 1024).toFixed(1);
+        const kbTotal = (totalBytes / 1024).toFixed(1);
+        const rateKbPerSec = elapsed > 0 ? (stats.bytesDelivered / 1024 / (elapsed / 1000)) : 0;
+        const remainingChunks = Math.max(0, totalChunks - stats.calls);
+        const etaSec =
+          rateKbPerSec > 0 && stats.bytesDelivered > 0
+            ? Math.round((remainingChunks * (elapsed / Math.max(1, stats.calls))) / 1000)
+            : -1;
+        const etaStr = etaSec >= 0 ? `ETA ${formatDuration(etaSec)}` : 'ETA —';
+        this.emit({
+          type: 'log',
+          level: 'info',
+          message: `PROGRAM: chunk ${stats.calls}/${totalChunks} (${pct.toFixed(1)}%)  ${kbDone}/${kbTotal} KB  ${rateKbPerSec.toFixed(1)} KB/s  ${etaStr}`,
+        });
+      }
+    };
+  }
+
   private emitProgramDiagnostics(r: Awaited<ReturnType<typeof runProgramSg>>): void {
     if (r.firmwareStats) {
       const s = r.firmwareStats;
@@ -458,4 +508,14 @@ export class FlashSession {
     if (programDiagnostics) result.programDiagnostics = programDiagnostics;
     return result;
   }
+}
+
+/** Format a seconds count as `Hh Mm Ss` / `Mm Ss` / `Ss`. */
+function formatDuration(totalSec: number): string {
+  if (totalSec < 60) return `${totalSec}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m ${s}s`;
 }

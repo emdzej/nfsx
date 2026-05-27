@@ -28,8 +28,19 @@ export interface InstrumentedFirmwareSource extends FirmwareSource {
   readonly stats: FirmwareSourceStats;
 }
 
+export interface InstrumentOptions {
+  /**
+   * Optional callback invoked after every `nextChunk` that returned
+   * data. Use it to surface periodic progress to the operator (the
+   * IPO is silent during a multi-minute flash loop, so this is the
+   * cleanest hook we have — entirely host-side, no VM changes).
+   */
+  onProgress?: (stats: FirmwareSourceStats) => void;
+}
+
 export function buildInstrumentedFirmwareSource(
   inner: FirmwareSource,
+  options: InstrumentOptions = {},
 ): InstrumentedFirmwareSource {
   const stats: FirmwareSourceStats = { calls: 0, bytesDelivered: 0, drained: false };
   return {
@@ -39,6 +50,7 @@ export function buildInstrumentedFirmwareSource(
       const chunk = inner.nextChunk(maxBytes);
       stats.bytesDelivered += chunk.bytes.length;
       if (chunk.eof) stats.drained = true;
+      if (options.onProgress && chunk.bytes.length > 0) options.onProgress(stats);
       return chunk;
     },
   };
