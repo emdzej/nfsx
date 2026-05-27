@@ -1591,15 +1591,28 @@ firmware-buffer**. The IPO calls it once before the loop to learn
 the initial block count, then again at the end of each loop iteration
 to advance.
 
-**Critical missing piece (task #241):** the host preamble that
-pre-loads `.0PA` bytes into the BinBuf at `l_0B` BEFORE the IPO is
-dispatched. Without it, `CDHGetApiJobByteData` returns `NrOfData=0`,
-the `while` loop never executes, and the flash is a no-op (just
-FLASH_LOESCHEN + ENDE with no payload). Likely lives in WinKFP's
-`coapiKfProgSgD2` preamble — `FUN_00491e30` / `FUN_00492870`
-(AIF-symbol mods to the in-memory `.DAT` buffer) or an even earlier
-hook that streams `.0PA` content into a buffer mapped to the
-IPO-visible BinBuf.
+**Critical missing piece (task #241 — RESOLVED 2026-05-27):**
+host opens the `.0PA` file BEFORE dispatching the IPO; slot 0x55
+pops one record at a time from it. NCSEXPER's "drain SGBD result"
+label for slot 0x55 doesn't apply in NFS — it's the
+"give me next firmware record" iterator. Implementation in nfsx
+tracked as #242.
+
+**Host-side flow** (winkfpt Ghidra walk 2026-05-27):
+
+| Function | Source / role |
+|---|---|
+| `FUN_00468220` = `datDekompOpen` | opens `.0PA` via `_fopen(path, "rb")`; stores `FILE*` in `DAT_006e0580` |
+| `FUN_00467750` | seeks to indexed entry within `.0PA`; reads magic byte `2` to validate format |
+| `FUN_004678c0` = `dat_getc` | primitive byte reader; tracks position via `DAT_006e0588`; returns -1 at EOF (`DAT_006e0584`) |
+| `FUN_0046c510` = `dlReadRecord` | per-record reader (source: `DLOREAD.C`); reads 3-byte header + optional 6-byte extended-length header on `0xAAAA` magic; returns payload + length |
+
+When the IPO's main flash loop calls slot 0x55, the slot handler
+inside winkfpt reads ONE record from the open `.0PA` via
+`dlReadRecord`, copies the payload into the BinBuf at `BufHandle`,
+and reports back `BufSize` (payload bytes) + `NrOfData` (1 on hit,
+0 on EOF). Records are guaranteed ≤ `BLOCKLAENGE_MAX_WERT` (SGBD
+block-size cap) — `dlReadRecord` rejects oversize records up-front.
 
 This is why our current trace shows:
 - 3× `CDHapiJobData` (FLASH_SCHREIBEN_ENDE × 2, FLASH_LOESCHEN × 1)
