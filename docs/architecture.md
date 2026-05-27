@@ -1751,3 +1751,84 @@ to see what it writes into the BinBuf.
 projekt=10_00`) → ECU bootloader + identity region untouched. The
 bench is in the same functional state it was before the flash
 attempt. Tracked as task #246.
+
+### 11.12 What the IPO + SGBD actually expect (2026-05-27)
+
+After Bug 1+2 fixes, post-mortem deep-dive using `inpax decompile`
+on `10GD20.IPO` and `ediabasx decompile` on `10GD20.prg` produced
+this picture:
+
+**IPO behaviour (`GD20Prog`, IPS form):**
+
+```
+exitwindows("IDENT");          // apiJob, real wire
+exitwindows("BLOCKLAENGE_MAX"); // apiJob, returns 246
+exitwindows("SEED_KEY");        // apiJob, security access
+
+userboxclose(246, BufHandle, BufSize, NrOfData, RetVal);  // slot 0x55, first chunk
+if (NrOfData == 0) error;
+
+scriptselect("FLASH_SCHREIBEN_ENDE", BufHandle, BufSize, "");  // slot 0x0E, header
+TestApiFehlerNoExit(...);       // log + continue, NEVER abort
+if (status == OK) {
+  scriptselect("FLASH_LOESCHEN", BufHandle, BufSize, "");      // slot 0x0E, erase
+  TestApiFehlerNoExit(...);     // log + continue
+}
+SetCDHFehler(if error);         // best-effort logging
+
+while (NrOfData > 0) {
+  scriptselect("FLASH_SCHREIBEN", BufHandle, BufSize, "");     // slot 0x0E, write
+  TestApiFehlerNoExit(...);
+  SetCDHFehler(if error);
+  userboxclose(...);            // pop next chunk
+}
+
+scriptselect("FLASH_SCHREIBEN_ENDE", BufHandle, BufSize, "");  // finalize
+```
+
+Key point: **the entire flash loop uses `TestApiFehlerNoExit`,
+not `TestApiFehler`.** Errors get logged via `CDHSetError` but the
+loop runs to completion regardless. Our 1068-failures-but-OK-exit
+behaviour is the IPO acting *exactly as designed* — best-effort
+flash, log everything, trust the post-flash verify.
+
+**SGBD behaviour:**
+
+`pary` in BEST/2 reads the **single** binary payload (per
+`ediabasx-ediabas/ediabas.js` line 72: "Stored as
+`ParameterSet.binaryPayload`, a single buffer shared across all
+binary parameter reads"). Multiple `pary` calls re-read the same
+buffer — they do not consume multiple separate params.
+
+`FLASH_SCHREIBEN_ENDE` returns `OKAY` for our raw bytes because it
+uses an **internally hardcoded 8-byte literal**
+(`{32 09 07 0F 00 00 00 00}`) — doesn't look at the binary param's
+content at all.
+
+`FLASH_SCHREIBEN` reads the binary buffer **byte-by-byte at
+specific offsets** and validates each. One verified check (lines
+0xD785–0xD7C5): `buffer[14] != 0 → ERROR_INVALID_BIN_BUFFER`. The
+full validation chain has multiple such checks; reading them all by
+hand is tedious. Our 9-OKAY-at-scattered-indices [8, 12, 211, 212,
+215, 218, 219, 628, 681] are chunks where the validated bytes
+happened to satisfy the SGBD's checks (or where flash hardware
+returned OKAY without bit changes).
+
+**What WinKFP must be doing:**
+
+Constructing a BMW-proprietary frame from each `.0PA` record before
+calling `scriptselect` (slot 0x0E). Likely shape:
+
+- Some header bytes carrying type / flags / address / length
+- The record's data payload
+- Possibly a checksum
+
+The exact layout is undetermined from the SGBD side alone (the
+validation reads are abstract — they tell us "byte at offset X
+must be Y" but not *why* that offset has that meaning).
+
+**Open: trace `winkfpt.exe`'s `coapiKfProgSgD2` (FUN_00455780)
+in Ghidra to find the BinBuf-construction code.** That gives us
+the authoritative frame layout. Once known, rewrite
+`firmware-source` to emit framed chunks matching it. Tracked as
+task #248.
