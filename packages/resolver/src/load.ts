@@ -24,12 +24,14 @@ import {
   parseNpv,
   parsePrgIfSel,
   parseSgId,
+  parseZbNrTab,
   type HwnrFile,
   type KfConfFile,
   type KmmSitFile,
   type NpvFile,
   type PrgIfSelFile,
   type SgIdFile,
+  type ZbNrTabFile,
 } from '@emdzej/nfsx-data-files';
 
 export interface SpDaten {
@@ -193,4 +195,27 @@ export function loadSpDaten(paths: Partial<SpDatenPaths>): SpDaten {
   }
 
   return out;
+}
+
+/**
+ * Load the per-SG flash mapping table (`<SG_TYP>.DAT`, e.g. `GD20.DAT`).
+ *
+ * Lives at `<rootDir>/data/<SG_TYP>/<datFileName>` — distinct from the
+ * global tables in `gdaten/`. The filename comes from KFCONF's
+ * `datFile` column for the chosen SG_TYP; pass it through so we don't
+ * have to redo KFCONF resolution here.
+ *
+ * Returns `undefined` when the file is missing (some SGs may legitimately
+ * lack a `.DAT` table in older SP-Daten drops). Caller treats absence
+ * as "no flash-file pairing available" rather than a parse error.
+ */
+export function loadZbNrTabForSg(
+  rootDir: string,
+  sgTyp: string,
+  datFileName: string,
+): ZbNrTabFile | undefined {
+  const path = join(rootDir, 'data', sgTyp, datFileName);
+  if (!existsSync(path)) return undefined;
+  const content = readFileSync(path, { encoding: 'latin1' });
+  return parseZbNrTab(content);
 }

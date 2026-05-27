@@ -6,3 +6,5 @@ dist/
 *.log
 .env
 .env.local
+# `nfsx backup` JSON snapshots — operator-local artifacts.
+backups/

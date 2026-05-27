@@ -2,165 +2,150 @@
  * Public types for `@emdzej/nfsx-flash` — the host-side
  * flash-programming orchestrator.
  *
- * Lifecycle:
+ * **Architectural model (2026-05-27 rewrite, mirrors WinKFP's
+ * `coapiKfProgSgD2`):**
  *
- *   1. Caller constructs a `FlashSession` with config (target ECU,
- *      flash binary path, EDIABAS provider, etc.).
- *   2. Caller calls `session.run({dryRun, confirm})`. The session
- *      walks the 7-stage pipeline (see `Stage` below), emitting
- *      events at each transition.
- *   3. Session resolves with a `FlashResult` summarising what
- *      happened — stage completion, bytes transferred, ECU resets,
- *      any errors that aborted mid-flight.
+ * The flash is a single IPO dispatch of `SG_PROGRAMMIEREN`. The IPO
+ * encapsulates every wire-level concern (security access, programming-
+ * session entry, block transfer, post-flash verification). The host's
+ * job is to:
  *
- * Default options are **safe** — `dryRun: true` so a misuse can't
- * actually write to an ECU. Destructive operation requires explicit
- * opt-in (`{dryRun: false}`) AND, by default, per-stage confirmation
- * via the `confirm` callback.
+ *   1. Validate the target ECU's identity vs. SP-Daten
+ *   2. Capture an audit backup
+ *   3. Seed the right cabd-pars (DOMINANTE, BSUTIME, PROG_WITH_AIF,
+ *      optionally AIF_*)
+ *   4. Dispatch SG_PROGRAMMIEREN
+ *   5. Verify the ECU still responds afterwards
+ *
+ * Pipeline:
+ *
+ *   RESOLVE   — parse the .0PA/.0DA firmware file for integrity check
+ *               (does NOT pass bytes to the IPO; the IPO reads files
+ *               via CABF* file-IO syscalls).
+ *   PRECHECK  — IPO-driven discovery (HW_REFERENZ + SG_STATUS_LESEN +
+ *               SG_IDENT_LESEN + SG_AIF_LESEN + ZIF + FSC + hwnr match).
+ *   BACKUP    — IPO-driven audit snapshot via ZIF_BACKUP + identity reads,
+ *               persisted as JSON. NOT a brick-recovery image — see
+ *               docs/architecture.md §11.6.
+ *   PROGRAM   — single SG_PROGRAMMIEREN IPO dispatch. Optional inline
+ *               AIF write via PROG_WITH_AIF=1.
+ *   POSTCHECK — re-read HW_REFERENZ + SG_IDENT_LESEN, verify ECU still
+ *               answers + reports the new identity.
+ *
+ * Pre-2026-05-27 design notes: the previous pipeline had explicit
+ * AUTHENTICATE / SESSION / TRANSFER / AIF_WRITE stages implementing
+ * UDS 0x27/0x10/0x34/0x36/0x37 directly on the wire. That was
+ * architecturally wrong — WinKFP delegates all of that to the IPO.
+ * The wire-level modules (`auth.ts`, `transfer.ts`, `aif-write.ts`)
+ * were removed in the rewrite.
  */
 
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
 import type { MemoryRegion } from '@emdzej/nfsx-flash-data';
 
-/**
- * The 7-stage flash pipeline. Stages run in this order; abort is
- * safe before SESSION (stage 4) — afterwards the ECU is in
- * programming mode and the only sane recovery is to finish.
- */
+/** Flash pipeline stages. */
 export type Stage =
-  | 'RESOLVE'        // SP-Daten lookup: HWNR + ZBN → IPO + SGBD
-  | 'PRECHECK'       // battery / ignition / FSC / ECU comms sanity
-  | 'AUTHENTICATE'   // UDS 0x27 SecurityAccess (seed → key)
-  | 'SESSION'        // UDS 0x10 0x02 — switch to programming mode
-  | 'TRANSFER'       // UDS 0x34 / 0x36 / 0x37 — block transfer
-  | 'AIF_WRITE'      // post-flash identity stamp write
-  | 'POSTCHECK';     // ECU reset, verify status
+  | 'RESOLVE'    // SP-Daten lookup + firmware-file integrity parse
+  | 'PRECHECK'   // IPO-driven discovery + identity check (see precheck.ts)
+  | 'BACKUP'     // IPO-driven audit snapshot (see backup.ts)
+  | 'PROGRAM'    // single SG_PROGRAMMIEREN IPO dispatch (see prog-sg.ts)
+  | 'POSTCHECK'; // ECU still-alive sanity reads after PROGRAM
 
 /** Per-ECU descriptor needed by the orchestrator. */
 export interface EcuTarget {
-  /** SGBD basename for apiJob dispatch (e.g. `C_DSC_KWP`). */
+  /** SGBD basename for apiJob dispatch (e.g. `10GD20`). */
   sgbd: string;
   /** Diagnostic address (`0x6A` etc) — for logging + audit only. */
   diagAddr?: number;
   /**
+   * Path to the target SG's IPO (`10GD20.ipo`, `16ACC65.ipo`, etc.).
+   * Used by PRECHECK / BACKUP / PROGRAM / POSTCHECK — every cabimain
+   * dispatch routes through this IPO. The IPO embeds all chassis-
+   * specific bus knowledge (which SGBD job to invoke, which result
+   * names to expect, when to dispatch SEED_KEY, etc.).
+   */
+  ipoPath: string;
+  /**
    * Path to the FSC/cert/SWT IPO (`00swt{ds2|dsc|eps|kwp|kws|msd}.ipo`).
-   * Used by PRECHECK for `CHECK_FSC` and similar.
+   * Used by PRECHECK's FSC check (via `@emdzej/nfsx-fsc`).
    */
   swtIpoPath: string;
+  /**
+   * Working directory for IPO file I/O — the IPO references `.0PA` /
+   * `.0DA` / `.HIS` / `.DAT` / `.HWH` / `.DIR` files by basename via
+   * the `fileopen` / `fileread` / `filewrite` / `fileclose` syscalls.
+   *
+   * For SP-Daten this is `<spDaten>/data/<SG_TYP>/`. Required for the
+   * PROGRAM stage (SG_PROGRAMMIEREN reads `.0PA`/`.0DA` from disk);
+   * optional for PRECHECK / BACKUP, which generally don't touch files.
+   */
+  workingDir?: string;
+  /**
+   * Optional: expected HWNR for cross-checking `ID_BMW_NR` from
+   * `SG_IDENT_LESEN`. When set + the values disagree, PRECHECK fails.
+   */
+  expectedHwnr?: string;
 }
 
 /**
- * Pre-flash safety thresholds. Defaults are conservative — operator
- * can relax for lab testing.
+ * Pre-flash checks — see `precheck.ts`. Each skip key maps to one
+ * cabimain dispatch.
  */
 export interface PrecheckOptions {
-  /** Minimum battery voltage required (V). Default 12.5. */
-  minBatteryVoltage?: number;
-  /** Skip individual checks (lab/test use). Never skip in production. */
-  skip?: ReadonlyArray<'battery' | 'ignition' | 'ecu_comms' | 'fsc'>;
+  skip?: ReadonlyArray<
+    'hw_referenz' | 'sg_status' | 'sg_ident' | 'sg_aif' | 'hwnr_match' | 'fsc'
+  >;
 }
 
 /**
- * Authentication strategy — produces a key from a seed. The actual
- * BMW algorithm is ECU-specific and lives in the SGBD's `.PRG` file
- * (BMW-internal, not bundled with nfsx). Callers supply their own
- * strategy:
- *
- *   - `PassthroughKeyDerivation` (default) — returns the seed as
- *     the key. Useful only when the ECU has security access disabled.
- *   - Custom — implement `KeyDerivationStrategy` per ECU type.
- *
- * Note: a real production flash needs the actual algorithm. Without
- * it the AUTHENTICATE stage will fail when the ECU rejects the wrong
- * key, which is the correct behaviour — better to fail at auth than
- * to risk a partial flash.
+ * Backup options — see `backup.ts`. Captures an audit snapshot
+ * before any destructive operation.
  */
-export interface KeyDerivationStrategy {
-  /** Human-readable label for trace output. */
-  readonly name: string;
-  /** Compute the key bytes from the seed bytes the ECU sent. */
-  derive(seed: Uint8Array, ecu: EcuTarget): Promise<Uint8Array> | Uint8Array;
+export interface BackupOptions {
+  /** Output directory. */
+  outputDir?: string;
+  /** Filename override. Default: `<HWNR>-<ZB>-<timestamp>.json`. */
+  filename?: string;
+  /** When `true`, skip the BACKUP stage entirely. Default `false`. */
+  skip?: boolean;
 }
 
 /**
- * Transfer-protocol customisation. Defaults work for most KWP2000
- * ECUs; per-ECU tweaks (different block size, different SGBD job
- * names) override individual fields.
+ * Top-level options for `FlashSession.run`. Destructive stages
+ * (PROGRAM) are gated by both `dryRun: false` AND `confirm` returning
+ * `true`. The defaults are intentionally safe.
  */
-export interface TransferOptions {
-  /**
-   * SGBD job name for RequestDownload (UDS 0x34). Default
-   * `FLASH_PROGRAMMIEREN_START`.
-   */
-  requestDownloadJob?: string;
-  /**
-   * SGBD job name for TransferData (UDS 0x36). Default
-   * `FLASH_PROGRAMMIEREN_BLOCK`.
-   */
-  transferDataJob?: string;
-  /**
-   * SGBD job name for RequestTransferExit (UDS 0x37). Default
-   * `FLASH_PROGRAMMIEREN_ENDE`.
-   */
-  requestTransferExitJob?: string;
-  /**
-   * Block size override. When unset, queries the SGBD's
-   * RequestDownload response for the max block size.
-   * Default fallback when neither is available: 256 bytes.
-   */
-  blockSize?: number;
-  /**
-   * How many retries per block on a transient error (NRC 0x21
-   * BusyRepeatRequest, 0x23 ConditionsNotCorrect). Default 1.
-   */
-  maxRetries?: number;
-}
-
-/** Top-level options for `FlashSession.run`. */
 export interface RunOptions {
   /**
-   * When `true` (the default), no actual ECU writes occur. The
-   * RESOLVE + PRECHECK stages still run for real (they're
-   * read-only); destructive stages (AUTHENTICATE / SESSION /
-   * TRANSFER / AIF_WRITE) are simulated by no-ops that emit the
-   * same events as the real path.
+   * When `true` (the default), the PROGRAM stage is simulated — no
+   * actual IPO dispatch. RESOLVE / PRECHECK / BACKUP / POSTCHECK still
+   * run for real (they're read-only).
    */
   dryRun?: boolean;
   /**
-   * Called before each destructive stage. Return `true` to proceed,
-   * `false` to abort. Default rejects everything — set explicitly
-   * to confirm.
-   *
-   * Never called when `dryRun: true`.
+   * Called before the PROGRAM stage in non-dry-run mode. Return `true`
+   * to proceed, `false` to abort. Default rejects everything.
    */
   confirm?: (stage: Stage, ctx: ConfirmContext) => Promise<boolean> | boolean;
 }
 
-/** Context passed to `confirm` before each destructive stage. */
+/** Context passed to `confirm` before the PROGRAM stage. */
 export interface ConfirmContext {
   ecu: EcuTarget;
-  /** Aggregate size of the firmware about to be transferred. */
+  /** Aggregate size of the firmware about to be flashed (informational). */
   totalBytes?: number;
-  /** Region count (number of contiguous chunks). */
+  /** Region count from the .0PA/.0DA parse (informational). */
   regionCount?: number;
 }
 
 /**
  * Event payloads — the session emits these via an `EventTarget`
- * pattern; subscribe via `session.on('progress', handler)`.
+ * pattern; subscribe via `session.on('event', cb)`.
  */
 export type FlashEvent =
   | { type: 'stage:start'; stage: Stage }
   | { type: 'stage:done'; stage: Stage; durationMs: number }
   | { type: 'stage:skipped'; stage: Stage; reason: string }
-  | {
-      type: 'block:transferred';
-      blockIndex: number;
-      totalBlocks: number;
-      bytesSent: number;
-      bytesTotal: number;
-      address: number;
-    }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
 
 /** Final result. */
@@ -173,9 +158,9 @@ export interface FlashResult {
   abortedAt?: Stage;
   /** Why the abort happened. */
   abortReason?: string;
-  /** Bytes successfully transferred (TRANSFER stage). */
-  bytesTransferred: number;
-  /** Total bytes in the firmware payload. */
+  /** Path to the BACKUP JSON, if BACKUP ran. */
+  backupPath?: string;
+  /** Total bytes in the firmware payload (from RESOLVE). */
   totalBytes: number;
   /** Whether this run was dry-run (no actual ECU writes). */
   dryRun: boolean;
@@ -186,10 +171,15 @@ export interface FlashResult {
 /** Input descriptor for a flash session. */
 export interface FlashSessionOptions {
   ecu: EcuTarget;
-  /** Firmware to flash — either S37 file bytes or already-parsed regions. */
-  firmware: { regions: MemoryRegion[] } | { s37Bytes: Uint8Array };
+  /**
+   * Firmware — parsed for integrity in RESOLVE but NOT passed to the
+   * IPO. The IPO reads the actual `.0PA`/`.0DA` from disk via CABF*
+   * syscalls (see [[inpax-cabf-syscalls]] for the open question).
+   */
+  firmware: { regions: MemoryRegion[] } | { s37Bytes: Uint8Array } | { paDaBytes: Uint8Array };
   ediabas: IEdiabasProvider;
   precheck?: PrecheckOptions;
-  transfer?: TransferOptions;
-  keyDerivation?: KeyDerivationStrategy;
+  backup?: BackupOptions;
+  /** Cabd-pars + AIF metadata for the SG_PROGRAMMIEREN dispatch. */
+  program?: import('./prog-sg.js').ProgramOptions;
 }

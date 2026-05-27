@@ -16,3 +16,12 @@ export {
 } from './memory-map.js';
 
 export { verifyChecksums, crc32, crc32Regions } from './integrity.js';
+
+export {
+  parsePaDa,
+  paDaToRegions,
+  parseHexRecord,
+  type PaDaRecord,
+  type PaDaMetadata,
+  type PaDaParseResult,
+} from './pa-da.js';

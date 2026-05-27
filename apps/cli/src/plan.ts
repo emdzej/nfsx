@@ -14,6 +14,7 @@
 
 import {
   loadSpDatenFromDir,
+  loadZbNrTabForSg,
   resolveByHwnr,
   resolveBySgTyp,
   resolveByDiagAddr,
@@ -21,7 +22,7 @@ import {
   type FlashCandidate,
   type SpDaten,
 } from '@emdzej/nfsx-resolver';
-import type { NpvRow } from '@emdzej/nfsx-data-files';
+import { findByHwNr, type NpvRow, type ZbNrTabRow } from '@emdzej/nfsx-data-files';
 import chalk from 'chalk';
 import type { PlanOptions } from './cli.js';
 import { resolveSpDaten, NfsxConfigError } from './config.js';
@@ -80,7 +81,7 @@ function emitText(sp: SpDaten, flags: PlanFlags): number {
   if (candidates.length > 0) {
     process.stdout.write(`Candidates: ${candidates.length}\n\n`);
     for (let i = 0; i < candidates.length; i++) {
-      printCandidate(candidates[i]!, i + 1, candidates.length);
+      printCandidate(candidates[i]!, i + 1, candidates.length, flags);
     }
   }
   if (flags.zbAlt) {
@@ -127,7 +128,7 @@ function describeLookup(flags: PlanFlags): string {
   return '(no input)';
 }
 
-function printCandidate(c: FlashCandidate, idx: number, total: number): void {
+function printCandidate(c: FlashCandidate, idx: number, total: number, flags: PlanFlags): void {
   const header = total > 1 ? `Candidate ${idx}/${total}: SG_TYP=${c.sgTyp}` : `SG_TYP: ${c.sgTyp}`;
   process.stdout.write(`${header}\n`);
   process.stdout.write(`${'─'.repeat(header.length)}\n`);
@@ -148,6 +149,23 @@ function printCandidate(c: FlashCandidate, idx: number, total: number): void {
       process.stdout.write(`      IPO:        ${k.ipoFile}\n`);
       process.stdout.write(`      Flash SGBD: ${k.flashSgbd}\n`);
       process.stdout.write(`      Working:    .HIS=${k.hisFile}  .DAT=${k.datFile}  .DIR=${k.dirFile}  .HWH=${k.hwhFile}\n`);
+
+      // Flash-file candidates: load the per-SG ZB-NR table named by
+      // KFCONF and surface rows matching the queried HWNR.
+      if (c.hwnr && k.datFile) {
+        const tab = loadZbNrTabForSg(flags.spDatenResolved, c.sgTyp, k.datFile);
+        if (!tab) {
+          process.stdout.write(`      Flash files: (no ${k.datFile} on disk under data/${c.sgTyp}/)\n`);
+        } else {
+          const rows = findByHwNr(tab, c.hwnr);
+          if (rows.length === 0) {
+            process.stdout.write(`      Flash files: (HWNR ${c.hwnr} not in ${k.datFile})\n`);
+          } else {
+            process.stdout.write(`      Flash files (${rows.length} ZB rows):\n`);
+            for (const r of rows) printZbNrRow(r);
+          }
+        }
+      }
     }
   }
 
@@ -191,6 +209,16 @@ function printCandidate(c: FlashCandidate, idx: number, total: number): void {
 function truncatePayload(p: string): string {
   if (p.length <= 60) return p;
   return `${p.slice(0, 40)}…(${p.length} chars total)`;
+}
+
+function printZbNrRow(r: ZbNrTabRow): void {
+  // One line per ZB row — the canonical "what you'd flash for this ZB":
+  //   ZB=7552752 (IX=A): 7544721A.0PA + A7552753.0DA  PIN=134 S=1 CS=G
+  const data = r.dataFile ?? '(no .0DA — SW-NR has no DA suffix)';
+  process.stdout.write(
+    `        ZB=${r.zbNr}: ${r.programFile} + ${data}` +
+      `  PIN=${r.pin} S=${r.s} CS=${r.csRaw}\n`,
+  );
 }
 
 function printUpgrade(zbAlt: string, upgrade: NpvRow | undefined): void {

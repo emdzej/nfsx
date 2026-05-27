@@ -1,6 +1,7 @@
 export {
   loadSpDaten,
   loadSpDatenFromDir,
+  loadZbNrTabForSg,
   defaultSpDatenPaths,
   type SpDaten,
   type SpDatenPaths,

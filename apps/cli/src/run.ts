@@ -2,96 +2,130 @@
  * `nfsx run <ipo> --job <name>` — load an NFS IPO and dispatch the
  * given job via cabimain.
  *
- * Phase 3 hello-world: proves that the inpax VM + ncsx-style CABI
- * runtime can execute NFS IPOs end-to-end without code changes to
- * inpax (the slot-ID-compat hypothesis confirmed in
- * docs/architecture.md §9.5). After dispatch the CLI prints the
- * cabd-pars the IPO published, the last JOB_STATUS, and a syscall
- * trace.
+ * Provider: by default, builds an EDIABAS-X provider from
+ * `~/.config/ediabasx/config.json` (same convention as `@emdzej/ediabasx-cli`).
+ * Per-field overrides via `--ediabas-config / --interface / --serial-port /
+ * --serial-baud / --gateway`. Real-vs-simulation is decided inside ediabasx
+ * (set `interface: "simulation"` in the config or pass `--interface simulation`);
+ * nfsx-cli doesn't expose a separate toggle. See [[feedback-ediabasx-responsibility]].
  *
- * Default job is JOB_ERMITTELN — the metadata-publishing job every
- * NFS dispatcher implements. It populates JOB[1..N] cabd-pars with
- * the jobs the IPO supports.
+ * `--mock-file <path>` is the one escape hatch — it BYPASSES ediabasx
+ * entirely and supplies a `MockEdiabasProvider` directly. Useful for
+ * rehearsal / unit-test fidelity without building an `Ediabas` instance.
  */
 
 import { readFileSync } from 'node:fs';
+import { basename, dirname, resolve as resolvePath } from 'node:path';
 import { MockEdiabasProvider } from '@emdzej/inpax-mock-provider';
-import { startNfsRuntime } from '@emdzej/nfsx-runtime';
+import { startNfsRuntime, type StartNfsRuntimeOptions } from '@emdzej/nfsx-runtime';
 import type { RunOptions } from './cli.js';
+import { buildEdiabasProvider } from './ediabasx-provider.js';
 
 export async function runRun(flags: RunOptions): Promise<number> {
-  const ediabas = flags.mockFile ? loadMockProvider(flags.mockFile) : undefined;
+  let provider: StartNfsRuntimeOptions['ediabas'];
+  let cleanup: (() => Promise<void>) | undefined;
 
-  const handle = await startNfsRuntime({
-    ipoPath: flags.ipoPath,
-    sgbd: flags.sgbd,
-    ediabas,
-  });
-  await handle.runCabimain(flags.job);
-
-  if (flags.json) {
-    process.stdout.write(
-      JSON.stringify(
-        {
-          ipoPath: flags.ipoPath,
-          job: flags.job,
-          lastJobStatus: handle.state.lastJobStatus,
-          cabdPars: Object.fromEntries(handle.state.cabdPars),
-          systemData: Object.fromEntries(handle.state.systemData),
-          trace: handle.state.trace,
-        },
-        null,
-        2,
-      ) + '\n',
-    );
-    return 0;
-  }
-
-  process.stdout.write(`\nIPO:  ${flags.ipoPath}\n`);
-  process.stdout.write(`Job:  ${flags.job}\n`);
-  process.stdout.write(`Status: ${handle.state.lastJobStatus}\n\n`);
-
-  // Pretty-print the JOB[*] entries if any — that's the
-  // JOB_ERMITTELN happy path.
-  const jobs = collectJobEntries(handle.state.cabdPars);
-  if (jobs.length > 0) {
-    process.stdout.write(`Published jobs (${jobs.length}):\n`);
-    for (const j of jobs) {
-      process.stdout.write(`  JOB[${j.index}] = ${j.name}\n`);
-    }
-    process.stdout.write(`\n`);
-  }
-
-  // Anything else the IPO wrote — surface as a flat list.
-  const others = [...handle.state.cabdPars].filter(
-    ([k]) => !/^JOB\[\d+\]$/.test(k) && k !== 'JOBNAME',
-  );
-  if (others.length > 0) {
-    process.stdout.write(`Other cabd-pars set (${others.length}):\n`);
-    for (const [k, v] of others) {
-      process.stdout.write(`  ${k} = ${v}\n`);
-    }
-    process.stdout.write(`\n`);
-  }
-
-  if (handle.state.systemData.size > 0) {
-    process.stdout.write(`System-data (${handle.state.systemData.size}):\n`);
-    for (const [k, v] of handle.state.systemData) {
-      process.stdout.write(`  ${k} = ${v}\n`);
-    }
-    process.stdout.write(`\n`);
-  }
-
-  if (flags.trace) {
-    process.stdout.write(`Syscall trace (${handle.state.trace.length}):\n`);
-    for (const t of handle.state.trace) {
-      process.stdout.write(
-        `  0x${t.slot.toString(16).padStart(2, '0')} ${t.name.padEnd(20)} ${JSON.stringify(t.args)}\n`,
+  if (flags.mockFile) {
+    provider = loadMockProvider(flags.mockFile);
+  } else {
+    try {
+      const built = await buildEdiabasProvider(flags);
+      provider = built.provider;
+      cleanup = built.cleanup;
+      if (!flags.json) {
+        process.stdout.write(`EDIABAS-X: ${built.summary}\n`);
+      }
+    } catch (err) {
+      process.stderr.write(
+        `error: ${err instanceof Error ? err.message : String(err)}\n`,
       );
+      return 2;
     }
   }
 
-  return 0;
+  try {
+    const handle = await startNfsRuntime({
+      ipoPath: flags.ipoPath,
+      sgbd: flags.sgbd,
+      ediabas: provider,
+      workingDir: flags.workingDir ?? deriveWorkingDirFromIpo(flags.ipoPath),
+    });
+    await handle.runCabimain(flags.job);
+
+    if (flags.json) {
+      process.stdout.write(
+        JSON.stringify(
+          {
+            ipoPath: flags.ipoPath,
+            job: flags.job,
+            lastJobStatus: handle.state.lastJobStatus,
+            cabdPars: Object.fromEntries(handle.state.cabdPars),
+            systemData: Object.fromEntries(handle.state.systemData),
+            trace: handle.state.trace,
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+      return 0;
+    }
+
+    process.stdout.write(`\nIPO:  ${flags.ipoPath}\n`);
+    process.stdout.write(`Job:  ${flags.job}\n`);
+    process.stdout.write(`Status: ${handle.state.lastJobStatus}\n\n`);
+
+    // Pretty-print the JOB[*] entries if any — that's the
+    // JOB_ERMITTELN happy path.
+    const jobs = collectJobEntries(handle.state.cabdPars);
+    if (jobs.length > 0) {
+      process.stdout.write(`Published jobs (${jobs.length}):\n`);
+      for (const j of jobs) {
+        process.stdout.write(`  JOB[${j.index}] = ${j.name}\n`);
+      }
+      process.stdout.write(`\n`);
+    }
+
+    // Anything else the IPO wrote — surface as a flat list.
+    const others = [...handle.state.cabdPars].filter(
+      ([k]) => !/^JOB\[\d+\]$/.test(k) && k !== 'JOBNAME',
+    );
+    if (others.length > 0) {
+      process.stdout.write(`Other cabd-pars set (${others.length}):\n`);
+      for (const [k, v] of others) {
+        process.stdout.write(`  ${k} = ${v}\n`);
+      }
+      process.stdout.write(`\n`);
+    }
+
+    if (handle.state.systemData.size > 0) {
+      process.stdout.write(`System-data (${handle.state.systemData.size}):\n`);
+      for (const [k, v] of handle.state.systemData) {
+        process.stdout.write(`  ${k} = ${v}\n`);
+      }
+      process.stdout.write(`\n`);
+    }
+
+    if (flags.trace) {
+      process.stdout.write(`Syscall trace (${handle.state.trace.length}):\n`);
+      for (const t of handle.state.trace) {
+        process.stdout.write(
+          `  0x${t.slot.toString(16).padStart(2, '0')} ${t.name.padEnd(20)} ${JSON.stringify(t.args)}\n`,
+        );
+      }
+    }
+
+    return 0;
+  } finally {
+    if (cleanup) {
+      try {
+        await cleanup();
+      } catch (err) {
+        process.stderr.write(
+          `warning: ediabas cleanup failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    }
+  }
 }
 
 function collectJobEntries(cabdPars: Map<string, string>): Array<{ index: number; name: string }> {
@@ -124,3 +158,12 @@ function loadMockProvider(path: string): MockEdiabasProvider {
   }
   return provider;
 }
+
+/** Same shape as flash.ts's deriveWorkingDir — duplicated to avoid CLI-internal coupling. */
+function deriveWorkingDirFromIpo(ipoPath: string): string | undefined {
+  const ipoDir = dirname(resolvePath(ipoPath));
+  const m = /^[^A-Za-z]*([A-Za-z][A-Za-z0-9_]*)\.ip[os]$/i.exec(basename(ipoPath));
+  if (!m) return undefined;
+  return resolvePath(dirname(ipoDir), 'data', m[1]!);
+}
+

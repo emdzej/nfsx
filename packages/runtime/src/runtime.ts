@@ -98,6 +98,16 @@ export interface StartNfsRuntimeOptions {
    * `HwReferenzLesen` / `Ident` dispatch to `""` and fail.
    */
   sgbd?: string;
+  /**
+   * Working directory for IPO file I/O via `fileopen` / `fileread` /
+   * `filewrite` / `fileclose` syscall slots. For a flash session this
+   * is typically `<spDaten>/data/<SG_TYP>/` — where the IPO finds the
+   * `.0PA`/`.0DA` files referenced by KFCONF + ZB-NR table.
+   *
+   * Unset = file ops fail at the open call (safer default than
+   * accidentally opening process.cwd()-relative paths).
+   */
+  workingDir?: string;
 }
 
 export async function startNfsRuntime(
@@ -122,6 +132,7 @@ export async function startNfsRuntime(
   const systemFunctions = buildSystemFunctions(state, {
     ediabas,
     defaultSgbd: options.sgbd,
+    workingDir: options.workingDir,
   });
 
   // 5. Build the VM. All UI / simulation / etc. providers are

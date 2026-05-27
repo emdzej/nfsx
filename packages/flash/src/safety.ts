@@ -45,12 +45,10 @@ export function buildPromptConfirmation(
 }
 
 /**
- * The four stages that actually modify ECU state — `confirm` is
- * consulted before each of these (in non-dry-run mode).
+ * The one stage that actually modifies ECU state — `confirm` is
+ * consulted before this in non-dry-run mode. (Pre-2026-05-27 the
+ * pipeline had four destructive stages: AUTHENTICATE / SESSION /
+ * TRANSFER / AIF_WRITE. The rewrite collapsed them into a single
+ * SG_PROGRAMMIEREN IPO dispatch — see types.ts and prog-sg.ts.)
  */
-export const DESTRUCTIVE_STAGES: ReadonlySet<Stage> = new Set([
-  'AUTHENTICATE',
-  'SESSION',
-  'TRANSFER',
-  'AIF_WRITE',
-]);
+export const DESTRUCTIVE_STAGES: ReadonlySet<Stage> = new Set(['PROGRAM']);

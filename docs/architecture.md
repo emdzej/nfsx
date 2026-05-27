@@ -384,6 +384,112 @@ ZB.TMP         — ZB-Nummer scratch
 Read these on a real dealer machine to learn the flash sequence in
 practice.
 
+### 3.7 `data/<SG_TYP>/` — per-SG flash payloads + mapping table
+
+Each ECU family has its own directory under `data/` carrying the
+actual flashable binaries plus a per-SG mapping table. Verified against
+`~/Downloads/E46_v74/data/GD20/` on 2026-05-27.
+
+**Directory layout** (e.g. `data/GD20/`):
+
+```
+<HW-NR>A.0PA           — program firmware (Intel-HEX dialect + BMW wrapper)
+A<SW-NR>.0DA           — data / calibration files
+<SG_TYP>.DAT           — ZB-NR → (HW-NR, SW-NR, …) mapping table
+<SG_TYP>.HIS           — historie (BSU history log)
+<SG_TYP>.HWH           — hardware history
+<SG_TYP>D.DIR          — directory index
+```
+
+For GS20: 12 `.0PA` files + 207 `.0DA` files + `GD20.DAT` + working files.
+
+#### `.0PA` and `.0DA` format
+
+Both extensions use the **same wire format**: Intel HEX with a BMW
+ASCII header/footer. Verified by parsing `7544721A.0PA` (8283 lines,
+all checksums valid). See `@emdzej/nfsx-flash-data/pa-da.ts` for the
+parser; key shape:
+
+```
+;==========================================
+;Austausch-Datei    Daten/Programm           ← decorative comments
+;==========================================
+;;ZL_System:      GS20                       ← `;;Key: Value` metadata
+;;ZL_Projekt:     10_
+;;ZL_Referenz:    G2210_0089D0
+;;K_Stand:        08.04.2004
+;;K_File-Name:    7544721A.0PA
+;  ... (lots of metadata about authors, dates, validation history) ...
+$REFERENZ G2210_0089D0 Q                     ← BMW data-section directive
+:020000040000FA                              ← Intel HEX: ext linear addr
+:02000002A0005C                              ← Intel HEX: ext segment addr
+:200000000123...AC                           ← Intel HEX: 32-byte data record
+... (thousands more) ...
+:00000010F0                                  ← BMW-specific marker (type 0x10)
+$CHECKSUMME 7029 R                           ← BMW file-level checksum
+;$CARB_MODE_9_CVN 0000B78D 9                 ← optional CARB CVN (commented out)
+:00000001FF                                  ← standard Intel HEX EOF (type 01)
+```
+
+Intel HEX record types observed:
+- `0x00` data (the bulk of the file)
+- `0x01` end-of-file
+- `0x02` extended segment address (upper bits)
+- `0x04` extended linear address (upper 16 bits)
+- `0x10` BMW-specific end-of-data marker (no data, no documented standard meaning)
+
+Each record's in-line checksum is the standard two's-complement of
+the LSB of the sum of all bytes from the length byte onward. The
+final `$CHECKSUMME` footer is a separate file-level integrity check.
+
+The text wrapper carries provenance: author, department, dates,
+release flags, EOL programming responsible, validation contacts.
+Useful diagnostic context; not load-bearing for flashing.
+
+Confirmed via Ghidra: `*.0PA` (0x0062f03c) and `*.0DA` (0x0062f018)
+appear as file-import dialog wildcards in `FUN_0040cdd0` cases 2 and
+1 respectively. Adjacent extensions `.0BA` (BSU?), `.0AB`, `.PAF`,
+`.DAF`, `.BAF` look like packed/legacy variants — not seen on disk
+in our E46_v74 drop.
+
+#### `<SG_TYP>.DAT` — ZB→files mapping table
+
+The per-SG ZB-NR resolver. Comma-separated rows (with a final space
+between `S` and `CS`):
+
+```
+$ PS10INIT N00326DFF00003CF004598403C8500000000000 5
+$ VERSIONKFCONF: kfconf10.dat
+;Zusbauvorschrift vom 21.06.2006 10:33
+;SG-TYP: GD20
+;ZB-NR  TYP-NR  HW-NR  IX SW-NR     AM          PIN S CS
+7514050,0000000,7508145,A,7514051DA,0FFFFFFFFFD,134,1 1
+7552752,1000000,7544721,A,7552753DA,0FFFFFFFFFD,134,1 G
+```
+
+Confirmed via Ghidra: WinKFP reads this via `coapiKfReadZbNrTabD2`
+(unxref'd FUN_00445540 → FUN_0046b6f0). Output struct has 8 fields —
+TYP-NR, HW-NR, IX, SW-NR (string), AM, PIN, S, CS — keyed by ZB-NR.
+The column headers (`ZB-NR`/`HW-NR`/`SW-NR`) do **not** appear as
+strings in winkfpt.exe, so parsing is strictly by position.
+
+**Filename derivation:**
+
+| Column | Maps to | Example |
+|---|---|---|
+| HW-NR + IX | program file `<HW-NR><IX>.0PA` | `7544721 + A` → `7544721A.0PA` |
+| SW-NR (literal `DA` suffix) | data file `A<num>.0DA` | `7552753DA` → `A7552753.0DA` |
+
+The trailing `DA` on the SW-NR column is a literal type tag, not part
+of the number. The "DA" stands for "Daten" (data) — distinguishes a
+`.0DA` reference from other variants.
+
+**Stale-firmware observation** (bench ECU 7544721 on 2026-05-27): the
+ECU's burned ZB-NR (7543058) is **not present** in `GD20.DAT`. The
+current SP-Daten drop only knows about ZB=7552752 and ZB=7552754 for
+HWNR 7544721. This means the bench ECU was last flashed in 2004 with
+a ZB that's been superseded since — common for older E46 SGs.
+
 ## 4. NFS-specific CABI syscalls (vs NCSEXPER's set)
 
 > Note: with the KMM picture now clear (§2.3), the flow is
@@ -1216,3 +1322,247 @@ willingness to brick test units.
 **Status today (2026-05-25):** design only. No code. The Phase 3 +
 Phase 4 work that landed in v0.4.0 covers everything that's
 implementable without hardware.
+
+## 11. WinKFP `coapiKf*` surface — Ghidra-verified 2026-05-27
+
+The flash-programming planner / orchestrator inside `winkfpt.exe`
+exposes ~40 functions named `coapiKf*` (string xrefs starting at
+0x005ff12c). These map roughly to our `@emdzej/nfsx-*` packages and
+gave us a concrete reference for "how WinKFP actually does it" during
+the Phase 5 wiring on the bench GS20.
+
+### 11.1 Discovery / read-only functions
+
+| WinKFP function | Mirrors / consumed by | What it does |
+|---|---|---|
+| `coapiKfGetHwReferenzFromSgD2` | `nfsx-flash precheck` | dispatch `HW_REFERENZ` IPO job, read `HW_REF_SG_KENNUNG` + `HW_REF_PROJEKT` cabd-pars |
+| `coapiKfGetHwNrFromSgD2` | `precheck.sgIdent` | dispatch identity job, read `ID_BMW_NR` |
+| `coapiKfGetAifFromSgD2` | `precheck.sgAif` | dispatch `SG_AIF_LESEN`, read `AIF_*` cabd-pars |
+| `coapiKfGetProgOrderBsuD2` | `precheck.sgStatus` + planner | dispatch `SG_STATUS_LESEN`, read `SG_STATUS` / `PROG_TYP` / `PROG_ORDER` cabd-pars |
+| `coapiKfGetEcuAddrFromSgMember` | `nfsx-resolver` | resolve diag address from SG member |
+| `coapiKfGetInterface` | `nfsx-resolver prgifsel` | which transport/interface to use |
+| `coapiKfGetSgMember` | `nfsx-resolver kfconf` | which SG-member descriptor applies |
+| `coapiKfReadKfConfTabD2` / `_driver` | `nfsx-resolver kfConf` | KFCONF table reader |
+| `coapiKfReadHwNrTabD2` | `nfsx-resolver hwnr` | HWNR.DA2 reader |
+| `coapiKfReadZbNrTabD2` | `nfsx-resolver zbNrTab` (§3.7) | per-SG `.DAT` row reader, keyed by ZB-NR |
+| `coapiKfGetGlobalPabdSgbd` | `nfsx-runtime` | global PABD-SGBD context |
+
+### 11.2 Validation / "can we flash?" gate
+
+`coapiKfCheckBsuPossibleD2` (FUN_00447d10) is **pure SP-Daten lookup**
+— doesn't touch the ECU. Reads the KFCONF table + an IST/SOLL mapping
+table (`SGBEZ_IST`, `ZZZPPP_IST`, `HWNR_IST`, `SGBEZ_SOLL`,
+`ZZZPPP_SOLL`, `HWNR_SOLL`, `WDP_JA_NEIN` columns) and decides
+whether the current state can upgrade to the target.
+
+Output codes (extracted from the function's logCoapiError calls):
+
+| Code | Meaning (inferred) |
+|---|---|
+| OK (`local_3f0 == 1`) | upgrade allowed |
+| `0x4a8` | wrong target type |
+| `0x4a7` | upgrade not permitted from current state |
+| `0x4a6` | no match |
+| `0x3fe` | configuration error |
+| `0x424` | PROG_TYP or PROG_ORDER missing/zero |
+
+Sibling: `coapiKfCheckBsuPossibleForZbUpdateD2` handles ZB-only
+updates (no firmware change, just configuration).
+
+### 11.3 Programming functions
+
+| WinKFP function | Mirrors |
+|---|---|
+| `coapiKfProgSgD2` | `nfsx-flash session` TRANSFER stage |
+| `coapiKfProgSgDevelop` | dev-mode programming (no AIF write) |
+| `coapiKfProgSgDevelopWithAif` | dev programming + post-flash AIF stamp |
+| `coapiKfSetCABDParameterProgMode` | seed cabd-pars before programming |
+
+### 11.4 The two-layer precheck pattern
+
+Critical architectural observation from the precheck rewrite
+(`packages/flash/src/precheck.ts`):
+
+**Layer 1 — IPO-driven reads.** WinKFP dispatches `HW_REFERENZ`,
+`SG_STATUS_LESEN`, `SG_IDENT_LESEN`, `SG_AIF_LESEN` via cabimain
+(`coapiRunIpoJob`) and reads result cabd-pars by name (`SG_STATUS`,
+`HW_REF_SG_KENNUNG`, `ID_BMW_NR`, `AIF_ZB_NR`, …). The IPO contains
+ALL the chassis-specific bus knowledge — which ECU to query, which
+SGBD job to invoke, which result names to expect. The host (WinKFP)
+just dispatches and reads named cabd-pars.
+
+**Layer 2 — SP-Daten cross-checks.** `coapiKfCheckBsuPossibleD2`
+validates the cabd-par values against offline tables. No ECU
+interaction.
+
+**Notably absent: battery / ignition / KOMBI checks.** The strings
+`KL15`, `ZUENDUNG`, `UBATT`, `SPANNUNG`, `KOMBI` (as standalone job
+names) appear ZERO times in winkfpt.exe — the only related hit is
+`KONF_PROGRAMMIERSPANNUNG_ANZEIGEN`, an `.ini` flag for whether to
+*display* programming voltage to the operator. WinKFP does not gate
+the flash on a hardcoded battery or ignition read. Don't reintroduce
+this in `nfsx-flash`.
+
+### 11.5 What WinKFP does NOT expose
+
+WinKFP has no firmware-backup feature. There is no `coapiKfBackup*`
+or `coapiKfReadFlash*` family — confirmed by full Ghidra walk across
+the `coapiKf*` string table on 2026-05-27. BMW's design relies on
+SP-Daten as the canonical firmware source: if you brick an ECU, the
+recovery path is to re-flash from SP-Daten, not to restore from a
+host-side ROM image.
+
+### 11.6 The `ZIF_BACKUP` IPO job — on-ECU redundancy, NOT a host save
+
+Initially this looked like the missing backup feature. It is not.
+`ZIF_BACKUP` is the IPO surface for the ECU's **redundant identity
+region** — a second copy of `ZIF` (Zustands-Identifikationsfeld /
+state identification field) that the ECU itself maintains in a
+flash region separate from the active firmware. Used by WinKFP as
+a FALLBACK identity source, not as a host-disk backup.
+
+Verified across three winkfpt.exe functions on 2026-05-27:
+
+| Function | Address | What it does with ZIF_BACKUP |
+|---|---|---|
+| `FUN_00432300` | 0x432300 | dispatches ZIF_BACKUP IPO, reads result cabd-pars, appends to `REF.OUT` as audit log |
+| `coapiKfCheckReferenzD2` | FUN_00450300 | if current ZIF reads garbage, falls back to ZIF_BACKUP for identity comparison |
+| `coapiKfGetHwNrFromSgD2` | FUN_00445900 | if `SG_IDENT_LESEN` gives non-7-digit BMW_NR, falls back to ZIF_BACKUP_BMW_HW |
+
+**Result cabd-pars** published by the ZIF_BACKUP IPO dispatch:
+
+| Cabd-par | Type | Meaning |
+|---|---|---|
+| `ZIF_BACKUP_SG_KENNUNG` | string | SG kennung (e.g. `G22`) |
+| `ZIF_BACKUP_PROJEKT` | string | projekt code |
+| `ZIF_BACKUP_PROGRAMM_STAND` | string | program version (e.g. `89D0`) |
+| `ZIF_BACKUP_BMW_HW` | string | BMW HW-NR (7-digit, optional) |
+| `ZIF_BACKUP_BMW_PST` | string | BMW programming-state number (optional) |
+| `ZIF_BACKUP_STATUS` | ushort | dispatch status byte (logged as %X) |
+| `ZIF_BACKUP_ENTRIES` | ushort | count of entries (referenced in WinKFP; semantic TBD) |
+
+**Special status code:** `0x427` means "no backup data available"
+(ECU's redundant region not populated). WinKFP's FUN_00432300
+treats this as success — closes the audit file and returns OK. Our
+`runBackup` records it in the report rather than treating it as a
+dispatch failure.
+
+**Bench validation (2026-05-27 against GS20 HWNR 7544721):**
+ZIF_BACKUP returned populated:
+- `ZIF_BACKUP_PROGRAMM_STAND = 89D0` matches the `0089D0` suffix
+  in the file reference `G2210_0089D0` ✓
+- `ZIF_BACKUP_BMW_HW = 7544721` matches HWNR ✓
+- All identity fields agree with HW_REFERENZ + SG_IDENT_LESEN — healthy
+  redundancy region, no partial-flash artefacts.
+
+**`C:\NFS-Backup` (the directory)** — defined in `WinKFP.INI` as
+`KomfortKonfPath`. Stores user-coding-comfort backups (coding
+values the operator can edit), NOT firmware. Different workflow
+entirely.
+
+### 11.8 `SG_PROGRAMMIEREN` is THE flash primitive
+
+Verified by Ghidra decomp of `FUN_00455780` = `coapiKfProgSgD2` on
+2026-05-27. The flash is **a single IPO dispatch** of
+`SG_PROGRAMMIEREN`. UDS-level concerns (0x27 SecurityAccess,
+0x10 DiagnosticSession, 0x34/0x36/0x37 RequestDownload/TransferData/
+RequestTransferExit) live **inside the IPO**, invisible to the host.
+
+The host's job is:
+
+1. Look up KFCONF + ZB-NR rows (the SP-Daten data layer, §3.7)
+2. Set up cabd-pars that `SG_PROGRAMMIEREN` reads:
+   - `DOMINANTE` (priority/mode, from runtime global)
+   - `BSUTIME` (BSU time-budget hint)
+   - `PROG_WITH_AIF` (0 = AIF written separately; 1 = inline)
+   - `SCHNELLE_BAUDRATE` (ON/OFF — fast-baud opt-in)
+   - If `PROG_WITH_AIF=1`: `AIF_FG_NR`, `AIF_DATUM`,
+     `AIF_AENDERUNGS_INDEX`, `AIF_SW_NR`, `AIF_BEHOERDEN_NR`,
+     `AIF_ZB_NR`, `AIF_SERIEN_NR`, `AIF_HAENDLER_NR`, `AIF_KM`,
+     `AIF_PROG_NR`, `AIF_ADRESSE`
+3. Dispatch `SG_PROGRAMMIEREN`. The IPO reads `.0PA`/`.0DA` from disk
+   via the file-I/O syscall slots (`fileopen` / `fileread` /
+   `filewrite` / `fileclose` — string xrefs at 0x00603f40 /
+   0x00603d54 / 0x00603f28 / 0x00603f34 in winkfpt.exe) and drives
+   the SGBD jobs (`SEED_KEY`, `FLASH_LOESCHEN`, `FLASH_SCHREIBEN`,
+   `FLASH_SCHREIBEN_ENDE`, etc.) internally.
+4. (Optional) If AIF wasn't inlined, dispatch `SG_AIF_SCHREIBEN`
+   afterwards with the same `AIF_*` cabd-pars seeded.
+
+**Pre-2026-05-27 design pitfall:** the original `@emdzej/nfsx-flash`
+pipeline had explicit `AUTHENTICATE` / `SESSION` / `TRANSFER` /
+`AIF_WRITE` stages implementing UDS handshakes directly on the
+wire. That was architecturally wrong — WinKFP delegates all of that
+to the IPO. The wire-level modules (`auth.ts`, `transfer.ts`,
+`aif-write.ts`) were removed in the rewrite.
+
+**Current `FlashSession` pipeline:**
+
+| Stage | What it does |
+|---|---|
+| `RESOLVE` | Parse `.0PA`/`.0DA` for integrity (early validation, does NOT pass bytes to IPO) |
+| `PRECHECK` | IPO-driven identity reads + FSC check (see §11.4) |
+| `BACKUP` | IPO-driven audit snapshot (see §11.6, §11.7) |
+| `PROGRAM` | Single `SG_PROGRAMMIEREN` IPO dispatch |
+| `POSTCHECK` | Re-read HW_REFERENZ + SG_IDENT_LESEN, verify ECU still answers |
+
+**Slot-implementation progress (2026-05-27):**
+
+The host-side dispatch shape is correct + tested. Adding slot
+handlers in `nfsx-runtime/src/system-functions.ts` unblocks SG_PROGRAMMIEREN
+incrementally. Confirmed via mock-mode dispatch trace, the IPO's
+slot-call order is:
+
+| Step | Slot | Status |
+|---|---|---|
+| 1 | `CDHGetCabdPar` (read `JOBNAME`) | ✓ |
+| 2 | `CDHapiInit` | ✓ |
+| 3 | `CDHGetSgbdName` | ✓ |
+| 4 | `CDHapiJob` (initial SGBD handshake — likely SEED_KEY) | ✓ |
+| 5 | `CDHapiResultText` (read JOB_STATUS) | ✓ |
+| 6 | `CDHBinBufCreate` (allocate firmware buffer) | ✓ #235 |
+| 7+ | (presumed) `fileopen` + `fileread` to load `.0PA` | ✓ open/close/write done (#234); read TBD |
+| later | `CDHBinBuf{Read,Write}{Byte,Word}` + `CDHBinBufToNettoData` for staging | ✓ #235 |
+| later | `CDHapiJob` calls to `FLASH_LOESCHEN` / `FLASH_SCHREIBEN` / etc. | ✓ via existing CDHapiJob |
+
+Task #234 (`fileopen` / `fileclose` / `filewrite` + `workingDir`
+threading) + task #235 (the `CDHBinBuf*` family: 0x49–0x51, plus
+`CDHCheckDataUsed`) both landed 2026-05-27. Implementation
+deliberately replicates `ncsx-inpax-cabi-provider`'s tested
+BinBuf logic in `packages/runtime/src/system-functions.ts`
+rather than depending on it — the file already follows a
+manual-handler pattern. Full migration to a CabiProvider-adapter
+shape is filed as #236.
+
+**Next blocker (task #237):** with BinBuf wired, `SG_PROGRAMMIEREN`
+gets deeper into the IPO but throws a VM stack error in
+`TestApiFehlerNoExit#7` (`Stack index out of bounds: 30 ...
+pc=2 op=0x07 frameOffset=21 stackLen=28`). Hypothesis: a slot
+handler is failing to write an out-ref the IPO downstream
+expects to be non-zero. Diagnose by decompiling the IPO's
+`TestApiFehlerNoExit` function via `inpax decompile --ips` +
+cross-referencing the slot trace just before the crash.
+
+**`fileread` slot:** still not directly observed — the IPO is
+crashing before reaching file I/O. Slot number remains TBD,
+deferred to whenever the trace progresses past step 6.
+
+### 11.7 `nfsx backup` — our backup design
+
+Faithful to WinKFP. The `nfsx backup` CLI command dispatches the
+universal IPO reads (HW_REFERENZ + SG_STATUS_LESEN + SG_IDENT_LESEN
++ SG_AIF_LESEN + ZIF_BACKUP) and persists everything as
+`<HWNR>-<ZB>-<timestamp>.json`. No SGBD-specific jobs — keeps the
+backup chassis-agnostic, IPO-driven, and forward-compatible with
+any SG that supports the standard cabimain entry-points.
+
+NOT a brick-recovery image, and we don't pretend it is. If a flash
+goes sideways, recovery comes from:
+1. The ECU's on-board ZIF_BACKUP region (preserved identity during
+   the failed write), and
+2. Re-flashing the prior `.0PA`/`.0DA` from SP-Daten (if available
+   in the drop).
+
+If neither path works, the ECU is bricked. WinKFP makes the same
+trade-off; we don't have a way to do better without breaking the
+IPO-driven principle.
