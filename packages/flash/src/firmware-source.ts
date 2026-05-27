@@ -7,7 +7,7 @@
  */
 
 import type { FirmwareSource } from '@emdzej/nfsx-runtime';
-import type { MemoryRegion } from '@emdzej/nfsx-flash-data';
+import type { MemoryRegion, PaDaRecord } from '@emdzej/nfsx-flash-data';
 
 /**
  * Diagnostic counters — what the firmware source actually delivered.
@@ -93,6 +93,99 @@ export function buildRegionsFirmwareSource(
         return { bytes: new Uint8Array(slice), eof: false };
       }
       return { bytes: new Uint8Array(0), eof: true };
+    },
+  };
+}
+
+/**
+ * Frame the IPO's BinBuf payload exactly the way WinKFP does.
+ *
+ * Verified against `winkfpt.exe`'s slot 0x55 dispatcher
+ * (`FUN_00459f80` → `MakeHeader` `FUN_00459b00` →
+ * `coapiKfGetProgData` `FUN_00442630` → `datGetNextData`
+ * `FUN_004662a0`). See `docs/architecture.md` §11.13.
+ *
+ * Each call returns the binary frame for **one** Intel-HEX type-00
+ * (data) record from the `.0PA`. Type-04 / type-02 records adjust the
+ * running absolute address (the parser already collapses that into
+ * `record.address`, so we just read it). Type-10 records (BMW
+ * `$REFERENZ` host metadata) and type-01 (EOF marker) are skipped.
+ *
+ * Frame layout (L = record data length):
+ * ```
+ *   +0x00  1   EBX mode byte (host-side flag; default 0x00)
+ *   +0x01  1   word-size = 0x01    ┐ from CDHSetDataOrg(1, 0, 0)
+ *   +0x02  1   flag = 0x00         │  which slot 0x55 calls
+ *   +0x03  1   flag = 0x00         ┘  internally before MakeHeader
+ *   +0x04  9   zero padding
+ *   +0x0D  2   length L (uint16 LE)
+ *   +0x0F  2   length L (uint16 LE, duplicate)
+ *   +0x11  4   absolute address (uint32 LE)
+ *   +0x15  L   record data
+ *   +0x15+L 1  terminator = 0x03
+ * ```
+ *
+ * Total bytes = L + 22.
+ *
+ * The optional `mode` parameter overrides byte 0 of the header. If
+ * the bench rejects EBX=0 frames with a clean error code, retry with
+ * EBX=1 — that's the only value MakeHeader inspects (it triggers a
+ * `memset(byte 9, 0xff, 1)` which then makes byte 9 = 0xff instead
+ * of 0).
+ */
+export function buildPaDaRecordSource(
+  records: ReadonlyArray<PaDaRecord>,
+  options: { mode?: number } = {},
+): FirmwareSource {
+  const mode = (options.mode ?? 0x00) & 0xff;
+  // Pre-build the immutable 13-byte header that prefixes every frame.
+  const header13 = new Uint8Array(13);
+  header13[0] = mode;
+  header13[1] = 0x01;
+  // [2..0x0C] stay zero.
+
+  // Skip non-flashable records up front so `nextChunk` doesn't have
+  // to filter on every call. Order preserved.
+  const dataRecords = records.filter((r) => r.type === 0x00 && r.data.length > 0);
+
+  let i = 0;
+  return {
+    nextChunk(maxBytes: number) {
+      if (i >= dataRecords.length) return { bytes: new Uint8Array(0), eof: true };
+      const rec = dataRecords[i]!;
+      const L = rec.data.length;
+      const total = L + 22;
+      if (total > maxBytes) {
+        // The SGBD's BLOCKLAENGE_MAX_WERT should always exceed
+        // L+22 for a typical 32-byte record (54 total < 246). If
+        // the IPO ever passes a smaller maxBytes, surface that
+        // rather than silently truncating.
+        throw new Error(
+          `firmware record at index ${i} needs ${total} bytes but IPO offered only ${maxBytes}`,
+        );
+      }
+      i++;
+      const buf = new Uint8Array(total);
+      // [0..0x0C] header
+      buf.set(header13, 0);
+      // [0x0D..0x0E] length LE
+      buf[0x0d] = L & 0xff;
+      buf[0x0e] = (L >> 8) & 0xff;
+      // [0x0F..0x10] length LE (duplicate — record-count field in
+      // CDHGetApiJobData's batched cousin; here it mirrors length)
+      buf[0x0f] = L & 0xff;
+      buf[0x10] = (L >> 8) & 0xff;
+      // [0x11..0x14] absolute address LE
+      const addr = rec.address >>> 0;
+      buf[0x11] = addr & 0xff;
+      buf[0x12] = (addr >> 8) & 0xff;
+      buf[0x13] = (addr >> 16) & 0xff;
+      buf[0x14] = (addr >> 24) & 0xff;
+      // [0x15..0x14+L] data
+      buf.set(rec.data, 0x15);
+      // [0x15+L] terminator
+      buf[0x15 + L] = 0x03;
+      return { bytes: buf, eof: false };
     },
   };
 }

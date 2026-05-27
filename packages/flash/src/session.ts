@@ -15,11 +15,15 @@ import {
   parsePaDa,
   paDaToRegions,
   type MemoryRegion,
+  type PaDaRecord,
 } from '@emdzej/nfsx-flash-data';
 import { runPrecheck } from './precheck.js';
 import { runBackup, writeBackupFile } from './backup.js';
 import { runProgramSg } from './prog-sg.js';
-import { buildRegionsFirmwareSource } from './firmware-source.js';
+import {
+  buildRegionsFirmwareSource,
+  buildPaDaRecordSource,
+} from './firmware-source.js';
 import { rejectAllConfirmation } from './safety.js';
 import type {
   ConfirmContext,
@@ -33,6 +37,13 @@ import type {
 export class FlashSession {
   private listeners: Array<(e: FlashEvent) => void> = [];
   readonly events: FlashEvent[] = [];
+  /**
+   * Parsed `.0PA` records, populated when the firmware source is a
+   * PA/DA file. Carries the Intel-HEX framing the SGBD requires —
+   * regions alone don't preserve per-record framing. See
+   * `firmware-source.ts` / `docs/architecture.md` §11.13.
+   */
+  private paDaRecords?: ReadonlyArray<PaDaRecord>;
 
   constructor(private readonly opts: FlashSessionOptions) {}
 
@@ -158,8 +169,14 @@ export class FlashSession {
         this.emit({ type: 'stage:start', stage: 'PROGRAM' });
         try {
           // The IPO pops one record per call from this iterator via
-          // slot 0x55. See packages/runtime/src/system-functions.ts.
-          const firmwareSource = buildRegionsFirmwareSource(regions);
+          // slot 0x55. PA/DA inputs use the BMW-framed source (one
+          // Intel-HEX record per chunk, with the 22-byte header the
+          // SGBD's `pary` opcode parses). S37 / raw regions fall back
+          // to the older unframed splitter — kept for tests + non-BMW
+          // payloads. See `docs/architecture.md` §11.13.
+          const firmwareSource = this.paDaRecords
+            ? buildPaDaRecordSource(this.paDaRecords)
+            : buildRegionsFirmwareSource(regions);
           const report = await runProgramSg(
             this.opts.ecu,
             this.opts.ediabas,
@@ -272,6 +289,10 @@ export class FlashSession {
 
   private resolvePaDa(bytes: Uint8Array): MemoryRegion[] {
     const result = parsePaDa(bytes);
+    // Stash records so PROGRAM can frame them via the BMW layout —
+    // memory regions alone strip the per-record framing the SGBD's
+    // pary opcode requires.
+    this.paDaRecords = result.records;
     if (result.skipped.length > 0) {
       this.emit({
         type: 'log',
