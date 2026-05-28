@@ -144,6 +144,16 @@ export function buildSystemFunctions(
 const DEFAULT_RETRYABLE_STATUSES: ReadonlySet<string> = new Set([
   'ERROR_WRITE_DATA',
   'ERROR_INVALID_BIN_BUFFER',
+  // ECU was still busy committing the previous flash block to NVRAM
+  // when our next request arrived → its response window expired with
+  // nothing on the wire (5s host-side rx:empty observed during real
+  // GD20 flashes over J2534). 200ms backoff gives the ECU time to
+  // drain. Without this, the IPO's GD20Prog dispatcher records the
+  // error and *advances the chunk pointer without re-dispatching* —
+  // so the affected block's bytes are silently missing from the
+  // flashed image. Cluster of 10–11 such errors / 8188 chunks
+  // observed; this turns them into successful retries.
+  'ERROR_SG_UNBEKANNTES_STATUSBYTE',
 ]);
 
 function makeOverride(
