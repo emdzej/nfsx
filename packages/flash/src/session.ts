@@ -434,6 +434,28 @@ export class FlashSession {
         message: `ediabas binary-path: ${binJobs.join(', ') || '(none)'} | ${j.binBytesPushed} bytes pushed | totalMs=${j.binTotalMs}`,
       });
 
+      // Retries: count how many slot 0x0E dispatches needed re-tries.
+      // Each `:retry` trace entry represents one re-dispatch attempt
+      // that the operator should know about — high counts suggest
+      // wire issues worth investigating at the hardware level.
+      const retryCounts = new Map<string, number>();
+      for (const e of r.slotTrace) {
+        if (e.name === 'CDHapiJobData:retry') {
+          const reason = (e.args.status as string) ?? (e.args.error as string) ?? 'unknown';
+          const key = `${e.args.job}/${reason}`;
+          retryCounts.set(key, (retryCounts.get(key) ?? 0) + 1);
+        }
+      }
+      if (retryCounts.size > 0) {
+        const total = Array.from(retryCounts.values()).reduce((a, b) => a + b, 0);
+        const parts = Array.from(retryCounts.entries()).map(([k, n]) => `${k}×${n}`);
+        this.emit({
+          type: 'log',
+          level: 'info',
+          message: `retries: ${total} total (${parts.join(', ')})`,
+        });
+      }
+
       const sawFlashWrite =
         j.byJob.has('FLASH_SCHREIBEN') || j.binByJob.has('FLASH_SCHREIBEN');
       if (!sawFlashWrite) {

@@ -72,6 +72,37 @@ export interface BuildSystemFunctionsOptions {
    * each time the IPO wants the next record.
    */
   firmwareSource?: FirmwareSource;
+  /**
+   * Maximum *retries* for a single CDHapiJobData (slot 0x0E) binary
+   * dispatch — i.e. number of *additional* attempts after a transient
+   * failure. Total attempts = `maxBinaryRetries + 1`. Default `2`
+   * → 3 total attempts.
+   *
+   * A retry is triggered when EITHER:
+   *   - `ed.executeJob` threw (wire / transport error), or
+   *   - the returned `JOB_STATUS` is in `retryableStatuses`.
+   *
+   * BMW SGBDs are idempotent for flash writes: a failed
+   * `FLASH_SCHREIBEN` reports `ERROR_WRITE_DATA` *before* committing
+   * any change to the flash region, so re-dispatching the same chunk
+   * is always safe. WinKFP almost certainly does the same — over
+   * K+DCAN at 9600 baud, transient UART corruption gives a ~0.5-1%
+   * per-dispatch failure rate; retrying drops the residual to ~10⁻⁶.
+   */
+  maxBinaryRetries?: number;
+  /**
+   * Job-status values that trigger a retry of the binary dispatch.
+   * Default: `ERROR_WRITE_DATA`, `ERROR_INVALID_BIN_BUFFER`. The
+   * second one is included because bit-flip corruption in the
+   * outbound bytes makes the SGBD's structural check fail.
+   */
+  retryableStatuses?: ReadonlySet<string>;
+  /**
+   * Milliseconds to wait between binary-dispatch retries. Default
+   * `0` (immediate). Small backoff (10-50 ms) may help if the ECU
+   * needs recovery time between attempts.
+   */
+  retryBackoffMs?: number;
 }
 
 /**
@@ -106,6 +137,12 @@ export function buildSystemFunctions(
   return map;
 }
 
+/** Default statuses the binary-dispatch retry loop treats as transient. */
+const DEFAULT_RETRYABLE_STATUSES: ReadonlySet<string> = new Set([
+  'ERROR_WRITE_DATA',
+  'ERROR_INVALID_BIN_BUFFER',
+]);
+
 function makeOverride(
   slot: CabiSlot,
   state: CabiState,
@@ -113,6 +150,9 @@ function makeOverride(
 ): SystemFunctionOverride {
   const ediabas = opts.ediabas;
   const defaultSgbd = opts.defaultSgbd ?? '';
+  const maxBinaryRetries = opts.maxBinaryRetries ?? 2;
+  const retryableStatuses = opts.retryableStatuses ?? DEFAULT_RETRYABLE_STATUSES;
+  const retryBackoffMs = opts.retryBackoffMs ?? 0;
 
   switch (slot.name) {
     // ── Flow control ─────────────────────────────────────────────────
@@ -207,35 +247,77 @@ function makeOverride(
         // Try real binary path via getEdiabas() duck-type.
         const ed = getEdiabasInstance(ediabas);
         if (ed && bytes.length > 0) {
-          try {
-            // Match EdiabasXProvider.resolveSgbdFile: BMW SGBDs are .prg
-            // (or .grp). Bare names like "10GD20" hit the filesystem as
-            // ENOENT — `provider.job()` does this resolution internally
-            // but our direct `ed.loadSgbd()` bypasses it.
-            const sgbdFile = /\.(prg|grp)$/i.test(ecu) ? ecu : `${ecu}.prg`;
-            await ed.loadSgbd(sgbdFile);
-            const sets = await ed.executeJob(job, { params: [bytes] });
-            state.lastJobSets = sets.map((set) => {
-              const m = new Map<string, unknown>();
-              for (const r of set) m.set(r.name, r.value);
-              return m;
-            });
-            const status = pickResultText(state.lastJobSets, 'JOB_STATUS', '');
-            state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status, ok: true };
-            state.trace.push({
-              slot: slot.id,
-              name: `${slot.name}:result`,
-              args: { job, path: 'binary', status, sets: state.lastJobSets.length },
-            });
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status: `ERROR: ${message}`, ok: false };
-            state.lastJobSets = undefined;
-            state.trace.push({
-              slot: slot.id,
-              name: `${slot.name}:error`,
-              args: { job, path: 'binary', error: message },
-            });
+          // Match EdiabasXProvider.resolveSgbdFile: BMW SGBDs are .prg
+          // (or .grp). Bare names like "10GD20" hit the filesystem as
+          // ENOENT — `provider.job()` does this resolution internally
+          // but our direct `ed.loadSgbd()` bypasses it.
+          const sgbdFile = /\.(prg|grp)$/i.test(ecu) ? ecu : `${ecu}.prg`;
+          const maxAttempts = maxBinaryRetries + 1;
+          // Retry loop — see BuildSystemFunctionsOptions.maxBinaryRetries
+          // for rationale. BMW flash dispatches are idempotent: a
+          // FLASH_SCHREIBEN failure surfaces BEFORE the ECU commits
+          // any change, so re-dispatching the same record is safe.
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              await ed.loadSgbd(sgbdFile);
+              const sets = await ed.executeJob(job, { params: [bytes] });
+              state.lastJobSets = sets.map((set) => {
+                const m = new Map<string, unknown>();
+                for (const r of set) m.set(r.name, r.value);
+                return m;
+              });
+              const status = pickResultText(state.lastJobSets, 'JOB_STATUS', '');
+              state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status, ok: true };
+              if (retryableStatuses.has(status) && attempt < maxAttempts) {
+                // Transient failure surfaced by the SGBD — log + retry.
+                state.trace.push({
+                  slot: slot.id,
+                  name: `${slot.name}:retry`,
+                  args: { job, path: 'binary', status, attempt, ofMax: maxAttempts },
+                });
+                if (retryBackoffMs > 0) {
+                  await new Promise<void>((resolve) => setTimeout(resolve, retryBackoffMs));
+                }
+                continue;
+              }
+              state.trace.push({
+                slot: slot.id,
+                name: `${slot.name}:result`,
+                args: {
+                  job,
+                  path: 'binary',
+                  status,
+                  attempt,
+                  sets: state.lastJobSets.length,
+                },
+              });
+              break;
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status: `ERROR: ${message}`, ok: false };
+              state.lastJobSets = undefined;
+              if (attempt < maxAttempts) {
+                // Transport-level exception (timeout, port closed, etc.)
+                // — retry. If the underlying ediabas connection is
+                // truly broken, attempts will keep throwing and we'll
+                // fall through to the final :error after maxAttempts.
+                state.trace.push({
+                  slot: slot.id,
+                  name: `${slot.name}:retry`,
+                  args: { job, path: 'binary', error: message, attempt, ofMax: maxAttempts },
+                });
+                if (retryBackoffMs > 0) {
+                  await new Promise<void>((resolve) => setTimeout(resolve, retryBackoffMs));
+                }
+                continue;
+              }
+              state.trace.push({
+                slot: slot.id,
+                name: `${slot.name}:error`,
+                args: { job, path: 'binary', error: message, attempt },
+              });
+              break;
+            }
           }
           return;
         }

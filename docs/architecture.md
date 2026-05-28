@@ -1947,3 +1947,68 @@ should give a clear error code; we adjust to `0x01` and retry.
 Both candidates are safe — even on full payload acceptance, we're
 re-flashing the same firmware, so successful write = no net
 change.
+
+### 11.14 First real flash complete + retry analysis (2026-05-27/28)
+
+Second bench attempt with the framed firmware-source: PROGRAM
+took **~24 minutes** (8188 × ~167 ms per chunk + protocol
+overhead). Outcome:
+
+- `FLASH_LOESCHEN` → OKAY
+- `FLASH_SCHREIBEN_ENDE` × 2 → OKAY
+- `FLASH_SCHREIBEN` × 8188 → **8118 OKAY + 70 ERROR_WRITE_DATA**
+
+99.1% success rate. The 70 failures distributed approximately
+uniformly across the flash (10/6/6/7/4/11/7/10/3/6 per 10%
+bucket), with only 4 small clusters (2-error pairs within 10-chunk
+windows). One error sat on a region boundary (chunk 4094 →
+`0xC0000`); the other two boundaries had no adjacent errors.
+Strongly random distribution → not protocol/framing, **wire
+noise**.
+
+**Root cause** (Ghidra `FLASH_SCHREIBEN` `0xDE6B`):
+
+```
+move L0, #$D.L              ; offset 0x0D = our frame's length-low
+move S1, S2                 ; S1 = our buffer
+move B0, S1[L1]             ; read our length byte
+...
+comp L0, L1                 ; ECU echo byte vs ours
+jnz __DE81                  ; mismatch → ERROR_WRITE_DATA
+```
+
+The SGBD echoes a length byte back as part of the protocol; if
+the UART transmission corrupts that byte, the SGBD reports
+`ERROR_WRITE_DATA`. At 9600 baud over an FTDI USB-serial bridge
+the per-byte corruption rate is exactly the kind of rate this
+catches.
+
+**`GD20Prog` does NOT retry.** The IPO's loop uses
+`TestApiFehlerNoExit` (not `TestApiFehler`) — failures are logged
+via `CDHSetError` and the loop advances to the next chunk
+unconditionally. With 70 holes left after `FLASH_LOESCHEN`, the
+program region has ~2.2 KB of erased state where firmware should
+be. ECU's bootloader/identity surface remained intact (POSTCHECK
+`HW_REFERENZ` succeeded with the original `G22 10_00` reading),
+but the application image is incomplete.
+
+**Fix**: host-side retry inside slot 0x0E (CDHapiJobData),
+configured via `BuildSystemFunctionsOptions`:
+
+- `maxBinaryRetries` — default `2` (3 total attempts)
+- `retryableStatuses` — default `{ERROR_WRITE_DATA,
+  ERROR_INVALID_BIN_BUFFER}`
+- `retryBackoffMs` — default `0` (immediate)
+
+Each retry attempt re-runs `ed.executeJob` with the same buffer.
+BMW flash dispatches are idempotent: `FLASH_SCHREIBEN` reports a
+failure BEFORE any change reaches the flash region, so the second
+attempt overwrites nothing. Retries push `:retry` markers into
+`state.trace` and are counted in the session's program
+diagnostics. With 0.85% per-attempt failure, residual rate after
+3 attempts ≈ 6 × 10⁻⁷ — effectively zero for 8200 chunks.
+
+WinKFP's behaviour wasn't observable from Ghidra (the retry, if
+any, lives in a `coapiKf*` helper not yet traced), but this is
+the canonical pattern across BMW flash tools and matches what
+the SGBD's idempotent failure semantics allow.
