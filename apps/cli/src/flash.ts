@@ -127,6 +127,12 @@ export async function runFlash(opts: FlashOptions): Promise<number> {
   const fwSlice = new Uint8Array(fwBytes.buffer, fwBytes.byteOffset, fwBytes.byteLength);
   const firmware = isPaDa(firmwarePath) ? { paDaBytes: fwSlice } : { s37Bytes: fwSlice };
 
+  // Build program-stage opts only when the operator passed override
+  // values — otherwise let the runtime apply its defaults.
+  const programOpts: import('@emdzej/nfsx-flash').FlashSessionOptions['program'] = {};
+  if (opts.maxRetries !== undefined) programOpts.maxBinaryRetries = opts.maxRetries;
+  if (opts.retryBackoffMs !== undefined) programOpts.retryBackoffMs = opts.retryBackoffMs;
+
   const session = new FlashSession({
     ecu: {
       sgbd,
@@ -138,6 +144,7 @@ export async function runFlash(opts: FlashOptions): Promise<number> {
     },
     firmware,
     ediabas,
+    program: Object.keys(programOpts).length > 0 ? programOpts : undefined,
   });
 
   // Live progress to stderr so --json output stays clean.

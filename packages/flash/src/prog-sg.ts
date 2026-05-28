@@ -85,6 +85,16 @@ export interface ProgramOptions {
   aifKm?: string;
   aifProgNr?: string;
   aifAdresse?: string;
+
+  /**
+   * Override the slot 0x0E (CDHapiJobData) retry knobs. See
+   * `BuildSystemFunctionsOptions` in nfsx-runtime for full doc.
+   * When unset, the runtime applies its defaults: 2 retries, 200 ms
+   * backoff, {ERROR_WRITE_DATA, ERROR_INVALID_BIN_BUFFER} as the
+   * retryable status set.
+   */
+  maxBinaryRetries?: number;
+  retryBackoffMs?: number;
 }
 
 export interface ProgramReport {
@@ -179,6 +189,8 @@ export async function runProgramSg(
       cabdPars,
       workingDir: ecu.workingDir,
       firmwareSource: instrumented ?? firmwareSource,
+      maxBinaryRetries: opts.maxBinaryRetries,
+      retryBackoffMs: opts.retryBackoffMs,
     });
     await handle.runCabimain('SG_PROGRAMMIEREN');
     const status = handle.state.lastJobStatus;

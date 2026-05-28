@@ -99,8 +99,11 @@ export interface BuildSystemFunctionsOptions {
   retryableStatuses?: ReadonlySet<string>;
   /**
    * Milliseconds to wait between binary-dispatch retries. Default
-   * `0` (immediate). Small backoff (10-50 ms) may help if the ECU
-   * needs recovery time between attempts.
+   * `200`. Bench evidence (GS20 over K+DCAN @ 9600): zero-backoff
+   * retries reproduce the original failure 100% of the time; ~200 ms
+   * lets the wire drain and the ECU clear its internal failed-write
+   * state before the next attempt. Tune lower (50-100 ms) for
+   * faster transports or higher (300-500 ms) on flaky cables.
    */
   retryBackoffMs?: number;
 }
@@ -152,7 +155,13 @@ function makeOverride(
   const defaultSgbd = opts.defaultSgbd ?? '';
   const maxBinaryRetries = opts.maxBinaryRetries ?? 2;
   const retryableStatuses = opts.retryableStatuses ?? DEFAULT_RETRYABLE_STATUSES;
-  const retryBackoffMs = opts.retryBackoffMs ?? 0;
+  // 200 ms default: bench evidence (trace6 on GS20, K+DCAN @ 9600)
+  // showed that zero-backoff retries fail with the same status as
+  // the original attempt 100% of the time — the ECU / wire needs a
+  // settle period after a failed write before it'll accept a new
+  // one. 200 ms is empirically enough; smaller values may still
+  // fail. See docs/architecture.md §11.14.
+  const retryBackoffMs = opts.retryBackoffMs ?? 200;
 
   switch (slot.name) {
     // ── Flow control ─────────────────────────────────────────────────

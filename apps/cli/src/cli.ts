@@ -107,6 +107,8 @@ program
   .option('--diag-addr <hex>', 'diagnostic address (audit/logging only)', parseDiagAddr)
   .option('--write', 'allow destructive operations (without this, dry-run only)', false)
   .option('--yes', 'skip per-stage confirmation prompts (requires --write)', false)
+  .option('--max-retries <n>', 'max retries per FLASH_SCHREIBEN dispatch on transient errors (default: 2 = 3 total attempts)', parseNonNegativeInt)
+  .option('--retry-backoff-ms <ms>', 'wait between retry attempts in ms (default: 200 — empirically required for K+DCAN bus drain)', parseNonNegativeInt)
   .option('--trace-file <path>', 'dump the full IPO slot trace + counters to JSON for diagnostics')
   .option('--json', 'machine-readable JSON output', false)
   .action(async (opts: FlashOptions) => {
@@ -215,6 +217,14 @@ function parseBaud(value: string): number {
   return parsed;
 }
 
+function parseNonNegativeInt(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new InvalidArgumentError(`"${value}" is not a non-negative integer.`);
+  }
+  return parsed;
+}
+
 // Type contracts the action callbacks consume. Mirror commander's
 // camel-cased property names. Imported by each handler's
 // implementation file so the contract stays in one place.
@@ -278,6 +288,8 @@ export interface FlashOptions {
   diagAddr?: number;
   write: boolean;
   yes: boolean;
+  maxRetries?: number;
+  retryBackoffMs?: number;
   traceFile?: string;
   json: boolean;
 }

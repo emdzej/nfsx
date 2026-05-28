@@ -115,6 +115,14 @@ export interface StartNfsRuntimeOptions {
    * `@emdzej/nfsx-flash` after parsing the `.0PA`.
    */
   firmwareSource?: import('./system-functions.js').FirmwareSource;
+  /**
+   * Retry knobs for slot 0x0E (CDHapiJobData) — see
+   * `BuildSystemFunctionsOptions` in `./system-functions.ts` for
+   * the full doc + defaults (2 retries, 200 ms backoff).
+   */
+  maxBinaryRetries?: number;
+  retryBackoffMs?: number;
+  retryableStatuses?: ReadonlySet<string>;
 }
 
 export async function startNfsRuntime(
@@ -141,6 +149,9 @@ export async function startNfsRuntime(
     defaultSgbd: options.sgbd,
     workingDir: options.workingDir,
     firmwareSource: options.firmwareSource,
+    maxBinaryRetries: options.maxBinaryRetries,
+    retryBackoffMs: options.retryBackoffMs,
+    retryableStatuses: options.retryableStatuses,
   });
 
   // 5. Build the VM. All UI / simulation / etc. providers are
