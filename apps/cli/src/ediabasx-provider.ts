@@ -24,10 +24,11 @@ import { Ediabas } from '@emdzej/ediabasx-ediabas';
 import { createInterface } from '@emdzej/ediabasx-interfaces';
 import { resolveSpDaten } from './config.js';
 import {
-  loadEdiabasxConfig,
-  resolveEdiabasSelection,
-  summariseEdiabasSelection,
-} from './ediabasx-config.js';
+  loadConfig as loadEdiabasxConfig,
+  resolveSelection,
+  summariseSelection,
+  type InterfaceOverrides,
+} from '@emdzej/ediabasx-host-config';
 
 /** Subset of CLI flags this builder needs — passed by both `run` and `flash`. */
 export interface EdiabasProviderFlags {
@@ -53,12 +54,18 @@ export async function buildEdiabasProvider(
   const ecuPath = join(spDaten, 'ecu');
 
   const fileConfig = loadEdiabasxConfig(flags.ediabasConfig);
-  const selection = resolveEdiabasSelection(fileConfig, {
+  // Map nfsx's flat flag shape to host-config's `InterfaceOverrides`
+  // (which uses an `options` bag so any interface-specific knob can
+  // flow through without ad-hoc fields per consumer).
+  const overrides: InterfaceOverrides = {
     interfaceName: flags.interface,
-    serialPort: flags.serialPort,
-    serialBaud: flags.serialBaud,
     gateway: flags.gateway,
-  });
+    options: {
+      port: flags.serialPort,
+      baudRate: flags.serialBaud,
+    },
+  };
+  const selection = resolveSelection(fileConfig, overrides, { fallback: 'simulation' });
 
   // Real-vs-simulation is decided by `selection.interface` — that's
   // ediabasx's responsibility, not ours. See [[feedback-ediabasx-responsibility]].
@@ -86,6 +93,6 @@ export async function buildEdiabasProvider(
     cleanup: async () => {
       await provider.end();
     },
-    summary: summariseEdiabasSelection(selection),
+    summary: summariseSelection(selection),
   };
 }

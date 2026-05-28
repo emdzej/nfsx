@@ -24,23 +24,26 @@ importers:
   apps/cli:
     dependencies:
       '@emdzej/ediabasx-ediabas':
-        specifier: ^0.3.0
-        version: 0.3.0(@emdzej/bimmerz-logger@0.1.2)
+        specifier: ^0.4.0
+        version: 0.4.0(@emdzej/bimmerz-logger@0.1.2)
+      '@emdzej/ediabasx-host-config':
+        specifier: ^0.4.0
+        version: 0.4.0
       '@emdzej/ediabasx-interface-serial':
-        specifier: ^0.3.0
-        version: 0.3.0
+        specifier: ^0.4.0
+        version: 0.4.0
       '@emdzej/ediabasx-interfaces':
-        specifier: ^0.3.0
-        version: 0.3.0
+        specifier: ^0.4.0
+        version: 0.4.0
       '@emdzej/inpax-ediabasx-provider':
-        specifier: ^0.8.1
-        version: 0.8.1(@emdzej/ediabasx-ediabas@0.3.0(@emdzej/bimmerz-logger@0.1.2))
+        specifier: ^0.9.0
+        version: 0.9.0(@emdzej/ediabasx-ediabas@0.4.0(@emdzej/bimmerz-logger@0.1.2))
       '@emdzej/inpax-interfaces':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@emdzej/inpax-mock-provider':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@emdzej/nfsx-data-files':
         specifier: workspace:*
         version: link:../../packages/data-files
@@ -91,8 +94,8 @@ importers:
   packages/flash:
     dependencies:
       '@emdzej/inpax-interfaces':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@emdzej/nfsx-flash-data':
         specifier: workspace:*
         version: link:../flash-data
@@ -104,8 +107,8 @@ importers:
         version: link:../runtime
     devDependencies:
       '@emdzej/inpax-mock-provider':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@types/node':
         specifier: ^22.13.1
         version: 22.19.19
@@ -125,15 +128,15 @@ importers:
   packages/fsc:
     dependencies:
       '@emdzej/inpax-interfaces':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@emdzej/nfsx-runtime':
         specifier: workspace:*
         version: link:../runtime
     devDependencies:
       '@emdzej/inpax-mock-provider':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@types/node':
         specifier: ^22.13.1
         version: 22.19.19
@@ -160,35 +163,35 @@ importers:
         specifier: ^0.1.2
         version: 0.1.2
       '@emdzej/inpax-core':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@emdzej/inpax-interfaces':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@emdzej/inpax-interpreter':
-        specifier: ^0.8.1
-        version: 0.8.1(@emdzej/bimmerz-logger@0.1.2)
+        specifier: ^0.9.0
+        version: 0.9.0(@emdzej/bimmerz-logger@0.1.2)
       '@emdzej/inpax-mock-provider':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@emdzej/inpax-parser':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@emdzej/inpax-providers':
-        specifier: ^0.8.1
-        version: 0.8.1
+        specifier: ^0.9.0
+        version: 0.9.0
       '@emdzej/ncsx-chassis':
-        specifier: ^0.5.1
-        version: 0.5.1(@emdzej/bimmerz-logger@0.1.2)
+        specifier: ^0.6.0
+        version: 0.6.0(@emdzej/bimmerz-logger@0.1.2)
       '@emdzej/ncsx-fa-asw':
-        specifier: ^0.5.1
-        version: 0.5.1(@emdzej/bimmerz-logger@0.1.2)
+        specifier: ^0.6.0
+        version: 0.6.0(@emdzej/bimmerz-logger@0.1.2)
       '@emdzej/ncsx-inpax-cabi-provider':
-        specifier: ^0.5.1
-        version: 0.5.1(@emdzej/bimmerz-logger@0.1.2)
+        specifier: ^0.6.0
+        version: 0.6.0(@emdzej/bimmerz-logger@0.1.2)
       '@emdzej/ncsx-wire':
-        specifier: ^0.5.1
-        version: 0.5.1
+        specifier: ^0.6.0
+        version: 0.6.0
     devDependencies:
       '@types/node':
         specifier: ^22.13.1
@@ -206,88 +209,117 @@ packages:
   '@emdzej/bimmerz-logger@0.1.2':
     resolution: {integrity: sha512-RPlnIAxo1+uLSTH97VifBCRAxjhylagKqyiyUDYtQSzB7fkgtJh4fedBxvB/T8T5Pr/bQKE68NUi6/o6Op21LQ==}
 
-  '@emdzej/ediabasx-best-parser@0.3.0':
-    resolution: {integrity: sha512-E3k3oPqfRsC8QtZFx77OCv8P+f5m/vjOH3NSDss12aKoTgVWFIGOU8FIiXl+/vXXnGFHrgGKotGT+N2gBKEAog==}
+  '@emdzej/ediabasx-best-parser@0.4.0':
+    resolution: {integrity: sha512-ldAyExp45ROCb1ZJ+eZx1GUyIOq/DaDe7X9ShZCw80ZygBv/Kr/HqzI0a0hRjy2sNWZ5mnqArTxLCNiNMjJHcQ==}
     peerDependencies:
       '@emdzej/bimmerz-logger': ^0.1.2
 
-  '@emdzej/ediabasx-core@0.3.0':
-    resolution: {integrity: sha512-aOJ2hFEipUbyOEnaiC6/RGYWtKkvRlJ1k0rgc37sX8Zm1J9O4iWxWJuZR7ReZgF5rLhQ/KRyFiO8NtjMApvIMg==}
+  '@emdzej/ediabasx-core@0.4.0':
+    resolution: {integrity: sha512-+jcuYKaC/19s2r36ewwdi/thgXwgCvm0KSAdL/wpKTUIVN8YERWvy6UoJqJSFkpp/TqTqqFYWYHfNStAEYeeMA==}
 
-  '@emdzej/ediabasx-ediabas@0.3.0':
-    resolution: {integrity: sha512-waImMZZsCuO7olvLPyF0BdCsgvKki4i+glDhf/C9HgA/JJ4z6URTYNnDQb8wiHjskkXXt6LuYuUidyGX6lzFTQ==}
+  '@emdzej/ediabasx-ediabas@0.4.0':
+    resolution: {integrity: sha512-mFstVgq8DOAHvDazull0008kTiU8PH8C1KEQh5qAUiCnUOm8IWPtZMS4hii88AGOV5tZT5eRdbCcHNnKJxeUbw==}
     peerDependencies:
       '@emdzej/bimmerz-logger': ^0.1.2
 
-  '@emdzej/ediabasx-interface-base@0.3.0':
-    resolution: {integrity: sha512-3i6kwpHlsTnPmXECuGyR8lhOBPZpsom04Aaz19seBwPl0CK/CbWB9iEqud5gu4wD0I240FJGCiEo8TAQ0H0j+g==}
+  '@emdzej/ediabasx-host-config@0.4.0':
+    resolution: {integrity: sha512-Sj6AOpnc2HSt+viS5FUpB8MEVaY5YTGZkzIUeRSRG3juqX7Gptx8iSUzN4zPmmyDcmjiw6D4F1dpkKWV/5bAHg==}
 
-  '@emdzej/ediabasx-interface-enet@0.3.0':
-    resolution: {integrity: sha512-7L5+5Zy9AN5HL/TiGbxxCPjiy1QRDi3evR8o2sD0BenxkCwgMOa4foC582kIH6Nc551P9ek/K4mJC3/fUMfrvw==}
+  '@emdzej/ediabasx-interface-base@0.4.0':
+    resolution: {integrity: sha512-eszGuP+mXf90Vxvb7a62efcfXekvwTT9VtC8sd0L8gh9mumPF+eJoybdx5UimJgdH8gVEBqlpvrWPuxpc3FIEg==}
 
-  '@emdzej/ediabasx-interface-serial@0.3.0':
-    resolution: {integrity: sha512-W25SWy3P++d6CY4e3ASeSdA+f0NyMr8ZuqMSRjfOZc6QPKe56KQO8KRKWJqFrAUmt0KUR2rb5O3vxAI2DOvJPw==}
+  '@emdzej/ediabasx-interface-enet@0.4.0':
+    resolution: {integrity: sha512-gZzpRtft8wMzFGWiEcNsq8cXJAssxNs2kazFwr7xskP6WFAOId/PD44L0XRHG8WpCFCSk3tkfh1CGYT6skkCEg==}
 
-  '@emdzej/ediabasx-interfaces@0.3.0':
-    resolution: {integrity: sha512-X9dPtezqGldVWWn7bn3gJC17oxmpGHGLDLyeZU16Gn//lF25kalAJzjm7CC57qWnhmkHgIeJG0vUmcZGMm3IAw==}
+  '@emdzej/ediabasx-interface-j2534@0.4.0':
+    resolution: {integrity: sha512-+Q27XsAvr48HLJ05Jm+/pqCs1AuAOMLNMPnfsMOfE2L2DxdEIvJB3AXYklyEsiipjEYsgVGN2wygcjdoS9P+0Q==}
+    peerDependencies:
+      '@emdzej/j2534-serial': ^0.2.0
+      '@emdzej/j2534-usb': ^0.2.0
+    peerDependenciesMeta:
+      '@emdzej/j2534-serial':
+        optional: true
+      '@emdzej/j2534-usb':
+        optional: true
 
-  '@emdzej/ediabasx-interpreter@0.3.0':
-    resolution: {integrity: sha512-ZDnZNGG/ZOhEtXFNcCJqMIOeAYfCrCwGa8+LmLh32R1P9b9Od8S8t4oC0duoxwsMhI+Ng4VMipOmtxBd4Sqo0w==}
+  '@emdzej/ediabasx-interface-serial@0.4.0':
+    resolution: {integrity: sha512-aSVqchbp3WNvUYcWzRpxcizV0jtyfl+21JfBBzNw5wI+/ZVKUoXiM3UmS1XeN4SG7TJkn5aL/1S9kQ9jrncR3g==}
 
-  '@emdzej/ediabasx-protocol-uds@0.3.0':
-    resolution: {integrity: sha512-OAELYGL0AVhK+ybKt1WwUqekg21iHJukUP6eZSi+i7gMb2mm0bxftm78el2jt6VIXgUwrnEUWDBkb0ewvDxtVg==}
+  '@emdzej/ediabasx-interfaces@0.4.0':
+    resolution: {integrity: sha512-DOWvX7B/z85ZmPacL/ZqydRjj30F8BUX3qxrCLwWBO++wrNOGQJU55VzlfNa9Fy04ljF2dNMUCkLZT5do9ANFw==}
 
-  '@emdzej/inpax-core@0.8.1':
-    resolution: {integrity: sha512-r9YszmhDN+Vf1umLFXYxpgx6PbwS292HtBIKUkmqkw2hvuSDdWKRZSxgzuL9hZ2CZIpLfGHS6KIVu50oUqS73g==}
+  '@emdzej/ediabasx-interpreter@0.4.0':
+    resolution: {integrity: sha512-sB5J9c1Dw3mu+ev2gsPfK31ICZoEgngh+xfLpb9jX7G5TwsYeid6mLN+T7xg+eQbELixlzF+oT1INezf43CRjQ==}
 
-  '@emdzej/inpax-dispatcher@0.8.1':
-    resolution: {integrity: sha512-cBQr2NF6EsVkseVTM6gnyMEHCkGdcmOegxS/LB9LAmtfkMeS5vM6zs+sS/DakgP9MJjfARW1KlzPEAw6RDn3Bg==}
+  '@emdzej/ediabasx-protocol-uds@0.4.0':
+    resolution: {integrity: sha512-893wMRchbOD7z7lCoNdtb3UbMELLIMG6I87TZbkxe0dBQDUvYH5gMnWUAOrLdAsaepOgvh6osR4IWhm7dad61w==}
+
+  '@emdzej/inpax-core@0.9.0':
+    resolution: {integrity: sha512-lwxfRlZB0v1z2mLvI2dGEkDIeRMHHBLqy2LF0LIrdz5EsxEnfXd2/cEq0wathzog3wHiBPzzobHEJCuvZ7eDeg==}
+
+  '@emdzej/inpax-dispatcher@0.9.0':
+    resolution: {integrity: sha512-8g9+xXXrFPPxuM6ziW1xZSScY1Z3goVKgiT/hn+SU9cvzEg/mk4ISM8SOU+v9x5YTZOibmCJsJrOtTcgkJRJ7w==}
     peerDependencies:
       '@emdzej/bimmerz-logger': ^0.1.2
 
-  '@emdzej/inpax-ediabasx-provider@0.8.1':
-    resolution: {integrity: sha512-p04gAZeNojEM2PVjkrL+UuzZoldf2wyVIjrL0iLHp08+JJmPVL2EKTSY6P9/MryCqpR1tVrWfd1DQSuXcd+SNQ==}
+  '@emdzej/inpax-ediabasx-provider@0.9.0':
+    resolution: {integrity: sha512-4u5A5aRjKYpWzo+lDMap+YuLGSPDE8iWVKTrLMFiaVyU7vY1bd9j5rsE1wO1yULXh5eubyn22ZT3y/qpfoSjZA==}
     peerDependencies:
-      '@emdzej/ediabasx-ediabas': ^0.3.0
+      '@emdzej/ediabasx-ediabas': ^0.4.0
 
-  '@emdzej/inpax-interfaces@0.8.1':
-    resolution: {integrity: sha512-I4KzI39XyqcarEPnC/l2psMC70z86q8iGBKrHdECiaotM+JZUQMLzYmsRUfMA+MbPRVEPNBW/22C24zgTdhA6Q==}
+  '@emdzej/inpax-interfaces@0.9.0':
+    resolution: {integrity: sha512-ju2JVb8Vnu7LSI2XbtwUolaMmP4Wpw37dwh0C0ojD610LQkM3Ss907bv0qpYJRiRABMZjslq7R3uNhTMRp6DKg==}
 
-  '@emdzej/inpax-interpreter@0.8.1':
-    resolution: {integrity: sha512-7qJXoY/PYpNXA5HzvMxYV6i8cu8E8S6S8fVZYvV3vzulvFMa2xaFq4uxwBsmv4vHIYBE7UncNEuk2CDVuFsPfQ==}
-    peerDependencies:
-      '@emdzej/bimmerz-logger': ^0.1.2
-
-  '@emdzej/inpax-mock-provider@0.8.1':
-    resolution: {integrity: sha512-jL252FbhGnmoR+CejByKTIQp+5EONBvUKVkQfQZ9hGzPJYEOW0l0QQ/AGYzJ0r91WKq4fgNP8RgbBt5eHepIbA==}
-
-  '@emdzej/inpax-parser@0.8.1':
-    resolution: {integrity: sha512-kYsewTZcMFun195xw/gZQ8bMGnjjsKi9XXHO50lXHeKvsQzx7c+vpFf6HrF/4tTOVECJOEBDbgUV3eZzcXT15w==}
-
-  '@emdzej/inpax-providers@0.8.1':
-    resolution: {integrity: sha512-Mu58w8wO7oGallQVi6WNY4PqbBWt7FfhQzaCejIPZ8ZtapYUUjB7rcDVYQHpAF5yQ/75HifL7AdmaHuCDyLhsA==}
-
-  '@emdzej/ncsx-chassis@0.5.1':
-    resolution: {integrity: sha512-qr3L8Igqskp1fQWarDGjD3Kry8Iwehm9miYcGgC+48cT3frrabMofhLIP4wtRmBSxagJ1k830QaEdVJBca7oiw==}
+  '@emdzej/inpax-interpreter@0.9.0':
+    resolution: {integrity: sha512-E7qtUdUEmrzBDwQiukcxNzz3s73aHWU/zFf1XKENNdy3EGpjXlN7cNJ1SIDk+IB+r1WeD5XTpDwz++0iRxG1Sw==}
     peerDependencies:
       '@emdzej/bimmerz-logger': ^0.1.2
 
-  '@emdzej/ncsx-daten@0.5.1':
-    resolution: {integrity: sha512-bOqMdhG0LwGLJnvgj6nmWWLUB88G6lAq93hf+ZPZlwWvMIGeybUXDKMybhDXknzLd+U/ZCg4wDbSezGCCVX+YQ==}
+  '@emdzej/inpax-mock-provider@0.9.0':
+    resolution: {integrity: sha512-gwu7HWkWsxL9WHrXWiarDZZWTP26yleKfSc+z0FC/W6N3gkQmUkLUAzbjWYynspp0edjBg1lqGyDld4mmn3tdQ==}
 
-  '@emdzej/ncsx-fa-asw@0.5.1':
-    resolution: {integrity: sha512-lx6Cqba+IagD6Qay2UPAI6H3j8MVLjZJjFX/gszGoFEq+CZ752LUjRGgCH6Mln72Ot1kEuG4RmteKIxCq9y2Og==}
+  '@emdzej/inpax-parser@0.9.0':
+    resolution: {integrity: sha512-U4Gg81rH/GjGJzSUGym3JdhV1Z/2jEkWPzLP3ympth6Gd3UKgRtHKWzleObvZoj3BBP3bTYvj5nTmCRM5uqK+g==}
 
-  '@emdzej/ncsx-inpax-cabi-provider@0.5.1':
-    resolution: {integrity: sha512-AgdKnlsYaaWEbfl3zgU2rsnUgJZ6yD4Jxj3R7VZVBiKVHLQHFAOclapawOp8izZeUj0fkEKBO9jcIXe7T3n2Ug==}
+  '@emdzej/inpax-providers@0.9.0':
+    resolution: {integrity: sha512-LXrYizXBMb/zuuVvMZKdYqIzImNfd7+DbVMAE8OgUBGiGT67CDdKuqE+y8qOLbnw+ttTwnhp/fbtX7ojQ8J4ww==}
+
+  '@emdzej/j2534-core@0.2.0':
+    resolution: {integrity: sha512-gAWlgCT9ihLV/msXUaN0qhQ053q8aOUGnieJyGCeEcW5KYcyCweLWK2IxQcM5sSlZsafu33UAIN3MBYZSZtXKg==}
+
+  '@emdzej/j2534-driver@0.2.0':
+    resolution: {integrity: sha512-N1kSPiaSgbI7AHOAjv0jXMWogyt+9tzXjGQUBE7B+Zi8Rw4RNe3/erMSA4PxcogKp4hKGRvQWcBGGUNFePP0XA==}
+
+  '@emdzej/j2534-serial@0.2.0':
+    resolution: {integrity: sha512-jk6d4ZmSh4NImeMalcNSBN4sCbrW7FsIRAagFlacCwfop4eXIiBbKKYyrVtMeXQ4iYwhkwUE0k/G66yOqG/prQ==}
+
+  '@emdzej/j2534-types@0.2.0':
+    resolution: {integrity: sha512-O2hrh5oKth/idQ4uwOLW65jt8/S57wN+A+jRDEO7xC/N/opfappbT3Zr89VDU8ukIRTxVWnhJ+5RUx/d+jTpiA==}
+
+  '@emdzej/j2534-usb@0.2.0':
+    resolution: {integrity: sha512-1tLIP3XpNMWNxx39fnn215fJBwIPngfvBEgnivQwfikMO0+lcFAuoF95+4CZEKKSLFqRB1x1XQuZxPZ2AyDrHQ==}
+
+  '@emdzej/ncsx-chassis@0.6.0':
+    resolution: {integrity: sha512-U6hzTwUGjRP553AcroWOSXzNjptY+OZL36CQO/SYUio8OojlqxajuficciFDZyJZmXtxP9WX7NAczEzDtyQJhA==}
     peerDependencies:
       '@emdzej/bimmerz-logger': ^0.1.2
 
-  '@emdzej/ncsx-text-tables@0.5.1':
-    resolution: {integrity: sha512-8feAJrUxn2g8NnG2rhOXYINn3+hA0j05rZP6BLwGK5IgF+PnMtqPw5i/EINO+SzxpjhKOWfAF/QiqxP5EfhyfA==}
+  '@emdzej/ncsx-daten@0.6.0':
+    resolution: {integrity: sha512-iNdFm2FDZkqRNWbePHmnsTaFKlvOl2Y/V304H6XsBHmjeafCjamczFXB0woPUppTZ+IXJp1VCrvvXgDNBR0y3g==}
 
-  '@emdzej/ncsx-wire@0.5.1':
-    resolution: {integrity: sha512-YQTznsMOmkB4zsR1geIAAUNwAdlF8F8w0hBO6vauxkjwN2CaV1w8FqDE60qlY3dIOjsTmHKvAkAFX3bdnmdXaQ==}
+  '@emdzej/ncsx-fa-asw@0.6.0':
+    resolution: {integrity: sha512-2mGD3ocJlh0PxWsBV9UriOIit5vPPdpmUGOkXGfuelJCo7Djj+qeojd+KH6ZyyMl1PNgTdfRK1X90xrKvC5WzA==}
+
+  '@emdzej/ncsx-inpax-cabi-provider@0.6.0':
+    resolution: {integrity: sha512-/6fcwKAllBeItBHsxgCs4zI3KJpPFZQGz03FImxeDm9QPRZ06BC5Um07xO4rcgero8c45h4s4swcSkQKXSnB2A==}
+    peerDependencies:
+      '@emdzej/bimmerz-logger': ^0.1.2
+
+  '@emdzej/ncsx-text-tables@0.6.0':
+    resolution: {integrity: sha512-dIFYZ5kw6yeXiYpmoF1C9ZNsYMZB2eE1gEPSlV8p7r7VRmf+60CZ+Gl+oAs86EeBfo78el+l/UDwpkoTZXRjvw==}
+
+  '@emdzej/ncsx-wire@0.6.0':
+    resolution: {integrity: sha512-61WjJI5BfN2WOl3UPq4Wr+CTR1SFD50QqB8nRsHP2HkVp2LUuoqqc87RMb+eIL2yKvvk+GNmsXkQxftd0RMf6g==}
 
   '@esbuild/aix-ppc64@0.21.5':
     resolution: {integrity: sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ==}
@@ -680,6 +712,9 @@ packages:
   '@types/react@18.3.29':
     resolution: {integrity: sha512-ch0qJdr2JY0r04NXSprbK6TXOgnaJ1Tz23fm5W+z0/CBah6BSBc3n96h7K9GOtwh0HrilNWHIBzE1Ko4Dcw/Wg==}
 
+  '@types/w3c-web-usb@1.0.14':
+    resolution: {integrity: sha512-Qu3Nn6JFuF4+sHKYl+IcX9vYiI40ogleXzFFSxoE1W94rG98o/kXs8uJ0QSfFzuwBCZWlGfUGpPkgwuuX4PchA==}
+
   '@vitest/expect@2.1.9':
     resolution: {integrity: sha512-UJCIkTBenHeKT1TTlKMJWy1laZewsRIzYighyYiJKZreqtdxSos/S1t+ktRMQWu2CKqaarrkeszJx1cgC5tGZw==}
 
@@ -946,6 +981,10 @@ packages:
   node-addon-api@7.0.0:
     resolution: {integrity: sha512-vgbBJTS4m5/KkE16t5Ly0WW9hz46swAstv0hYYwMtbG7AznRhNyfLRe8HZAiWIpcHzoO7HxhLuBQj9rJ/Ho0ZA==}
 
+  node-addon-api@8.8.0:
+    resolution: {integrity: sha512-c5Ko1fZJIJmzhFIkhRN76WTq+fC6tWnGy9CXA0fA+XygsWZmEwG8vmbkNqxMyoaa0Tin4djul49NzdVcJJcjeA==}
+    engines: {node: ^18 || ^20 || >= 21}
+
   node-gyp-build@4.6.0:
     resolution: {integrity: sha512-NTZVKn9IylLwUzaKjkas1e4u2DLNcV4rdYagA4PWdPwW87Bi7z+BznyKSRwS/761tV/lzCGXplWsiaMjLqP2zQ==}
     hasBin: true
@@ -1137,6 +1176,10 @@ packages:
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
 
+  usb@2.17.0:
+    resolution: {integrity: sha512-UuFgrlglgDn5ll6d5l7kl3nDb2Yx43qLUGcDq+7UNLZLtbNug0HZBb2Xodhgx2JZB1LqvU+dOGqLEeYUeZqsHg==}
+    engines: {node: '>=12.22.0 <13.0 || >=14.17.0'}
+
   vite-node@2.1.9:
     resolution: {integrity: sha512-AM9aQ/IPrW/6ENLQg3AGY4K1N2TGZdR5e4gu/MmmR2xR3Ll1+dib+nook92g4TV3PXVyeyxdWwtaCAiUL0hMxA==}
     engines: {node: ^18.0.0 || >=20.0.0}
@@ -1244,134 +1287,179 @@ snapshots:
       pino: 9.14.0
       pino-pretty: 11.3.0
 
-  '@emdzej/ediabasx-best-parser@0.3.0(@emdzej/bimmerz-logger@0.1.2)':
+  '@emdzej/ediabasx-best-parser@0.4.0(@emdzej/bimmerz-logger@0.1.2)':
     dependencies:
       '@emdzej/bimmerz-logger': 0.1.2
-      '@emdzej/ediabasx-core': 0.3.0
+      '@emdzej/ediabasx-core': 0.4.0
       chalk: 5.6.2
 
-  '@emdzej/ediabasx-core@0.3.0': {}
+  '@emdzej/ediabasx-core@0.4.0': {}
 
-  '@emdzej/ediabasx-ediabas@0.3.0(@emdzej/bimmerz-logger@0.1.2)':
+  '@emdzej/ediabasx-ediabas@0.4.0(@emdzej/bimmerz-logger@0.1.2)':
     dependencies:
       '@emdzej/bimmerz-logger': 0.1.2
-      '@emdzej/ediabasx-best-parser': 0.3.0(@emdzej/bimmerz-logger@0.1.2)
-      '@emdzej/ediabasx-core': 0.3.0
-      '@emdzej/ediabasx-interface-base': 0.3.0
-      '@emdzej/ediabasx-interface-enet': 0.3.0
-      '@emdzej/ediabasx-interface-serial': 0.3.0
-      '@emdzej/ediabasx-interfaces': 0.3.0
-      '@emdzej/ediabasx-interpreter': 0.3.0(@emdzej/bimmerz-logger@0.1.2)
+      '@emdzej/ediabasx-best-parser': 0.4.0(@emdzej/bimmerz-logger@0.1.2)
+      '@emdzej/ediabasx-core': 0.4.0
+      '@emdzej/ediabasx-interface-base': 0.4.0
+      '@emdzej/ediabasx-interface-enet': 0.4.0
+      '@emdzej/ediabasx-interface-serial': 0.4.0
+      '@emdzej/ediabasx-interfaces': 0.4.0
+      '@emdzej/ediabasx-interpreter': 0.4.0(@emdzej/bimmerz-logger@0.1.2)
       zod: 4.4.3
     transitivePeerDependencies:
       - bufferutil
       - supports-color
       - utf-8-validate
 
-  '@emdzej/ediabasx-interface-base@0.3.0': {}
-
-  '@emdzej/ediabasx-interface-enet@0.3.0':
+  '@emdzej/ediabasx-host-config@0.4.0':
     dependencies:
-      '@emdzej/ediabasx-interface-base': 0.3.0
+      '@emdzej/ediabasx-interfaces': 0.4.0
+    transitivePeerDependencies:
+      - bufferutil
+      - supports-color
+      - utf-8-validate
 
-  '@emdzej/ediabasx-interface-serial@0.3.0':
+  '@emdzej/ediabasx-interface-base@0.4.0': {}
+
+  '@emdzej/ediabasx-interface-enet@0.4.0':
     dependencies:
-      '@emdzej/ediabasx-core': 0.3.0
-      '@emdzej/ediabasx-interface-base': 0.3.0
-      '@emdzej/ediabasx-protocol-uds': 0.3.0
+      '@emdzej/ediabasx-interface-base': 0.4.0
+
+  '@emdzej/ediabasx-interface-j2534@0.4.0(@emdzej/j2534-serial@0.2.0)(@emdzej/j2534-usb@0.2.0)':
+    dependencies:
+      '@emdzej/ediabasx-interface-base': 0.4.0
+      '@emdzej/j2534-driver': 0.2.0
+      '@emdzej/j2534-types': 0.2.0
+    optionalDependencies:
+      '@emdzej/j2534-serial': 0.2.0
+      '@emdzej/j2534-usb': 0.2.0
+
+  '@emdzej/ediabasx-interface-serial@0.4.0':
+    dependencies:
+      '@emdzej/ediabasx-core': 0.4.0
+      '@emdzej/ediabasx-interface-base': 0.4.0
+      '@emdzej/ediabasx-protocol-uds': 0.4.0
       serialport: 12.0.0
     transitivePeerDependencies:
       - supports-color
 
-  '@emdzej/ediabasx-interfaces@0.3.0':
+  '@emdzej/ediabasx-interfaces@0.4.0':
     dependencies:
-      '@emdzej/ediabasx-interface-base': 0.3.0
-      '@emdzej/ediabasx-interface-enet': 0.3.0
-      '@emdzej/ediabasx-interface-serial': 0.3.0
+      '@emdzej/ediabasx-interface-base': 0.4.0
+      '@emdzej/ediabasx-interface-enet': 0.4.0
+      '@emdzej/ediabasx-interface-j2534': 0.4.0(@emdzej/j2534-serial@0.2.0)(@emdzej/j2534-usb@0.2.0)
+      '@emdzej/ediabasx-interface-serial': 0.4.0
+      '@emdzej/j2534-driver': 0.2.0
+      '@emdzej/j2534-serial': 0.2.0
+      '@emdzej/j2534-types': 0.2.0
+      '@emdzej/j2534-usb': 0.2.0
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - supports-color
       - utf-8-validate
 
-  '@emdzej/ediabasx-interpreter@0.3.0(@emdzej/bimmerz-logger@0.1.2)':
+  '@emdzej/ediabasx-interpreter@0.4.0(@emdzej/bimmerz-logger@0.1.2)':
     dependencies:
-      '@emdzej/ediabasx-best-parser': 0.3.0(@emdzej/bimmerz-logger@0.1.2)
-      '@emdzej/ediabasx-core': 0.3.0
-      '@emdzej/ediabasx-interface-base': 0.3.0
+      '@emdzej/ediabasx-best-parser': 0.4.0(@emdzej/bimmerz-logger@0.1.2)
+      '@emdzej/ediabasx-core': 0.4.0
+      '@emdzej/ediabasx-interface-base': 0.4.0
     transitivePeerDependencies:
       - '@emdzej/bimmerz-logger'
 
-  '@emdzej/ediabasx-protocol-uds@0.3.0': {}
+  '@emdzej/ediabasx-protocol-uds@0.4.0': {}
 
-  '@emdzej/inpax-core@0.8.1': {}
+  '@emdzej/inpax-core@0.9.0': {}
 
-  '@emdzej/inpax-dispatcher@0.8.1(@emdzej/bimmerz-logger@0.1.2)':
+  '@emdzej/inpax-dispatcher@0.9.0(@emdzej/bimmerz-logger@0.1.2)':
     dependencies:
       '@emdzej/bimmerz-logger': 0.1.2
-      '@emdzej/inpax-core': 0.8.1
-      '@emdzej/inpax-interfaces': 0.8.1
+      '@emdzej/inpax-core': 0.9.0
+      '@emdzej/inpax-interfaces': 0.9.0
 
-  '@emdzej/inpax-ediabasx-provider@0.8.1(@emdzej/ediabasx-ediabas@0.3.0(@emdzej/bimmerz-logger@0.1.2))':
+  '@emdzej/inpax-ediabasx-provider@0.9.0(@emdzej/ediabasx-ediabas@0.4.0(@emdzej/bimmerz-logger@0.1.2))':
     dependencies:
-      '@emdzej/ediabasx-ediabas': 0.3.0(@emdzej/bimmerz-logger@0.1.2)
-      '@emdzej/inpax-core': 0.8.1
-      '@emdzej/inpax-interfaces': 0.8.1
+      '@emdzej/ediabasx-ediabas': 0.4.0(@emdzej/bimmerz-logger@0.1.2)
+      '@emdzej/inpax-core': 0.9.0
+      '@emdzej/inpax-interfaces': 0.9.0
       eventemitter3: 5.0.4
 
-  '@emdzej/inpax-interfaces@0.8.1':
+  '@emdzej/inpax-interfaces@0.9.0':
     dependencies:
       eventemitter3: 5.0.4
 
-  '@emdzej/inpax-interpreter@0.8.1(@emdzej/bimmerz-logger@0.1.2)':
+  '@emdzej/inpax-interpreter@0.9.0(@emdzej/bimmerz-logger@0.1.2)':
     dependencies:
       '@emdzej/bimmerz-logger': 0.1.2
-      '@emdzej/inpax-core': 0.8.1
-      '@emdzej/inpax-dispatcher': 0.8.1(@emdzej/bimmerz-logger@0.1.2)
-      '@emdzej/inpax-interfaces': 0.8.1
-      '@emdzej/inpax-parser': 0.8.1
-      '@emdzej/inpax-providers': 0.8.1
+      '@emdzej/inpax-core': 0.9.0
+      '@emdzej/inpax-dispatcher': 0.9.0(@emdzej/bimmerz-logger@0.1.2)
+      '@emdzej/inpax-interfaces': 0.9.0
+      '@emdzej/inpax-parser': 0.9.0
+      '@emdzej/inpax-providers': 0.9.0
       eventemitter3: 5.0.4
 
-  '@emdzej/inpax-mock-provider@0.8.1':
+  '@emdzej/inpax-mock-provider@0.9.0':
     dependencies:
-      '@emdzej/inpax-interfaces': 0.8.1
-      '@emdzej/inpax-providers': 0.8.1
+      '@emdzej/inpax-interfaces': 0.9.0
+      '@emdzej/inpax-providers': 0.9.0
       eventemitter3: 5.0.4
 
-  '@emdzej/inpax-parser@0.8.1':
+  '@emdzej/inpax-parser@0.9.0':
     dependencies:
-      '@emdzej/inpax-core': 0.8.1
+      '@emdzej/inpax-core': 0.9.0
 
-  '@emdzej/inpax-providers@0.8.1':
+  '@emdzej/inpax-providers@0.9.0':
     dependencies:
-      '@emdzej/inpax-interfaces': 0.8.1
+      '@emdzej/inpax-interfaces': 0.9.0
       eventemitter3: 5.0.4
 
-  '@emdzej/ncsx-chassis@0.5.1(@emdzej/bimmerz-logger@0.1.2)':
+  '@emdzej/j2534-core@0.2.0':
+    dependencies:
+      '@emdzej/j2534-types': 0.2.0
+
+  '@emdzej/j2534-driver@0.2.0':
+    dependencies:
+      '@emdzej/j2534-core': 0.2.0
+      '@emdzej/j2534-types': 0.2.0
+
+  '@emdzej/j2534-serial@0.2.0':
+    dependencies:
+      '@emdzej/j2534-types': 0.2.0
+      serialport: 12.0.0
+    transitivePeerDependencies:
+      - supports-color
+
+  '@emdzej/j2534-types@0.2.0': {}
+
+  '@emdzej/j2534-usb@0.2.0':
+    dependencies:
+      '@emdzej/j2534-types': 0.2.0
+      usb: 2.17.0
+
+  '@emdzej/ncsx-chassis@0.6.0(@emdzej/bimmerz-logger@0.1.2)':
     dependencies:
       '@emdzej/bimmerz-logger': 0.1.2
-      '@emdzej/ncsx-daten': 0.5.1
-      '@emdzej/ncsx-text-tables': 0.5.1
+      '@emdzej/ncsx-daten': 0.6.0
+      '@emdzej/ncsx-text-tables': 0.6.0
 
-  '@emdzej/ncsx-daten@0.5.1': {}
+  '@emdzej/ncsx-daten@0.6.0': {}
 
-  '@emdzej/ncsx-fa-asw@0.5.1(@emdzej/bimmerz-logger@0.1.2)':
+  '@emdzej/ncsx-fa-asw@0.6.0(@emdzej/bimmerz-logger@0.1.2)':
     dependencies:
-      '@emdzej/ncsx-chassis': 0.5.1(@emdzej/bimmerz-logger@0.1.2)
+      '@emdzej/ncsx-chassis': 0.6.0(@emdzej/bimmerz-logger@0.1.2)
     transitivePeerDependencies:
       - '@emdzej/bimmerz-logger'
 
-  '@emdzej/ncsx-inpax-cabi-provider@0.5.1(@emdzej/bimmerz-logger@0.1.2)':
+  '@emdzej/ncsx-inpax-cabi-provider@0.6.0(@emdzej/bimmerz-logger@0.1.2)':
     dependencies:
       '@emdzej/bimmerz-logger': 0.1.2
-      '@emdzej/ncsx-chassis': 0.5.1(@emdzej/bimmerz-logger@0.1.2)
-      '@emdzej/ncsx-fa-asw': 0.5.1(@emdzej/bimmerz-logger@0.1.2)
-      '@emdzej/ncsx-wire': 0.5.1
+      '@emdzej/ncsx-chassis': 0.6.0(@emdzej/bimmerz-logger@0.1.2)
+      '@emdzej/ncsx-fa-asw': 0.6.0(@emdzej/bimmerz-logger@0.1.2)
+      '@emdzej/ncsx-wire': 0.6.0
 
-  '@emdzej/ncsx-text-tables@0.5.1': {}
+  '@emdzej/ncsx-text-tables@0.6.0': {}
 
-  '@emdzej/ncsx-wire@0.5.1': {}
+  '@emdzej/ncsx-wire@0.6.0': {}
 
   '@esbuild/aix-ppc64@0.21.5':
     optional: true
@@ -1607,6 +1695,8 @@ snapshots:
     dependencies:
       '@types/prop-types': 15.7.15
       csstype: 3.2.3
+
+  '@types/w3c-web-usb@1.0.14': {}
 
   '@vitest/expect@2.1.9':
     dependencies:
@@ -1856,6 +1946,8 @@ snapshots:
 
   node-addon-api@7.0.0: {}
 
+  node-addon-api@8.8.0: {}
+
   node-gyp-build@4.6.0: {}
 
   on-exit-leak-free@2.1.2: {}
@@ -2089,6 +2181,12 @@ snapshots:
   typescript@5.9.3: {}
 
   undici-types@6.21.0: {}
+
+  usb@2.17.0:
+    dependencies:
+      '@types/w3c-web-usb': 1.0.14
+      node-addon-api: 8.8.0
+      node-gyp-build: 4.6.0
 
   vite-node@2.1.9(@types/node@22.19.19):
     dependencies:

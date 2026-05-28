@@ -32,8 +32,9 @@ pnpm link --global --filter @emdzej/nfsx-cli   # makes `nfsx` available on $PATH
 ```
 
 You also need [`@emdzej/ediabasx`](https://github.com/emdzej/ediabasx)
-installed + configured (its CLI manages the K+DCAN/ENET transport).
-`nfsx` honors `~/.config/ediabasx/config.json` — configure that first.
+installed + configured (its CLI manages the K+DCAN / SAE J2534 / ENET
+transport). `nfsx` honors `~/.config/ediabasx/config.json` via the
+shared `@emdzej/ediabasx-host-config` loader — configure that first.
 
 ### 1. Configure
 
