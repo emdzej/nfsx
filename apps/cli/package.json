@@ -24,6 +24,8 @@
     "@emdzej/nfsx-runtime": "workspace:*",
     "@emdzej/nfsx-flash": "workspace:*",
     "@emdzej/nfsx-flash-data": "workspace:*",
+    "@emdzej/nfsx-bootmode": "workspace:*",
+    "@emdzej/nfsx-directmode": "workspace:*",
     "@emdzej/inpax-mock-provider": "^0.10.0",
     "@emdzej/inpax-interfaces": "^0.10.0",
     "@emdzej/inpax-ediabasx-provider": "^0.10.0",

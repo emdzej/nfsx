@@ -265,8 +265,12 @@ flash), the diff should be empty.
 | `nfsx run <ipo> --job <name>` | Execute one IPO job (e.g. `HW_REFERENZ`) against a live ECU |
 | `nfsx check --hwnr X` | Quick live-ECU sanity probe (HW_REFERENZ + SG_IDENT + SG_AIF + ZIF_BACKUP, no file write) |
 | `nfsx backup --hwnr X` | Audit snapshot of ECU identity + `ZIF_BACKUP` to JSON |
-| `nfsx flash --hwnr X` | Full 5-stage flash pipeline; dry-run by default, `--write` to commit |
+| `nfsx flash --hwnr X` | **WinKFP / IPO-driven** flash pipeline; dry-run by default, `--write` to commit |
 | `nfsx verify --hwnr X [--against backup.json]` | Re-read identity; optionally diff against a saved backup |
+| `nfsx checksum -f file.bin [--rewrite]` | Verify or recompute MS42/MS43 firmware CRC-16/CCITT checksums (hardware-independent) |
+| `nfsx directmode probe/read/write -d /dev/cu.X` | **MS4x-Flasher-style** raw DS2 flashing — IDENT → SEED/KEY → erase → write → verify. Full + calibration-only modes for MS42 / MS43 / GS20. |
+| `nfsx bootmode probe/read/write -d /dev/cu.X` | **C167 BSL** bootmode flashing for bench-pulled MS42 / MS43 / ME 7.2. Uploads MiniMon, bypasses BMW firmware, writes full 512 KB. |
+| `nfsx bootmode verify-bundle` | SHA-256 verify the bundled MiniMon binaries |
 
 `flash` / `backup` / `verify` take `--hwnr` and derive everything
 else from SP-Daten (target IPO, SGBD, SWT IPO, per-SG working
@@ -295,12 +299,32 @@ to bypass EDIABAS entirely (rehearsal / unit-test path).
 | Package | Purpose |
 |---|---|
 | `@emdzej/nfsx-cli` | Operator CLI (the `nfsx` command above) |
-| `@emdzej/nfsx-flash` | 5-stage `FlashSession` orchestrator |
-| `@emdzej/nfsx-flash-data` | `.0PA` / `.0DA` parser, S37 parser, memory-region builder, CRC32 |
+| `@emdzej/nfsx-flash` | 5-stage IPO-driven `FlashSession` orchestrator (BMW WinKFP path) |
+| `@emdzej/nfsx-flash-data` | `.0PA` / `.0DA` parser, S37 parser, memory-region builder, CRC32, MS42/MS43 firmware CRC-16/CCITT verify+rewrite |
+| `@emdzej/nfsx-directmode` | Raw DS2 flashing for MS42 / MS43 / GS20 (the MS4x-Flasher path) — IDENT → SEED/KEY → erase → write → verify, full + calibration modes |
+| `@emdzej/nfsx-bootmode` | C167 silicon BSL bootmode flashing for bench-pulled MS42 / MS43 / ME 7.2 — bundles MiniMon (Perschl / Infineon) + AMD 29F400B driver |
 | `@emdzej/nfsx-runtime` | NFS-specific CABI slot overrides on the inpax VM (file-I/O, BinBuf, ApiJobData, firmware-source iterator) |
 | `@emdzej/nfsx-resolver` | SP-Daten lookup chain (HWNR → SG_TYP → IPO + SGBD + ZB rows) |
 | `@emdzej/nfsx-data-files` | Per-format parsers for the SP-Daten text files (HWNR.DA2 / KFCONF10.DA2 / npv.dat / prgifsel.dat / SGIDC.AS2 / kmm_SIT.txt / `<SG>.DAT`) |
 | `@emdzej/nfsx-fsc` | FSC / certificate manager (SWT IPO orchestration) |
+
+The three flash paths cover different operating modes:
+
+- **`nfsx flash`** (IPO-driven, via `nfsx-flash`) — what BMW WinKFP does.
+  Resolves IPO + SGBD from SP-Daten via HWNR, drives the BEST/2 VM
+  through the full `SG_PROGRAMMIEREN` flow. Use this for in-vehicle
+  flashing against a stock ECU when you have the `.0PA` files BMW
+  ships for the target HWNR.
+- **`nfsx directmode`** (raw DS2, via `nfsx-directmode`) — what MS4x
+  Flasher does. Talks the DS2 protocol directly against the ECU's
+  normal diagnostic session (no SGBD / IPO), with per-ECU region
+  tables. Use this for tuner BINs or when you need calibration-only
+  flashes without the SP-Daten pipeline.
+- **`nfsx bootmode`** (C167 BSL, via `nfsx-bootmode`) — what
+  JMGarageFlasher / C167BootTool do. Bypasses BMW firmware entirely
+  via the C167 mask-ROM bootstrap loader; uploads MiniMon into RAM
+  and drives the AMD 29F400B flash chip directly. Bench-pull only;
+  recovers bricked ECUs since it doesn't depend on existing firmware.
 
 Built on top of [`@emdzej/inpax`](https://github.com/emdzej/inpax)
 (IPO bytecode VM), [`@emdzej/ediabasx`](https://github.com/emdzej/ediabasx)

@@ -44,9 +44,15 @@ importers:
       '@emdzej/inpax-mock-provider':
         specifier: ^0.10.0
         version: 0.10.0
+      '@emdzej/nfsx-bootmode':
+        specifier: workspace:*
+        version: link:../../packages/nfsx-bootmode
       '@emdzej/nfsx-data-files':
         specifier: workspace:*
         version: link:../../packages/data-files
+      '@emdzej/nfsx-directmode':
+        specifier: workspace:*
+        version: link:../../packages/nfsx-directmode
       '@emdzej/nfsx-flash':
         specifier: workspace:*
         version: link:../../packages/flash
@@ -137,6 +143,38 @@ importers:
       '@emdzej/inpax-mock-provider':
         specifier: ^0.10.0
         version: 0.10.0
+      '@types/node':
+        specifier: ^22.13.1
+        version: 22.19.19
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)
+
+  packages/nfsx-bootmode:
+    dependencies:
+      '@emdzej/nfsx-flash-data':
+        specifier: workspace:*
+        version: link:../flash-data
+      serialport:
+        specifier: ^12.0.0
+        version: 12.0.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.1
+        version: 22.19.19
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)
+
+  packages/nfsx-directmode:
+    dependencies:
+      '@emdzej/nfsx-flash-data':
+        specifier: workspace:*
+        version: link:../flash-data
+      serialport:
+        specifier: ^12.0.0
+        version: 12.0.0
+    devDependencies:
       '@types/node':
         specifier: ^22.13.1
         version: 22.19.19

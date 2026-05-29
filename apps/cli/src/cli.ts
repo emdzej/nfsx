@@ -23,6 +23,19 @@ import { runConfigure } from './configure.js';
 import { runBackupCmd } from './backup.js';
 import { runVerifyCmd } from './verify.js';
 import { runCheckCmd } from './check.js';
+import { runChecksumCmd } from './checksum.js';
+import {
+  runBootmodeProbe,
+  runBootmodeRead,
+  runBootmodeWrite,
+  runBootmodeVerifyBundle,
+  DEFAULT_BSL_ID,
+} from './bootmode.js';
+import {
+  runDirectmodeProbe,
+  runDirectmodeRead,
+  runDirectmodeWrite,
+} from './directmode.js';
 import { DEFAULT_CONFIG_PATH } from './config.js';
 
 const program = new Command();
@@ -181,6 +194,177 @@ program
     if (code !== 0) process.exit(code);
   });
 
+// ── checksum ────────────────────────────────────────────────────────
+program
+  .command('checksum')
+  .description('Verify or recompute MS42/MS43 firmware BIN checksums (CRC-16/CCITT). Hardware-independent.')
+  .requiredOption('-f, --file <path>', 'path to the 512 KB MS42/MS43 firmware BIN')
+  .option('--rewrite', 'recompute checksums and write back in-place (or to --output)', false)
+  .option('-o, --output <path>', 'write rewritten BIN here instead of overwriting input (requires --rewrite)')
+  .option('--json', 'machine-readable JSON output', false)
+  .action((opts: ChecksumOptions) => {
+    const code = runChecksumCmd(opts);
+    if (code !== 0) process.exit(code);
+  });
+
+// ── bootmode ────────────────────────────────────────────────────────
+const bootmode = program
+  .command('bootmode')
+  .description(
+    'Infineon C167 BSL bootmode flashing (BMW MS42/MS43, Bosch ME 7.2). Bench-only: ECU must be pulled from the vehicle and BOOT pin grounded.',
+  );
+
+bootmode
+  .command('verify-bundle')
+  .description('SHA-256 verify the bundled MiniMon blobs (LOADK / MINIMONK / A29F400B).')
+  .option('--json', 'machine-readable output', false)
+  .action((opts: { json: boolean }) => {
+    const code = runBootmodeVerifyBundle(opts);
+    if (code !== 0) process.exit(code);
+  });
+
+bootmode
+  .command('probe')
+  .description('Handshake + read flash chip ID, then disconnect. Quick connectivity check.')
+  .requiredOption('-d, --device <path>', 'serial port (e.g. /dev/cu.usbserial-XXXX)')
+  .option('--baud <rate>', 'baud rate (BSL auto-bauds; 9600..115200 typical)', parseBaud, 19200)
+  .option('--bsl-id <hex>', 'expected BSL ID byte (default C167CR=0xC5)', parseHexByte, DEFAULT_BSL_ID)
+  .option(
+    '--loader-delay <ms>',
+    'inter-byte delay during loader upload',
+    (v) => Number.parseInt(v, 10),
+    0,
+  )
+  .option('--json', 'machine-readable output', false)
+  .action(async (opts: BootmodeProbeOpts) => {
+    const code = await runBootmodeProbe({
+      device: opts.device,
+      baud: opts.baud,
+      bslId: opts.bslId,
+      loaderInterByteDelayMs: opts.loaderDelay,
+      json: opts.json,
+    });
+    if (code !== 0) process.exit(code);
+  });
+
+bootmode
+  .command('read')
+  .description('Read the full 512 KB flash from a bench-wired MS42/MS43/ME 7.2 ECU.')
+  .requiredOption('-d, --device <path>', 'serial port')
+  .requiredOption('-o, --output <path>', 'destination .bin path')
+  .option('--baud <rate>', 'baud rate', parseBaud, 19200)
+  .option('--bsl-id <hex>', 'expected BSL ID (default C167CR=0xC5)', parseHexByte, DEFAULT_BSL_ID)
+  .option('--loader-delay <ms>', 'inter-byte delay during loader upload', (v) => Number.parseInt(v, 10), 0)
+  .option('--json', 'machine-readable output', false)
+  .action(async (opts: BootmodeReadOpts) => {
+    const code = await runBootmodeRead({
+      device: opts.device,
+      baud: opts.baud,
+      bslId: opts.bslId,
+      loaderInterByteDelayMs: opts.loaderDelay,
+      json: opts.json,
+      output: opts.output,
+    });
+    if (code !== 0) process.exit(code);
+  });
+
+bootmode
+  .command('write')
+  .description('Write a 512 KB .bin to a bench-wired MS42/MS43/ME 7.2 ECU. Unlocks, erases, programs, verifies.')
+  .requiredOption('-d, --device <path>', 'serial port')
+  .requiredOption('-i, --input <path>', 'source .bin path (exactly 524288 bytes)')
+  .option('--baud <rate>', 'baud rate', parseBaud, 19200)
+  .option('--bsl-id <hex>', 'expected BSL ID (default C167CR=0xC5)', parseHexByte, DEFAULT_BSL_ID)
+  .option('--loader-delay <ms>', 'inter-byte delay during loader upload', (v) => Number.parseInt(v, 10), 0)
+  .option('--skip-verify', 'skip the post-write readback verification', false)
+  .option('--calculate-checksum', 'recompute MS42/MS43 CRC-16 checksums before flashing', false)
+  .option('--json', 'machine-readable output', false)
+  .action(async (opts: BootmodeWriteOpts) => {
+    const code = await runBootmodeWrite({
+      device: opts.device,
+      baud: opts.baud,
+      bslId: opts.bslId,
+      loaderInterByteDelayMs: opts.loaderDelay,
+      json: opts.json,
+      input: opts.input,
+      skipVerify: opts.skipVerify,
+      calculateChecksum: opts.calculateChecksum,
+    });
+    if (code !== 0) process.exit(code);
+  });
+
+// ── directmode (DS2-driven flashing — the MS4x Flasher path) ────────
+const directmode = program
+  .command('directmode')
+  .description(
+    'Raw DS2 flashing over K-line (MS42/MS43/GS20). Drives the normal diagnostic session: IDENT → SEED/KEY → erase → write → verify. ECU detected from IDENT; full vs calibration-only modes use different region tables.',
+  );
+
+directmode
+  .command('probe')
+  .description('IDENT + ECU type detection over K-line.')
+  .requiredOption('-d, --device <path>', 'serial port')
+  .option('--baud <rate>', 'baud (DS2 default 9600)', parseBaud, 9600)
+  .option('--variant <name>', 'force ECU variant (MS42 | MS43 | GS20)', parseVariant)
+  .option('--json', 'machine-readable output', false)
+  .action(async (opts: DirectmodeProbeOpts) => {
+    const code = await runDirectmodeProbe({
+      device: opts.device,
+      baud: opts.baud,
+      forceVariant: opts.variant,
+      json: opts.json,
+    });
+    if (code !== 0) process.exit(code);
+  });
+
+directmode
+  .command('read')
+  .description('Dump flash regions to a file. Choose FULL (everything BMW writes) or CALIBRATION (data block only).')
+  .requiredOption('-d, --device <path>', 'serial port')
+  .requiredOption('-o, --output <path>', 'destination .bin path')
+  .requiredOption('-m, --mode <mode>', 'flash mode: full | calibration', parseFlashMode)
+  .option('--baud <rate>', 'baud (DS2 default 9600)', parseBaud, 9600)
+  .option('--variant <name>', 'force ECU variant (MS42 | MS43 | GS20)', parseVariant)
+  .option('--json', 'machine-readable output', false)
+  .action(async (opts: DirectmodeReadOpts) => {
+    const code = await runDirectmodeRead({
+      device: opts.device,
+      baud: opts.baud,
+      forceVariant: opts.variant,
+      output: opts.output,
+      mode: opts.mode,
+      json: opts.json,
+    });
+    if (code !== 0) process.exit(code);
+  });
+
+directmode
+  .command('write')
+  .description('Flash a BIN to the ECU via DS2. Use --mode full or --mode calibration to pick the region table.')
+  .requiredOption('-d, --device <path>', 'serial port')
+  .requiredOption('-i, --input <path>', 'source .bin path (must match expected size for the variant)')
+  .requiredOption('-m, --mode <mode>', 'flash mode: full | calibration', parseFlashMode)
+  .option('--baud <rate>', 'baud (DS2 default 9600)', parseBaud, 9600)
+  .option('--variant <name>', 'force ECU variant (MS42 | MS43 | GS20)', parseVariant)
+  .option('--nonce <n>', 'SEED/KEY nonce (1..23, default 7)', (v) => Number.parseInt(v, 10), 7)
+  .option('--skip-verify', 'skip post-write readback verification', false)
+  .option('--calculate-checksum', 'recompute MS42/MS43 CRC-16 checksums before flashing', false)
+  .option('--json', 'machine-readable output', false)
+  .action(async (opts: DirectmodeWriteOpts) => {
+    const code = await runDirectmodeWrite({
+      device: opts.device,
+      baud: opts.baud,
+      forceVariant: opts.variant,
+      input: opts.input,
+      mode: opts.mode,
+      skipVerify: opts.skipVerify,
+      calculateChecksum: opts.calculateChecksum,
+      nonce: opts.nonce,
+      json: opts.json,
+    });
+    if (code !== 0) process.exit(code);
+  });
+
 // ── browse (ink TUI) ────────────────────────────────────────────────
 program
   .command('browse')
@@ -223,6 +407,27 @@ function parseNonNegativeInt(value: string): number {
     throw new InvalidArgumentError(`"${value}" is not a non-negative integer.`);
   }
   return parsed;
+}
+
+function parseHexByte(value: string): number {
+  const v = value.trim().toLowerCase();
+  const parsed = v.startsWith('0x') ? Number.parseInt(v.slice(2), 16) : Number.parseInt(v, 16);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 0xff) {
+    throw new InvalidArgumentError(`"${value}" is not a valid hex byte (00..FF).`);
+  }
+  return parsed;
+}
+
+function parseVariant(value: string): 'MS42' | 'MS43' | 'GS20' {
+  const v = value.trim().toUpperCase();
+  if (v === 'MS42' || v === 'MS43' || v === 'GS20') return v;
+  throw new InvalidArgumentError(`"${value}" is not a known ECU variant (MS42 | MS43 | GS20).`);
+}
+
+function parseFlashMode(value: string): 'full' | 'calibration' {
+  const v = value.trim().toLowerCase();
+  if (v === 'full' || v === 'calibration') return v;
+  throw new InvalidArgumentError(`"${value}" is not a valid flash mode (full | calibration).`);
 }
 
 // Type contracts the action callbacks consume. Mirror commander's
@@ -345,4 +550,49 @@ export interface VerifyOptions {
   spDaten?: string;
   config?: string;
   json: boolean;
+}
+
+export interface ChecksumOptions {
+  file: string;
+  rewrite: boolean;
+  output?: string;
+  json: boolean;
+}
+
+interface BootmodeProbeOpts {
+  device: string;
+  baud: number;
+  bslId: number;
+  loaderDelay: number;
+  json: boolean;
+}
+
+interface BootmodeReadOpts extends BootmodeProbeOpts {
+  output: string;
+}
+
+interface BootmodeWriteOpts extends BootmodeProbeOpts {
+  input: string;
+  skipVerify: boolean;
+  calculateChecksum: boolean;
+}
+
+interface DirectmodeProbeOpts {
+  device: string;
+  baud: number;
+  variant?: 'MS42' | 'MS43' | 'GS20';
+  json: boolean;
+}
+
+interface DirectmodeReadOpts extends DirectmodeProbeOpts {
+  output: string;
+  mode: 'full' | 'calibration';
+}
+
+interface DirectmodeWriteOpts extends DirectmodeProbeOpts {
+  input: string;
+  mode: 'full' | 'calibration';
+  skipVerify: boolean;
+  calculateChecksum: boolean;
+  nonce: number;
 }

@@ -25,3 +25,18 @@ export {
   type PaDaMetadata,
   type PaDaParseResult,
 } from './pa-da.js';
+
+export {
+  crc16Ccitt,
+  add32,
+  detectVariant,
+  verifyChecksums as verifyMs4xChecksums,
+  rewriteChecksums as rewriteMs4xChecksums,
+  EXPECTED_FILE_LENGTH as MS4X_EXPECTED_FILE_LENGTH,
+  type EcuVariant as Ms4xEcuVariant,
+  type ChecksumResult as Ms4xChecksumResult,
+  type ChecksumReport as Ms4xChecksumReport,
+  type ChecksumName as Ms4xChecksumName,
+  type ChecksumKind as Ms4xChecksumKind,
+  type ChecksumRange as Ms4xChecksumRange,
+} from './ms4x-checksum.js';

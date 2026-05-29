@@ -1,0 +1,25 @@
+{
+  "source": "MiniMon v2.30 (Christian Perschl, distributed by Infineon as freeware)",
+  "extracted_from": "minimon_v230.zip / Minimo[1-3].CAB (InstallShield)",
+  "license": "Freeware — see http://www.perschl.at/minimon/ and Infineon AP16064",
+  "blobs": [
+    {
+      "name": "LOADK.hex",
+      "role": "primary loader, K-line variant (32-byte BSL upload)",
+      "format": "Intel HEX",
+      "sha256": "7ee9fdb85be112a62deb25aebe0ff9f8c4756fd31192d1f3f55276bff0af1243"
+    },
+    {
+      "name": "MINIMONK.hex",
+      "role": "secondary monitor, K-line variant (Minimon kernel running from RAM)",
+      "format": "Intel HEX",
+      "sha256": "e08ab832059b46ca6a0f5f7d9e07135df1648320b99875b159a2a5760c03886e"
+    },
+    {
+      "name": "A29F400B.hex",
+      "role": "AMD AM29F400B flash driver (chip used in MS42/MS43)",
+      "format": "Intel HEX",
+      "sha256": "c6318901d11ec5ba7c5524ccbed9a7c31194a2978628dc2ec39afece0053b829"
+    }
+  ]
+}
