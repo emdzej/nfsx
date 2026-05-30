@@ -1,8 +1,7 @@
 /**
  * BMW DS2 SEED/KEY authentication.
  *
- * Per `docs/raw-ds2-flashing.md` §3.2 and verified against MS4x Flasher's
- * key derivation:
+ * Per `docs/raw-ds2-flashing.md` §3.2:
  *
  *   1. Host sends `[ADDR] 07 90 42 4D 57 <NONCE> [XOR]` — "BMW" + 1-byte
  *      nonce in 1..23.
@@ -57,10 +56,10 @@ export function buildSeedRequestPayload(nonce: number): Buffer {
  *   seed[41..44] key-derivation table B
  *   ...
  *
- * The MS4x Flasher uses `seed[1]` as the modulus when wrapping the nonce
- * index — different ECUs may use a different field. If your ECU rejects
- * the derived key, dump the seed and check whether `seed[1]` is the
- * actual modulus on that variant.
+ * `seed[1]` is the modulus used when wrapping the nonce index —
+ * different ECUs may use a different field. If your ECU rejects the
+ * derived key, dump the seed and check whether `seed[1]` is the actual
+ * modulus on that variant.
  */
 export function deriveKey(seed: Buffer, nonce: number): Buffer {
   if (seed.length < 45) {

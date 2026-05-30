@@ -4,8 +4,7 @@
  * DS2 line settings: 9600 8E1 (even parity, 1 stop), no flow control.
  * Half-duplex K-line: every TX byte echoes back. The transport consumes
  * the echo by reading-back-and-comparing after every write — any
- * mismatch aborts as a wire-level error (matches MS4x Flasher's
- * `ㅉ/A/A.cs:99-155` echo-verify behaviour).
+ * mismatch aborts as a wire-level error.
  */
 import { Buffer } from 'node:buffer';
 import { SerialPort } from 'serialport';

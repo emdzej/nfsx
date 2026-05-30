@@ -1,19 +1,16 @@
 /**
  * MS42 / MS43 firmware checksum verification and recomputation.
  *
- * Per https://www.ms4x.net/ wiki (Siemens_MS42#Checksums, Siemens_MS43#Checksums)
- * and cross-verified against MS4x Flasher 1.6.0 decompilation.
- *
- * MS42: 3 CRC-16 checksums (Boot, Program, Calibration).
- * MS43: 3 CRC-16 + 2 32-bit addition checksums.
+ * Result locations match ms4x.net's documented offsets:
+ *   MS42: 3 CRC-16 checksums (Boot, Program, Calibration)
+ *   MS43: 3 CRC-16 + 2 32-bit addition checksums
  *
  * For MS43 the addition checksums MUST be recomputed before the CRC-16s,
  * because the addition checksum result words sit inside the CRC-16 input
  * ranges.
  *
- * Algorithm: CRC-16/CCITT, polynomial 0x1021 (stored bit-reversed as
- * 0xA001 in the original MS4x Flasher source; the math here uses the
- * forward polynomial directly).
+ * Algorithm: CRC-16/CCITT, polynomial 0x1021 processed bit-reversed
+ * (equivalent to working with the reversed constant 0xA001).
  */
 import { Buffer } from 'node:buffer';
 
@@ -118,24 +115,34 @@ export function add32(buf: Buffer, start: number, end: number): number {
 // ── variant detection ───────────────────────────────────────────────
 
 /**
- * Detect MS42 vs MS43 by reading the Program-checksum header pointer.
- * MS42 firmware stores a pointer that resolves to 0x50306; MS43 to 0x6FDE0.
- * The header location (0x502CE) is the same for both — only the value differs.
+ * Detect MS42 vs MS43 by checking which family's CRC-result slots are
+ * populated.
+ *
+ * Verified against real firmware BINs:
+ *
+ * | Offset | MS42 BIN | MS43 BIN |
+ * |---|---|---|
+ * | `0x4FEE0` (MS42 Calibration CRC) | populated | erased (FFFF) |
+ * | `0x6FDE0` (MS43 Program CRC)    | erased (FFFF) | populated |
+ *
+ * MS42 firmware also has a header pointer at `0x502CE` that resolves to
+ * `0x50306` (its Program CRC location); MS43 does NOT use the same
+ * pointer mechanism (its value at `0x502CE` is unrelated). The pointer
+ * is checked as a stronger MS42 confirmation but is not required for
+ * detection.
  */
 export function detectVariant(buf: Buffer): EcuVariant | null {
   if (buf.length !== EXPECTED_FILE_LENGTH) return null;
 
-  const programPtr = readAddr24(buf, 0x502ce);
-  if (programPtr === 0x50306) return 'MS42';
-  if (programPtr === 0x6fde0) return 'MS43';
+  const ms42Marker = readU16LE(buf, 0x4fee0) !== 0xffff;
+  const ms43Marker = readU16LE(buf, 0x6fde0) !== 0xffff;
 
-  // Fallback: probe each result address for plausible CRC storage.
-  // (Bytes at the expected location are non-0xFF and the byte 2 ahead is
-  // typically a small loop count.)
-  const ms42Marker = buf[0x50306] !== 0xff || buf[0x50307] !== 0xff;
-  const ms43Marker = buf[0x6fde0] !== 0xff || buf[0x6fde1] !== 0xff;
   if (ms42Marker && !ms43Marker) return 'MS42';
   if (ms43Marker && !ms42Marker) return 'MS43';
+
+  // Both or neither marker fires — try the MS42-specific header pointer
+  // as a tiebreaker (only valid for MS42).
+  if (readAddr24(buf, 0x502ce) === 0x50306) return 'MS42';
   return null;
 }
 
@@ -153,8 +160,8 @@ interface HeaderDrivenCrc16 {
 }
 
 /**
- * Method A from MS4x Flasher: single-region CRC-16, fixed metadata layout.
- * Shared between MS42 and MS43 (both have Boot at 0x3C24).
+ * Boot CRC: single-region CRC-16, fixed metadata layout.
+ * Shared between MS42 and MS43 (both have Boot CRC at 0x3C24).
  */
 const BOOT_DEF = {
   name: 'Boot' as const,
@@ -167,8 +174,8 @@ const BOOT_DEF = {
 };
 
 /**
- * Methods a (Program) and B (Calibration) from MS4x Flasher: chained CRC-16
- * over multiple regions described by a header pointer chain.
+ * MS42 Program and Calibration CRCs: chained CRC-16 over multiple
+ * regions described by a header pointer chain.
  *
  * Header layout at headerPtrOffset:
  *   [u16 LE] result address low
@@ -276,16 +283,330 @@ function computeHeaderDriven(
 const MS43_ADD_PROGRAM_OFFSET = 0x6fdae;
 const MS43_ADD_CALIBRATION_OFFSET = 0x72ffc;
 
+// ── MS43-specific layout ────────────────────────────────────────────
+//
+// MS43 uses a different mechanism from MS42:
+//   - Boot CRC at 0x3C24 with the same metadata layout as MS42 (shared)
+//   - Program CRC at 0x6FDE0 with INLINE metadata (count + region table)
+//   - Calibration CRC at 0x73FE0 with INLINE metadata
+//   - Two 32-bit addition checksums:
+//       Program     @ 0x6FDAE
+//       Calibration @ 0x72FFC
+//
+// Region addresses in MS43 metadata are stored as 32-bit ECU bus
+// addresses (e.g. `0x90000` for program region 0). To get BIN file
+// offsets we apply the high-byte translation in `translateMs43HighByte`:
+// upper-word values 9/10/11/12/13/14 → 1/2/3/4/5/6 — the +0x80000
+// ECU-to-BIN shift the C167 hardware applies. Upper-word 7 stays 7
+// (calibration region; no shift).
+
+function translateMs43HighByte(hi: number): number {
+  switch (hi) {
+    case 9: return 1;
+    case 10: return 2;
+    case 11: return 3;
+    case 12: return 4;
+    case 13: return 5;
+    case 14: return 6;
+    default: return hi;
+  }
+}
+
+/** Read a (lo, hi)-pair u32 with MS43 high-byte translation applied. */
+function readMs43Addr(buf: Buffer, off: number): number {
+  const lo = readU16LE(buf, off);
+  const hiRaw = readU16LE(buf, off + 2);
+  const hi = translateMs43HighByte(hiRaw);
+  return (hi << 16) | lo;
+}
+
+/**
+ * MS43 inline-metadata layout for Program / Calibration CRCs:
+ *   resultOffset+0  u16  CRC result
+ *   resultOffset+2  u16  region count
+ *   resultOffset+4  region 0: u16 start_lo, u16 start_hi (translated),
+ *                            u16 end_lo, u16 end_hi (translated)
+ *   resultOffset+12 region 1...
+ */
+interface Ms43InlineCrcDef {
+  name: ChecksumName;
+  /** Result/metadata location in the BIN. */
+  resultOffset: number;
+  /** Seed-pointer location: u16 lo at this offset, u16 hi at +2.
+   *  Resolved via the same high-byte translation as region addresses. */
+  seedPtrOffset: number;
+  /**
+   * Fallback seed *address* when the seed pointer reads as 0xFFFFFFFF
+   * (empty / stripped). For Calibration this is BIN offset 0x7000C —
+   * 12 bytes into the calibration region, at the start of the
+   * calibration's version-ID ASCII block. (Matches the hard-coded
+   * partial-BIN default of 12 bytes in the reference algorithm.)
+   */
+  fallbackSeedAddr: number | null;
+}
+
+const MS43_PROGRAM_DEF: Ms43InlineCrcDef = {
+  name: 'Program',
+  resultOffset: 0x6fde0,
+  seedPtrOffset: 0x6ed42,
+  // Program CRC has no partial-BIN fallback in the reference algorithm.
+  fallbackSeedAddr: null,
+};
+
+const MS43_CALIBRATION_DEF: Ms43InlineCrcDef = {
+  name: 'Calibration',
+  resultOffset: 0x73fe0,
+  seedPtrOffset: 0x6ed9a,
+  fallbackSeedAddr: 0x7000c,
+};
+
+function computeMs43InlineCrc(
+  buf: Buffer,
+  def: Ms43InlineCrcDef,
+): {
+  stored: number;
+  computed: number;
+  ranges: ChecksumRange[];
+  seed: number;
+} {
+  // Resolve seed address: follow the (lo, hi) pointer with high-byte
+  // translation. If the pointer is empty (0xFFFFFFFF) — which can
+  // happen on stripped/edited BINs — fall back to the def's
+  // fallbackSeedAddr.
+  const seedAddrLo = readU16LE(buf, def.seedPtrOffset);
+  const seedAddrHi = readU16LE(buf, def.seedPtrOffset + 2);
+  let seedAddr: number;
+  if (seedAddrLo === 0xffff && seedAddrHi === 0xffff) {
+    if (def.fallbackSeedAddr === null) {
+      throw new Error(
+        `${def.name}: seed pointer at 0x${def.seedPtrOffset.toString(16)} is empty ` +
+          `and no fallback is known for this checksum.`,
+      );
+    }
+    seedAddr = def.fallbackSeedAddr;
+  } else {
+    seedAddr = (translateMs43HighByte(seedAddrHi) << 16) | seedAddrLo;
+  }
+  const seed = readU16LE(buf, seedAddr);
+  // Region table.
+  const count = readU16LE(buf, def.resultOffset + 2);
+  const ranges: ChecksumRange[] = [];
+  let crc = seed;
+  for (let i = 0; i < count; i++) {
+    const entryBase = def.resultOffset + 4 + i * 8;
+    const start = readMs43Addr(buf, entryBase);
+    const end = readMs43Addr(buf, entryBase + 4);
+    ranges.push({ start, end });
+    crc = crc16Ccitt(buf, start, end, crc);
+  }
+  const stored = readU16LE(buf, def.resultOffset);
+  return { stored, computed: crc, ranges, seed };
+}
+
+/**
+ * MS43 32-bit addition checksum — used for the program / calibration
+ * `_mon` (monitor) parameters.
+ *
+ *   add32 = initial_accumulator + sum_u16_LE(BIN[region_0]) + sum_u16_LE(BIN[region_1])
+ *           (mod 2^32)
+ *
+ * Both Program and Calibration variants share the same pattern with
+ * different metadata locations. The `_mon` regions are small (tens to
+ * hundreds of bytes each) and sit inside the larger program /
+ * calibration data blocks.
+ *
+ * Region addresses use the same high-byte translation as the CRC
+ * regions (so a stored address of `0x000D0000` becomes BIN offset
+ * `0x00050000` via `translateMs43HighByte`).
+ */
+interface Ms43Add32Def {
+  name: ChecksumName;
+  /** u32 LE result location in the BIN. */
+  resultOffset: number;
+  /** u32 LE initial-accumulator location (a "magic" preamble like 0xA5A5A5A5). */
+  initialOffset: number;
+  /**
+   * Region table: each entry is 8 bytes (u16 start_lo, u16 start_hi,
+   * u16 end_lo, u16 end_hi); always 2 entries for the MS43 add32 routines.
+   */
+  regionsOffset: number;
+}
+
+const MS43_PROGRAM_ADD32: Ms43Add32Def = {
+  name: 'Program (add)',
+  resultOffset: 0x6fdae,
+  initialOffset: 0x6fdb2,
+  regionsOffset: 0x6fdbe,
+};
+
+const MS43_CALIBRATION_ADD32: Ms43Add32Def = {
+  name: 'Calibration (add)',
+  resultOffset: 0x72ffc,
+  initialOffset: 0x6fdb8,
+  regionsOffset: 0x6fdce,
+};
+
+function computeMs43Add32(
+  buf: Buffer,
+  def: Ms43Add32Def,
+): {
+  stored: number;
+  computed: number;
+  ranges: ChecksumRange[];
+} {
+  const initial = readU32LE(buf, def.initialOffset);
+  const ranges: ChecksumRange[] = [];
+  let sum = initial >>> 0;
+  // Two regions, 8 bytes per entry.
+  for (let i = 0; i < 2; i++) {
+    const off = def.regionsOffset + i * 8;
+    const startLo = readU16LE(buf, off);
+    const startHi = readU16LE(buf, off + 2);
+    const endLo = readU16LE(buf, off + 4);
+    const endHi = readU16LE(buf, off + 6);
+    const start = (translateMs43HighByte(startHi) << 16) | startLo;
+    const end = (translateMs43HighByte(endHi) << 16) | endLo;
+    ranges.push({ start, end });
+    // Sum u16 LE words in [start, end). end is exclusive (the C#
+    // algorithm subtracts to compute the byte length, then divides
+    // by 2 for word count).
+    for (let p = start; p <= end - 1; p += 2) {
+      const w = buf[p] | (buf[p + 1] << 8);
+      sum = (sum + w) >>> 0;
+    }
+  }
+  const stored = readU32LE(buf, def.resultOffset);
+  return { stored, computed: sum >>> 0, ranges };
+}
+
+function verifyMs43Checksums(buf: Buffer): ChecksumReport {
+  const results: ChecksumResult[] = [];
+
+  // Boot: same metadata + algorithm as MS42 (shared fixed offsets).
+  {
+    const r = computeBoot(buf);
+    results.push({
+      name: 'Boot',
+      kind: 'crc16',
+      resultOffset: BOOT_DEF.resultOffset,
+      resultBytes: 2,
+      stored: r.stored,
+      computed: r.computed,
+      match: r.stored === r.computed,
+      ranges: r.ranges,
+      seed: r.seed,
+      supported: true,
+    });
+  }
+
+  // Program (inline metadata at 0x6FDE0).
+  {
+    const r = computeMs43InlineCrc(buf, MS43_PROGRAM_DEF);
+    results.push({
+      name: 'Program',
+      kind: 'crc16',
+      resultOffset: MS43_PROGRAM_DEF.resultOffset,
+      resultBytes: 2,
+      stored: r.stored,
+      computed: r.computed,
+      match: r.stored === r.computed,
+      ranges: r.ranges,
+      seed: r.seed,
+      supported: true,
+    });
+  }
+
+  // Calibration (inline metadata at 0x73FE0).
+  {
+    const r = computeMs43InlineCrc(buf, MS43_CALIBRATION_DEF);
+    results.push({
+      name: 'Calibration',
+      kind: 'crc16',
+      resultOffset: MS43_CALIBRATION_DEF.resultOffset,
+      resultBytes: 2,
+      stored: r.stored,
+      computed: r.computed,
+      match: r.stored === r.computed,
+      ranges: r.ranges,
+      seed: r.seed,
+      supported: true,
+    });
+  }
+
+  // add32 routines (Program and Calibration). Both compute:
+  // initial_accumulator + sum_u16_LE(BIN over 2 regions) mod 2^32.
+  {
+    const r = computeMs43Add32(buf, MS43_PROGRAM_ADD32);
+    results.push({
+      name: 'Program (add)',
+      kind: 'add32',
+      resultOffset: MS43_PROGRAM_ADD32.resultOffset,
+      resultBytes: 4,
+      stored: r.stored,
+      computed: r.computed,
+      match: r.stored === r.computed,
+      ranges: r.ranges,
+      supported: true,
+    });
+  }
+  {
+    const r = computeMs43Add32(buf, MS43_CALIBRATION_ADD32);
+    results.push({
+      name: 'Calibration (add)',
+      kind: 'add32',
+      resultOffset: MS43_CALIBRATION_ADD32.resultOffset,
+      resultBytes: 4,
+      stored: r.stored,
+      computed: r.computed,
+      match: r.stored === r.computed,
+      ranges: r.ranges,
+      supported: true,
+    });
+  }
+
+  const supportedResults = results.filter((r) => r.supported);
+  const allValid = supportedResults.length > 0 && supportedResults.every((r) => r.match);
+  return {
+    variant: 'MS43',
+    fileLength: buf.length,
+    results,
+    allValid,
+  };
+}
+
 // ── public API ──────────────────────────────────────────────────────
 
-export function verifyChecksums(buf: Buffer): ChecksumReport {
-  const variant = detectVariant(buf);
+export interface VerifyChecksumsOptions {
+  /**
+   * Override variant detection. Default: auto-detect via {@link detectVariant}.
+   * Pass an explicit `EcuVariant` to bypass detection (useful when a BIN
+   * has been edited in a way that perturbs the header pointer at 0x502CE
+   * but you know the firmware variant for certain).
+   */
+  variant?: EcuVariant;
+}
+
+export function verifyChecksums(
+  buf: Buffer,
+  options: VerifyChecksumsOptions = {},
+): ChecksumReport {
+  if (buf.length !== EXPECTED_FILE_LENGTH) {
+    throw new Error(
+      `Bad BIN length: ${buf.length} (expected ${EXPECTED_FILE_LENGTH})`,
+    );
+  }
+  const variant = options.variant ?? detectVariant(buf);
   if (!variant) {
     throw new Error(
-      `Could not detect MS42/MS43 variant. File length=${buf.length} (expected ${EXPECTED_FILE_LENGTH}); ` +
-        `program-pointer at 0x502CE = 0x${readAddr24(buf, 0x502ce).toString(16)} ` +
-        `(expected 0x50306 for MS42, 0x6FDE0 for MS43).`,
+      `Could not auto-detect MS42/MS43 variant. ` +
+        `0x4FEE0 (MS42 marker) = 0x${readU16LE(buf, 0x4fee0).toString(16).padStart(4, '0')}, ` +
+        `0x6FDE0 (MS43 marker) = 0x${readU16LE(buf, 0x6fde0).toString(16).padStart(4, '0')}. ` +
+        `Pass { variant: 'MS42' | 'MS43' } to override.`,
     );
+  }
+
+  if (variant === 'MS43') {
+    return verifyMs43Checksums(buf);
   }
 
   const results: ChecksumResult[] = [];
@@ -341,35 +662,6 @@ export function verifyChecksums(buf: Buffer): ChecksumReport {
     });
   }
 
-  if (variant === 'MS43') {
-    // MS43-only addition checksums. We report the stored values but
-    // can't compute without per-firmware-version range info.
-    results.push({
-      name: 'Program (add)',
-      kind: 'add32',
-      resultOffset: MS43_ADD_PROGRAM_OFFSET,
-      resultBytes: 4,
-      stored: readU32LE(buf, MS43_ADD_PROGRAM_OFFSET),
-      computed: 0,
-      match: false,
-      ranges: [],
-      supported: false,
-      note: 'covered range is firmware-version-specific; not auto-computed',
-    });
-    results.push({
-      name: 'Calibration (add)',
-      kind: 'add32',
-      resultOffset: MS43_ADD_CALIBRATION_OFFSET,
-      resultBytes: 4,
-      stored: readU32LE(buf, MS43_ADD_CALIBRATION_OFFSET),
-      computed: 0,
-      match: false,
-      ranges: [],
-      supported: false,
-      note: 'covered range is firmware-version-specific; not auto-computed',
-    });
-  }
-
   const supportedResults = results.filter((r) => r.supported);
   const allValid = supportedResults.length > 0 && supportedResults.every((r) => r.match);
 
@@ -391,10 +683,56 @@ export function verifyChecksums(buf: Buffer): ChecksumReport {
  * version-aware tool BEFORE calling this — otherwise the CRC-16s will
  * lock in a stale addition-checksum value.
  */
-export function rewriteChecksums(buf: Buffer): ChecksumReport {
-  // Important ordering for MS43: addition checksums first, then CRC-16s.
-  // We don't rewrite the additions, but if a future caller adds support,
-  // the call order must remain (add32-recompute) → (crc16-recompute).
+export function rewriteChecksums(
+  buf: Buffer,
+  options: VerifyChecksumsOptions = {},
+): ChecksumReport {
+  // Validate variant up-front (with optional override) so we fail fast
+  // before mutating anything.
+  if (buf.length !== EXPECTED_FILE_LENGTH) {
+    throw new Error(
+      `Bad BIN length: ${buf.length} (expected ${EXPECTED_FILE_LENGTH})`,
+    );
+  }
+  const variant = options.variant ?? detectVariant(buf);
+  if (!variant) {
+    throw new Error(
+      `Could not auto-detect MS42/MS43 variant for rewrite. ` +
+        `Pass { variant: 'MS42' | 'MS43' } to override.`,
+    );
+  }
+
+  if (variant === 'MS43') {
+    // CRITICAL ORDERING per ms4x.net wiki: addition checksums MUST be
+    // recomputed BEFORE the CRC-16s, because the add32 result bytes
+    // sit inside the regions the CRC-16s cover.
+
+    // Program add32 → 0x6FDAE (inside Program CRC's input range).
+    const progAdd = computeMs43Add32(buf, MS43_PROGRAM_ADD32);
+    writeU32LE(buf, progAdd.computed, MS43_PROGRAM_ADD32.resultOffset);
+
+    // Calibration add32 → 0x72FFC (inside Calibration CRC's input range).
+    const calAdd = computeMs43Add32(buf, MS43_CALIBRATION_ADD32);
+    writeU32LE(buf, calAdd.computed, MS43_CALIBRATION_ADD32.resultOffset);
+
+    // Then CRC-16s (Boot via shared computeBoot, Program/Calibration
+    // via computeMs43InlineCrc).
+    const boot = computeBoot(buf);
+    writeU16LE(buf, boot.computed, BOOT_DEF.resultOffset);
+
+    const prog = computeMs43InlineCrc(buf, MS43_PROGRAM_DEF);
+    writeU16LE(buf, prog.computed, MS43_PROGRAM_DEF.resultOffset);
+
+    const cal = computeMs43InlineCrc(buf, MS43_CALIBRATION_DEF);
+    writeU16LE(buf, cal.computed, MS43_CALIBRATION_DEF.resultOffset);
+
+    return verifyChecksums(buf, { variant });
+  }
+
+  // MS42 path. Important ordering note: if a future caller adds MS43
+  // add32 support, the call order must remain
+  // (add32-recompute) → (crc16-recompute) — the CRC-16 ranges include
+  // the add32 result bytes.
 
   // Boot first (no dependency on others).
   const boot = computeBoot(buf);
@@ -408,5 +746,5 @@ export function rewriteChecksums(buf: Buffer): ChecksumReport {
   const cal = computeHeaderDriven(buf, CALIBRATION_DEF);
   writeU16LE(buf, cal.computed, cal.resultOffset);
 
-  return verifyChecksums(buf);
+  return verifyChecksums(buf, { variant });
 }

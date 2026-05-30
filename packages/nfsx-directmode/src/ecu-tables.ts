@@ -6,12 +6,11 @@
  * returns the EcuVariant + the writable region tables for both FULL and
  * CALIBRATION modes.
  *
- * Region tables derived from MS4x Flasher 1.6.0's per-variant L.A() /
- * L.a() implementations (`ᄁ/A/T.cs:360, 873` / `ᄁ/A/p.cs:352`) — those
- * are the ranges BMW's own DS2 flashers actually push through the wire.
- * Going outside them per the protocol is possible (§5/§7) but no tool
- * does it through DS2; for bench-only out-of-range writes use the
- * bootmode path in `@emdzej/nfsx-bootmode`.
+ * Region tables describe the addresses tools actually push through the
+ * DS2 wire (a subset of the broader ECU memory map). Going outside
+ * them per the protocol is possible (§5/§7) but no DS2 tool exercises
+ * it; for bench-only out-of-range writes use the bootmode path in
+ * `@emdzej/nfsx-bootmode`.
  */
 import { Buffer } from 'node:buffer';
 
@@ -46,16 +45,10 @@ export interface EcuProfile {
   /** Substrings the IDENT response should contain to match this variant. */
   identSignatures: ReadonlyArray<string>;
   /**
-   * Source citation for the tables above. Useful when the calibration
-   * subset is a guess rather than a reverse-engineered value — see
-   * `calibrationVerified` for that distinction.
-   */
-  tableSource: string;
-  /**
-   * True iff the calibration-vs-full distinction is grounded in
-   * reverse-engineered tool source (MS4x Flasher, WinKFP, etc.).
-   * False iff calibrationRegions just falls back to fullRegions because
-   * no actual calibration-only mode was established.
+   * True iff the calibration-vs-full distinction is verified for this
+   * variant. False iff `calibrationRegions` just falls back to
+   * `fullRegions` because no actual calibration-only mode was
+   * established.
    */
   calibrationVerified: boolean;
 }
@@ -63,10 +56,9 @@ export interface EcuProfile {
 /**
  * MS42 — Siemens, BMW M52TU, Infineon C167CR_SR + AMD 29F400BB.
  *
- * FULL: matches MS4x Flasher's `T.cs:t::A()` 1:1-mapping layout
- * (three direct regions covering 0x11000-0x7FFFF with gaps).
- * CALIBRATION: writes only the calibration block (typically the upper
- * region covering 0x40000+).
+ * FULL: three regions, 1:1 BIN/ECU mapping, covering 0x11000-0x7FFFF
+ * with gaps for boot and metadata.
+ * CALIBRATION: writes only the 32 KB data block at 0x48000-0x4FFEF.
  */
 const MS42_PROFILE: EcuProfile = {
   variant: 'MS42',
@@ -74,27 +66,29 @@ const MS42_PROFILE: EcuProfile = {
   blockSize: 246,
   binSize: 0x80000,
   fullRegions: [
-    { start: 0x11000, end: 0x3ffff, binOffset: 0x11000 },
-    { start: 0x48000, end: 0x4ffef, binOffset: 0x48000 },
-    { start: 0x5002c, end: 0x7ffff, binOffset: 0x5002c },
+    { start: 0x11000, end: 0x3ffff, binOffset: 0x11000 }, // lower program (~188 KB)
+    { start: 0x48000, end: 0x4ffef, binOffset: 0x48000 }, // data / calibration (32 KB)
+    { start: 0x5002c, end: 0x7ffff, binOffset: 0x5002c }, // upper program (~192 KB)
   ],
   calibrationRegions: [
-    // Calibration region in MS42 covers the upper data region — same
-    // address range as fullRegions[2].
-    { start: 0x5002c, end: 0x7ffff, binOffset: 0x5002c },
+    // Partial-write covers only the 32 KB data block at ECU
+    // 0x48000-0x4FFEF. This is the region containing the Calibration
+    // CRC at 0x4FEE0 (per ms4x.net wiki); the Boot CRC (at 0x3C24, in
+    // the lower program region) and Program CRC (at 0x50306, in the
+    // upper program region) don't change under calibration edits and
+    // don't need updating.
+    { start: 0x48000, end: 0x4ffef, binOffset: 0x48000 },
   ],
   identSignatures: ['MS42', 'MS_42'],
-  tableSource: 'MS4x Flasher 1.6.0 (ᄁ/A/T.cs:873 — `t::A` full, `t::a` partial)',
   calibrationVerified: true,
 };
 
 /**
  * MS43 — Siemens, BMW M54, Infineon C167CS-32F + AMD AM29F400.
  *
- * FULL: matches MS4x Flasher's `T.cs:T::A()` shifted-mapping layout
- * (two regions: ECU 0x90000+0x5FFF0 sourced from BIN 0x10000+0x5FFF0
- * with a +0x80000 shift; and ECU 0x70000+0xFFEF sourced from BIN
- * 0x70000+0xFFEF direct).
+ * FULL: two regions. Program at ECU 0x90000+0x5FFF0 sourced from
+ * BIN 0x10000+0x5FFF0 with a +0x80000 ECU shift; data at ECU
+ * 0x70000+0xFFEF sourced from BIN 0x70000+0xFFEF direct.
  */
 const MS43_PROFILE: EcuProfile = {
   variant: 'MS43',
@@ -102,7 +96,6 @@ const MS43_PROFILE: EcuProfile = {
   blockSize: 246,
   binSize: 0x80000,
   fullRegions: [
-    // Two-region layout per MS4x Flasher `T.cs:360`:
     {
       start: 0x90000,
       end: 0x90000 + 0x5fff0 - 1,
@@ -115,33 +108,26 @@ const MS43_PROFILE: EcuProfile = {
     },
   ],
   calibrationRegions: [
-    // Calibration block in MS43 is the upper data region sourced from
-    // BIN 0x10000.
+    // Partial-write covers ONLY the 64 KB data block at ECU
+    // 0x70000-0x7FFEE. Contains MS43's Calibration CRC at 0x73FE0 and
+    // Calibration add32 at 0x72FFC (per ms4x.net wiki). The Program
+    // CRC (0x6FDE0) and Program add32 (0x6FDAE) live in the other
+    // region; they don't change under calibration edits.
     {
-      start: 0x90000,
-      end: 0x90000 + 0x5fff0 - 1,
-      binOffset: 0x10000,
+      start: 0x70000,
+      end: 0x70000 + 0xffef - 1,
+      binOffset: 0x70000,
     },
   ],
   identSignatures: ['MS43', 'MS_43'],
-  tableSource: 'MS4x Flasher 1.6.0 (ᄁ/A/T.cs:360 — `T::A` full, `T::a` partial)',
   calibrationVerified: true,
 };
 
 /**
  * GS20 — Siemens transmission control unit (TCU).
  *
- * Region table now matches MS4x Flasher's `r` protocol class (its TCU
- * variant; factory `N.cs:60` initialised with the `0x32` K-line
- * address). MS4x Flasher actually dispatches five TCU protocol classes
- * (`p`, `r`, `R`, `q`, `Q`) keyed on a 6-character IDENT substring; `r`
- * is the one whose layout the user has bench-flashed against. If a
- * given TCU sub-variant turns out to need a different class, extend
- * ALL_PROFILES.
- *
  * BIN format: **512 KB (0x80000)** — same total size as the MS-class
- * engine BIN, per the `s` config object at `ᄅ/A/S.cs:43-53`
- * (`A(524288)`). Of that, only two regions are written; bytes
+ * engine BIN. Of that, only two regions are written; bytes
  * `0x00000-0x0FFFF` and `0x60000-0x7FFFF` are header / padding.
  *
  *   BIN `0x10000-0x1FFFF` → ECU `0x90000-0x9FFFF`  (64 KB program)
@@ -149,9 +135,7 @@ const MS43_PROFILE: EcuProfile = {
  *
  * CALIBRATION (partial-write) — rewrites only the 64 KB program block
  * at ECU `0x90000-0x9FFFF`, sourced from BIN `0x10000-0x1FFFF` when a
- * full 512 KB BIN is supplied. (MS4x Flasher's `r::a` also accepts a
- * 64 KB calibration-only BIN that reads from BIN[0], but we model
- * only the full-BIN form here for now.)
+ * full 512 KB BIN is supplied.
  */
 const GS20_PROFILE: EcuProfile = {
   variant: 'GS20',
@@ -159,18 +143,16 @@ const GS20_PROFILE: EcuProfile = {
   blockSize: 246,
   binSize: 0x80000,
   fullRegions: [
-    // R.cs:863-869 — erase 0xA0000, write ECU[0xA0000..0xDFFFF] from BIN[0x20000..0x5FFFF]
+    // erase 0xA0000, write ECU[0xA0000..0xDFFFF] from BIN[0x20000..0x5FFFF]
     { start: 0xa0000, end: 0xdffff, binOffset: 0x20000 },
-    // R.cs:874-877 — erase 0x90000, write ECU[0x90000..0x9FFFF] from BIN[0x10000..0x1FFFF]
+    // erase 0x90000, write ECU[0x90000..0x9FFFF] from BIN[0x10000..0x1FFFF]
     { start: 0x90000, end: 0x9ffff, binOffset: 0x10000 },
   ],
   calibrationRegions: [
-    // R.cs:937-941 — partial path: erase + write ONLY ECU[0x90000..0x9FFFF]
+    // partial-write covers ONLY ECU[0x90000..0x9FFFF]
     { start: 0x90000, end: 0x9ffff, binOffset: 0x10000 },
   ],
   identSignatures: ['GS20', 'GS_20'],
-  tableSource:
-    'MS4x Flasher 1.6.0 (ᄁ/A/R.cs:813 — `r::A` full, `r::a` partial; ᄅ/A/S.cs:43 — `s` config object)',
   calibrationVerified: true,
 };
 

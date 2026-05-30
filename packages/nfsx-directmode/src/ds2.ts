@@ -4,9 +4,8 @@
  * Frame on the wire:
  *   [ADDR] [LEN] [CMD…] [XOR]
  *
- * Verified against MS4x Flasher 1.6.0 (`ᄁ/A/A.cs:147-165`) and the
- * EdiabasLib reference implementation (`ediabasx/packages/interface-serial/
- * src/kdcan/ds2.ts`):
+ * Cross-checked against the EdiabasLib K-line reference implementation
+ * (`ediabasx/packages/interface-serial/src/kdcan/ds2.ts`):
  *
  * - **LEN = total frame length on the wire**, i.e. ADDR + LEN + payload +
  *   XOR = `payload.length + 3`.

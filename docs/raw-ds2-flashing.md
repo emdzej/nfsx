@@ -63,11 +63,9 @@ Every telegram in either direction has the shape:
 | `DATA…` | 0–N bytes | Command-specific payload |
 | `XOR` | 1 byte | XOR of every byte in the frame from offset 0 (`ADDR`) through the last `DATA` byte, **inclusive of `ADDR`** and not including the XOR position itself. |
 
-Verified against MS4x Flasher 1.6.0 (`ᄁ/A/A.cs:147-165` — its frame builder
-walks `for (i = 0; i < span.Length; i++) b2 ^= span[i]`, starting at the
-ADDR byte) and the EdiabasLib K+DCAN reference (`ediabasx/packages/
+Confirmed against the EdiabasLib K+DCAN reference (`ediabasx/packages/
 interface-serial/src/kdcan/ds2.ts` — `calcChecksumXor(request, 0,
-request.length)` similarly XORs from offset 0 onwards).
+request.length)` XORs from offset 0 onwards, including the `ADDR` byte).
 
 ## 1.3 Baud-rate switching
 
@@ -655,23 +653,19 @@ Real-bench evidence: ~440 KB pushed over ~1,900 iterator calls (≈ 246
 bytes per call), iterator drained, ECU returned to normal operation
 post-flash.
 
-**Update — MS4x Flasher does support TCU.** Its UI dropdown switches
-between ECU and TCU modes; `nfsx-directmode` now uses MS4x Flasher's
-`r` protocol class (`ᄁ/A/R.cs:813`) for GS20 with a different region
-table than the WinKFP `.0PA` slices above. Effective layout:
+**Tool layout — broader than the WinKFP `.0PA` slices above.** Most
+DS2 TCU flashers use a 512 KB BIN with this mapping:
 
-- BIN format is **512 KB** (same as MS-class engine BIN; padded)
 - BIN `0x10000-0x1FFFF` → ECU `0x90000-0x9FFFF` (64 KB program)
 - BIN `0x20000-0x5FFFF` → ECU `0xA0000-0xDFFFF` (256 KB data)
 - BIN `0x00000-0x0FFFF` and `0x60000-0x7FFFF` are header / padding
 
-A real calibration-only mode exists (MS4x Flasher's `r::a` at
-`R.cs:884`): rewrites only the 64 KB program block at `0x90000`.
-`nfsx directmode write --mode calibration` uses this. The WinKFP
-`.0PA` table (above) covers an overlapping but not identical set of
-bytes; if you have a BIN authored from a WinKFP dump rather than a
-MS4x Flasher dump, you'll need to translate or stick with the
-WinKFP `.0PA` path through `nfsx flash`.
+A real calibration-only mode rewrites just the 64 KB program block at
+`0x90000`. `nfsx directmode write --mode calibration` uses this. The
+WinKFP `.0PA` table (above) covers an overlapping but not identical
+set of bytes; if you have a BIN authored from a WinKFP dump rather
+than a tool-produced 512 KB BIN, translate first or use the WinKFP
+`.0PA` path through `nfsx flash`.
 
 ## 5.2 MS42 engine (HWNR 1430844)
 
@@ -756,27 +750,19 @@ firmware header (variant-specific offsets, not hard-coded like MS42's
 
 ### GS20 (HWNR 7544721)
 
-Not covered by the MS4x Flasher decomp — checksum scheme for the
-GS20 transmission firmware is unverified. The ~32 bytes of
-non-program data between region boundaries in the `.0PA` record
-stream may carry a similar CRC.
-
-### Source
-
-Implementation reverse-engineered from MS4x Flasher 1.6.0,
-`A.a : h` in `ᄆ/A/A.cs:101–320`. CRC primitive at
-`ᄆ/A/A.cs:10–73` (`A.A.A` bit-by-bit, `A.A.a` table-based; both take
-the polynomial as a parameter).
+Checksum scheme for the GS20 transmission firmware is unverified.
+The ~32 bytes of non-program data between region boundaries in the
+`.0PA` record stream may carry a similar CRC.
 
 ---
 
 # §6 — Implementation notes & gotchas
 
-1. **Checksum scope: ADDR is INCLUDED.** XOR runs over every byte from
-   offset 0 (`ADDR`) through the last data byte, not just `LEN` onwards.
-   Both MS4x Flasher (`ᄁ/A/A.cs:157-165`) and EdiabasLib's K+DCAN
-   transport (`ediabasx/packages/interface-serial/src/kdcan/ds2.ts`'s
-   `calcChecksumXor(request, 0, request.length)`) start at offset 0;
+1. **Checksum scope: ADDR is INCLUDED.** XOR runs over every byte
+   from offset 0 (`ADDR`) through the last data byte, not just `LEN`
+   onwards. EdiabasLib's K+DCAN transport
+   (`ediabasx/packages/interface-serial/src/kdcan/ds2.ts`'s
+   `calcChecksumXor(request, 0, request.length)`) starts at offset 0;
    implementations that skip `ADDR` get every transaction rejected.
 
 2. **LEN counts the whole frame, including ADDR.** A 4-byte IDENT
@@ -841,9 +827,7 @@ the polynomial as a parameter).
     `memcmp`s it against the TX bytes — a mismatch indicates bus
     contention, wiring fault, or another bus master interfering, all
     of which should abort the transaction rather than be swallowed
-    silently. The MS4x Flasher does exactly this (TX → read-back
-    same length → compare → throw on mismatch) and treats any echo
-    discrepancy as a fatal serial-port error.
+    silently. Treat any echo discrepancy as a fatal serial-port error.
 
 13. **Modified firmware images need their checksums recomputed.**
     See §5.4. The ECU's bootloader verifies internal CRCs after a
@@ -857,12 +841,9 @@ the polynomial as a parameter).
 
 14. **`.0PA` regions describe BMW's update slices via the DS2 path,
     not the ECU's writable space.** The ranges in §5 mirror what
-    WinKFP chooses to write through DS2 (§3.4). Through DS2,
-    neither known DS2 flasher writes outside its per-variant
-    region table — BMW's host doesn't, and the MS4x Flasher uses
-    its own (different but still sparse) hard-coded ranges in the
-    protocol class (`/tmp/ms4x-decompiled/ᄁ/A/T.cs:360, 873`,
-    `/tmp/ms4x-decompiled/ᄁ/A/p.cs:352`). Through bootmode (§7)
+    WinKFP chooses to write through DS2 (§3.4). Third-party DS2
+    flashers use their own (overlapping but not identical) sparse
+    region tables baked into the host code. Through bootmode (§7)
     the entire 512 KB *is* writable — see that section for why.
 
 15. **Bootmode flashing is a different protocol entirely (§7).**

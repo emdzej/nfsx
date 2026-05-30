@@ -39,7 +39,7 @@ describe('ECU tables', () => {
     expect(totalBytesForMode(p, 'full')).toBeGreaterThan(totalBytesForMode(p, 'calibration'));
   });
 
-  it('all three profiles have a separately verified calibration mode (sourced from MS4x Flasher)', () => {
+  it('all three profiles have a separately verified calibration mode', () => {
     for (const p of ALL_PROFILES) {
       expect(p.calibrationVerified, `${p.variant} calibrationVerified`).toBe(true);
     }
@@ -63,11 +63,6 @@ describe('ECU tables', () => {
     expect(getProfile('GS20').binSize).toBe(0x80000);
   });
 
-  it('every profile cites a tableSource', () => {
-    for (const p of ALL_PROFILES) {
-      expect(p.tableSource.length).toBeGreaterThan(0);
-    }
-  });
 
   it('regions never start before binOffset 0', () => {
     for (const p of ALL_PROFILES) {

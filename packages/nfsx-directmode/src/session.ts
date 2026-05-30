@@ -369,7 +369,7 @@ async function openAndIdent(
   }
   onProgress?.({
     stage: 'precheck',
-    message: `identified as ${profile.variant} (table: ${profile.tableSource})`,
+    message: `identified as ${profile.variant}`,
   });
   return { transport, profile };
 }
@@ -426,7 +426,7 @@ export async function writeFlash(
         stage: 'precheck',
         message:
           `WARNING: ${profile.variant} calibration-only mode is NOT separately defined — ` +
-          `this will rewrite the same regions as --mode full. Source: ${profile.tableSource}`,
+          `this will rewrite the same regions as --mode full.`,
       });
     }
 

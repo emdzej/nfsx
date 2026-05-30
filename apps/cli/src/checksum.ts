@@ -15,13 +15,26 @@
 import chalk from 'chalk';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { verifyMs4xChecksums, rewriteMs4xChecksums } from '@emdzej/nfsx-flash-data';
+import {
+  verifyMs4xChecksums,
+  rewriteMs4xChecksums,
+  type Ms4xEcuVariant,
+} from '@emdzej/nfsx-flash-data';
+
+export type ChecksumVariantArg = 'auto' | 'MS42' | 'MS43';
 
 export interface ChecksumOptions {
   file: string;
   rewrite?: boolean;
   output?: string;
   json?: boolean;
+  /** `auto` = let the BIN's header pointer at 0x502CE decide. Default. */
+  variant?: ChecksumVariantArg;
+}
+
+function resolveVariantOverride(v?: ChecksumVariantArg): Ms4xEcuVariant | undefined {
+  if (!v || v === 'auto') return undefined;
+  return v;
 }
 
 export function runChecksumCmd(opts: ChecksumOptions): number {
@@ -33,16 +46,18 @@ export function runChecksumCmd(opts: ChecksumOptions): number {
     return 2;
   }
 
+  const variantOverride = resolveVariantOverride(opts.variant);
+
   let report;
   try {
-    report = verifyMs4xChecksums(buf);
+    report = verifyMs4xChecksums(buf, { variant: variantOverride });
   } catch (err) {
     process.stderr.write(chalk.red(`error: ${(err as Error).message}\n`));
     return 2;
   }
 
   if (opts.rewrite) {
-    rewriteMs4xChecksums(buf);
+    rewriteMs4xChecksums(buf, { variant: variantOverride });
     const target = opts.output ?? opts.file;
     try {
       writeFileSync(resolve(target), buf);
@@ -51,7 +66,7 @@ export function runChecksumCmd(opts: ChecksumOptions): number {
       return 2;
     }
     // Re-verify so the report reflects the on-disk state.
-    report = verifyMs4xChecksums(buf);
+    report = verifyMs4xChecksums(buf, { variant: variantOverride });
   }
 
   if (opts.json) {
@@ -62,8 +77,10 @@ export function runChecksumCmd(opts: ChecksumOptions): number {
   const hex2 = (n: number, w: number) =>
     `0x${n.toString(16).toUpperCase().padStart(w, '0')}`;
 
+  const detection =
+    !opts.variant || opts.variant === 'auto' ? chalk.dim('(auto-detected)') : chalk.yellow('(forced via --variant)');
   process.stdout.write(chalk.bold(`File:    ${opts.file}\n`));
-  process.stdout.write(chalk.bold(`Variant: ${report.variant}\n`));
+  process.stdout.write(chalk.bold(`Variant: ${report.variant} `) + detection + '\n');
   process.stdout.write(chalk.bold(`Length:  ${report.fileLength} bytes\n`));
   process.stdout.write('\n');
 

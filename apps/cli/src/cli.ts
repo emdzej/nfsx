@@ -199,6 +199,12 @@ program
   .command('checksum')
   .description('Verify or recompute MS42/MS43 firmware BIN checksums (CRC-16/CCITT). Hardware-independent.')
   .requiredOption('-f, --file <path>', 'path to the 512 KB MS42/MS43 firmware BIN')
+  .option(
+    '--variant <name>',
+    'force the firmware variant (auto | ms42 | ms43). Default auto — uses the BIN\'s header pointer at 0x502CE.',
+    parseChecksumVariant,
+    'auto',
+  )
   .option('--rewrite', 'recompute checksums and write back in-place (or to --output)', false)
   .option('-o, --output <path>', 'write rewritten BIN here instead of overwriting input (requires --rewrite)')
   .option('--json', 'machine-readable JSON output', false)
@@ -293,7 +299,7 @@ bootmode
     if (code !== 0) process.exit(code);
   });
 
-// ── directmode (DS2-driven flashing — the MS4x Flasher path) ────────
+// ── directmode (DS2-driven flashing) ────────────────────────────────
 const directmode = program
   .command('directmode')
   .description(
@@ -430,6 +436,14 @@ function parseFlashMode(value: string): 'full' | 'calibration' {
   throw new InvalidArgumentError(`"${value}" is not a valid flash mode (full | calibration).`);
 }
 
+function parseChecksumVariant(value: string): 'auto' | 'MS42' | 'MS43' {
+  const v = value.trim().toLowerCase();
+  if (v === 'auto') return 'auto';
+  if (v === 'ms42') return 'MS42';
+  if (v === 'ms43') return 'MS43';
+  throw new InvalidArgumentError(`"${value}" is not a valid variant (auto | ms42 | ms43).`);
+}
+
 // Type contracts the action callbacks consume. Mirror commander's
 // camel-cased property names. Imported by each handler's
 // implementation file so the contract stays in one place.
@@ -557,6 +571,7 @@ export interface ChecksumOptions {
   rewrite: boolean;
   output?: string;
   json: boolean;
+  variant: 'auto' | 'MS42' | 'MS43';
 }
 
 interface BootmodeProbeOpts {

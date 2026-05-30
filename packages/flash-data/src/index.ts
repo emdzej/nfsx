@@ -39,4 +39,5 @@ export {
   type ChecksumName as Ms4xChecksumName,
   type ChecksumKind as Ms4xChecksumKind,
   type ChecksumRange as Ms4xChecksumRange,
+  type VerifyChecksumsOptions as Ms4xVerifyChecksumsOptions,
 } from './ms4x-checksum.js';

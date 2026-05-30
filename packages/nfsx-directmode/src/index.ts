@@ -1,10 +1,10 @@
 /**
- * @emdzej/nfsx-directmode — raw DS2 flashing for BMW MS42/MS43/GS20.
+ * @emdzej/nfsx-directmode — raw DS2 flashing for BMW MS42 / MS43 / GS20.
  *
- * The "MS4x Flasher path": direct K-line DS2 protocol via the normal
- * diagnostic session (no IPO, no SGBD). Distinguishes FULL vs
- * CALIBRATION-only flash via per-ECU region tables, with ECU detection
- * driven by the IDENT response.
+ * Direct K-line DS2 protocol via the normal diagnostic session (no
+ * IPO, no SGBD). Distinguishes FULL vs CALIBRATION-only flash via
+ * per-ECU region tables, with ECU detection driven by the IDENT
+ * response.
  */
 
 export {

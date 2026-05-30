@@ -10,9 +10,8 @@ import {
 
 describe('DS2 framing', () => {
   it('encodes IDENT request as [ADDR=0x12][LEN=0x04][CMD=0x00][XOR=0x16]', () => {
-    // Verified against MS4x Flasher's frame builder (ᄁ/A/A.cs:147-165):
-    // total frame = ADDR + LEN + CMD + XOR = 4 bytes; LEN = 4; XOR over
-    // [0x12, 0x04, 0x00] = 0x16.
+    // total frame = ADDR + LEN + CMD + XOR = 4 bytes; LEN = 4;
+    // XOR over [0x12, 0x04, 0x00] = 0x16.
     const out = encodeFrame(0x12, Buffer.from([DS2_CMD_IDENT]));
     expect([...out]).toEqual([0x12, 0x04, 0x00, 0x16]);
   });

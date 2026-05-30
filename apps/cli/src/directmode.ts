@@ -1,5 +1,5 @@
 /**
- * `nfsx directmode` — raw DS2 flashing (the "MS4x Flasher" path).
+ * `nfsx directmode` — raw DS2 flashing.
  *
  * Drives the ECU through the normal diagnostic session over K-line
  * (9600 8E1): IDENT → SEED/KEY → erase → write → verify. ECU type is

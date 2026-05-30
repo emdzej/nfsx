@@ -28,11 +28,14 @@ function writeAddr24(buf: Buffer, val: number, off: number): void {
 }
 
 /**
- * Plant a minimal MS42 or MS43 header structure into a blank buffer so the
+ * Plant a minimal MS42 header structure into a blank buffer so the
  * checksum routines can find all three CRC-16s. Returns the buffer with
  * computed-correct checksums installed.
+ *
+ * (MS43 doesn't use this header-driven mechanism — its tests build a
+ * minimal stored-value-only fixture inline.)
  */
-function plantHeader(variant: 'MS42' | 'MS43'): Buffer {
+function plantHeader(variant: 'MS42'): Buffer {
   const buf = newBlankFw();
 
   // ── Boot region ──
@@ -47,19 +50,15 @@ function plantHeader(variant: 'MS42' | 'MS43'): Buffer {
   writeU16LE(buf, 0x1234, 0x3fe6); // seed
 
   // ── Program checksum header ──
-  // Header at 0x502CE points to the result location, which holds the loop
-  // count and region table.
-  const progResultAddr = variant === 'MS42' ? 0x50306 : 0x6fde0;
+  // Header at 0x502CE points to the result location, which holds the
+  // loop count and region table.
+  const progResultAddr = 0x50306;
   writeAddr24(buf, progResultAddr, 0x502ce);
-  // Seed-address pointer (split as u16 lo + u16 hi).
-  const progSeedAddr = variant === 'MS42' ? 0x50320 : 0x70000;
+  const progSeedAddr = 0x50320;
   writeU16LE(buf, progSeedAddr & 0xffff, 0x502d2);
   writeU16LE(buf, (progSeedAddr >> 16) & 0xffff, 0x502d4);
-  // Plant the seed value at the seed address.
   writeU16LE(buf, 0xabcd, progSeedAddr);
-  // One region in the table.
   writeU16LE(buf, 1, progResultAddr + 2);
-  // Region 0: cover bytes [0x10000..0x10010].
   const progRegStart = 0x10000;
   const progRegEnd = 0x10010;
   for (let i = progRegStart; i <= progRegEnd; i++) buf[i] = (i ^ 0x55) & 0xff;
@@ -69,9 +68,9 @@ function plantHeader(variant: 'MS42' | 'MS43'): Buffer {
   writeU16LE(buf, (progRegEnd >> 16) & 0xffff, progResultAddr + 10);
 
   // ── Calibration checksum header ──
-  const calResultAddr = variant === 'MS42' ? 0x4fee0 : 0x73fe0;
+  const calResultAddr = 0x4fee0;
   writeAddr24(buf, calResultAddr, 0x502f2);
-  const calSeedAddr = variant === 'MS42' ? 0x50330 : 0x70010;
+  const calSeedAddr = 0x50330;
   writeU16LE(buf, calSeedAddr & 0xffff, 0x502f6);
   writeU16LE(buf, (calSeedAddr >> 16) & 0xffff, 0x502f8);
   writeU16LE(buf, 0x9876, calSeedAddr);
@@ -141,21 +140,28 @@ describe('detectVariant', () => {
     expect(detectVariant(buf)).toBeNull();
   });
 
-  it('identifies MS42 from the program-pointer value', () => {
+  it('identifies MS42 by a populated 0x4FEE0 calibration-CRC slot', () => {
+    const buf = newBlankFw();
+    writeU16LE(buf, 0x27be, 0x4fee0); // populated MS42 Calibration CRC
+    // 0x6FDE0 stays 0xFFFF (no MS43 marker)
+    expect(detectVariant(buf)).toBe('MS42');
+  });
+
+  it('identifies MS43 by a populated 0x6FDE0 program-CRC slot', () => {
+    const buf = newBlankFw();
+    writeU16LE(buf, 0x727e, 0x6fde0); // populated MS43 Program CRC
+    // 0x4FEE0 stays 0xFFFF (no MS42 marker)
+    expect(detectVariant(buf)).toBe('MS43');
+  });
+
+  it('still falls back to the MS42 header pointer when both markers are erased', () => {
     const buf = newBlankFw();
     writeAddr24(buf, 0x50306, 0x502ce);
     expect(detectVariant(buf)).toBe('MS42');
   });
 
-  it('identifies MS43 from the program-pointer value', () => {
+  it('returns null when nothing identifies the BIN', () => {
     const buf = newBlankFw();
-    writeAddr24(buf, 0x6fde0, 0x502ce);
-    expect(detectVariant(buf)).toBe('MS43');
-  });
-
-  it('returns null when neither pointer matches and both result slots are erased', () => {
-    const buf = newBlankFw();
-    // pointer at 0x502CE = 0xFFFFFF (erased), both result slots 0xFFFF (erased)
     expect(detectVariant(buf)).toBeNull();
   });
 });
@@ -200,38 +206,121 @@ describe('verifyChecksums — MS42 synthetic firmware', () => {
   });
 });
 
-describe('verifyChecksums — MS43 synthetic firmware', () => {
-  it('reports 3 CRC-16s as matching and 2 unsupported add-checksums', () => {
-    const buf = plantHeader('MS43');
+describe('verifyChecksums — MS43', () => {
+  /**
+   * Plant a minimal MS43 header + region structure that the algorithm
+   * can navigate. Builds a single-region Program and Calibration CRC
+   * over predictable byte ranges, then has the production code install
+   * correct CRC values.
+   */
+  function plantMs43Header(): Buffer {
+    const buf = newBlankFw();
+
+    // Boot: shared algorithm with MS42 — use a small range and seed.
+    const bootStart = 0x100;
+    const bootEnd = 0x1ff;
+    for (let i = bootStart; i <= bootEnd; i++) buf[i] = (i & 0xff) ^ 0x42;
+    writeU16LE(buf, bootStart & 0xffff, 0x3c28);
+    writeU16LE(buf, (bootStart >> 16) & 0xffff, 0x3c2a);
+    writeU16LE(buf, bootEnd & 0xffff, 0x3c2c);
+    writeU16LE(buf, (bootEnd >> 16) & 0xffff, 0x3c2e);
+    writeU16LE(buf, 0x1234, 0x3fe6); // boot seed
+
+    // Program: seed pointer at 0x6ED42 → 0x6FFB6 (in program region).
+    // hi-raw = 0x000E translates to 6, so we plant (0xFFB6, 0x000E).
+    writeU16LE(buf, 0xffb6, 0x6ed42);
+    writeU16LE(buf, 0x000e, 0x6ed44);
+    writeU16LE(buf, 0x9999, 0x6ffb6); // program seed value
+    // One region in the table: ECU 0x90000-0x9FFFF (translates to BIN
+    // 0x10000-0x1FFFF). count=1, then entry: start (0x0000, 0x0009), end (0xFFFF, 0x0009).
+    writeU16LE(buf, 1, 0x6fde2); // count
+    writeU16LE(buf, 0x0000, 0x6fde4); // start lo
+    writeU16LE(buf, 0x0009, 0x6fde6); // start hi (translate(9)=1 → 0x10000)
+    writeU16LE(buf, 0xffff, 0x6fde8); // end lo
+    writeU16LE(buf, 0x0009, 0x6fdea); // end hi
+    // Fill the program region (BIN 0x10000-0x1FFFF) with predictable bytes.
+    for (let i = 0x10000; i <= 0x1ffff; i++) buf[i] = (i ^ 0x55) & 0xff;
+
+    // Calibration: leave seed pointer EMPTY (0xFFFFFFFF) to exercise the
+    // fallback path. Calibration covers BIN 0x70000-0x70FFF.
+    writeU16LE(buf, 1, 0x73fe2); // count
+    writeU16LE(buf, 0x0000, 0x73fe4); // start lo
+    writeU16LE(buf, 0x0007, 0x73fe6); // start hi (translate(7)=7 → 0x70000)
+    writeU16LE(buf, 0x0fff, 0x73fe8); // end lo
+    writeU16LE(buf, 0x0007, 0x73fea); // end hi → 0x70FFF
+    // Fill predictable bytes first, then OVERWRITE the seed location.
+    for (let i = 0x70000; i <= 0x70fff; i++) buf[i] = (i ^ 0xaa) & 0xff;
+    // Plant the seed value at 0x7000C (the fallback addr).
+    writeU16LE(buf, 0x8765, 0x7000c);
+    // Plant add32 stored values (we don't compute them).
+    buf.writeUInt32LE(0xdeadbeef, 0x6fdae);
+    buf.writeUInt32LE(0xcafebabe, 0x72ffc);
+    // Install correct CRCs via the production code.
+    rewriteChecksums(buf, { variant: 'MS43' });
+    return buf;
+  }
+
+  it('reports 5 verified entries: 3 CRC-16s + 2 add32s', () => {
+    const buf = plantMs43Header();
     const report = verifyChecksums(buf);
     expect(report.variant).toBe('MS43');
     expect(report.results).toHaveLength(5);
-
-    const crc16s = report.results.filter((r) => r.kind === 'crc16');
-    expect(crc16s).toHaveLength(3);
-    for (const r of crc16s) {
-      expect(r.match).toBe(true);
-      expect(r.supported).toBe(true);
+    for (const r of report.results) {
+      expect(r.supported, `${r.name} supported`).toBe(true);
+      expect(r.match, `${r.name} match`).toBe(true);
     }
-
-    const add32s = report.results.filter((r) => r.kind === 'add32');
-    expect(add32s).toHaveLength(2);
-    for (const r of add32s) {
-      expect(r.supported).toBe(false);
-      expect(r.note).toContain('firmware-version-specific');
-    }
-
-    // allValid considers only supported checksums.
     expect(report.allValid).toBe(true);
   });
 
-  it('rewriteChecksums updates Boot/Program/Calibration but leaves add32 untouched', () => {
-    const buf = plantHeader('MS43');
-    // Plant a recognisable u32 in the add32 slot.
-    buf.writeUInt32LE(0xdeadbeef, 0x6fdae);
+  it('falls back to BIN[0x7000C] when the Calibration seed pointer is empty', () => {
+    const buf = plantMs43Header();
+    // Pointer at 0x6ED9A should still be FFFFFFFF (we never wrote it).
+    expect(buf.readUInt16LE(0x6ed9a)).toBe(0xffff);
+    expect(buf.readUInt16LE(0x6ed9c)).toBe(0xffff);
+    const report = verifyChecksums(buf);
+    const cal = report.results.find((r) => r.name === 'Calibration')!;
+    expect(cal.match).toBe(true);
+    expect(cal.seed).toBe(0x8765);
+  });
+
+  it('detects calibration mismatch when calibration data changes', () => {
+    const buf = plantMs43Header();
+    buf[0x70500] ^= 0xff;
+    const report = verifyChecksums(buf);
+    const cal = report.results.find((r) => r.name === 'Calibration')!;
+    expect(cal.match).toBe(false);
+  });
+
+  it('rewriteChecksums repairs CRC-16 mismatches', () => {
+    const buf = plantMs43Header();
+    buf[0x70500] ^= 0xff; // flip a calibration byte
     rewriteChecksums(buf);
-    // add32 stored value should still be 0xDEADBEEF — we don't rewrite it.
-    expect(buf.readUInt32LE(0x6fdae)).toBe(0xdeadbeef);
+    const report = verifyChecksums(buf);
+    expect(report.allValid).toBe(true);
+  });
+
+  it('rewriteChecksums also updates add32 (data inside its range changed)', () => {
+    const buf = plantMs43Header();
+    // Plant a known initial accumulator so we can compute the expected result.
+    buf.writeUInt32LE(0xa5a5a5a5, 0x6fdb8); // Calibration initial
+    // Plant Calibration add32 region 0: BIN 0x70004-0x70008 (2 u16 words).
+    // start=(0x0004, 0x0007), end=(0x0008, 0x0007)
+    writeU16LE(buf, 0x0004, 0x6fdce);
+    writeU16LE(buf, 0x0007, 0x6fdd0);
+    writeU16LE(buf, 0x0008, 0x6fdd2);
+    writeU16LE(buf, 0x0007, 0x6fdd4);
+    // Region 1: BIN 0x7000A-0x7000C (1 u16 word)
+    writeU16LE(buf, 0x000a, 0x6fdd6);
+    writeU16LE(buf, 0x0007, 0x6fdd8);
+    writeU16LE(buf, 0x000c, 0x6fdda);
+    writeU16LE(buf, 0x0007, 0x6fddc);
+    // Now change a byte inside the add32 range.
+    buf[0x70005] = 0x42;
+    rewriteChecksums(buf);
+    // Verify the resulting add32 matches what verifyChecksums sees.
+    const report = verifyChecksums(buf);
+    const calAdd = report.results.find((r) => r.name === 'Calibration (add)')!;
+    expect(calAdd.match).toBe(true);
   });
 });
 

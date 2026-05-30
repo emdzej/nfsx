@@ -1,7 +1,7 @@
 {
   "name": "@emdzej/nfsx-directmode",
   "version": "0.1.0",
-  "description": "Direct DS2 flashing for BMW MS42/MS43/GS20 ECUs via K-line, without going through the BMW IPO/SGBD path. Implements the same protocol surface as MS4x Flasher 1.6.0 — IDENT, SEED/KEY, erase, write, verify — at 9600 8E1.",
+  "description": "Direct DS2 flashing for BMW MS42/MS43/GS20 ECUs via K-line, without going through the BMW IPO/SGBD path. IDENT, SEED/KEY, erase, write, verify — at 9600 8E1.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
