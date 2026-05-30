@@ -65,7 +65,21 @@ export interface EcuProfile {
    * checksum trailer that's read-only. Defaults to `calibrationRegions`.
    */
   readCalibrationRegions?: ReadonlyArray<FlashRegion>;
-  /** Substrings the IDENT response should contain to match this variant. */
+  /**
+   * 6-character dispatch key for the MS4x Flasher detection flow.
+   * Obtained by: send DS2 cmd 0x0D → take bytes 57-59 of the response
+   * as a 3-byte memory address → send cmd 0x06 0x00 [addr] 0x08 → read
+   * 8 ASCII bytes → first 6 chars are the key. Verified against the
+   * decompiled `O::A()` (engine, addr 0x12) and `N::A()` (TCU, addr
+   * 0x32) dispatcher tables in MS4x Flasher 1.6.0.
+   */
+  identKey: string;
+  /**
+   * Legacy / fallback: substrings searched in the standard IDENT (cmd
+   * 0x00) response. Kept for diagnostic display but no longer used for
+   * dispatch — the proper 0x0D → 0x06 sequence is more reliable and
+   * matches MS4x Flasher's behaviour.
+   */
   identSignatures: ReadonlyArray<string>;
   /**
    * True iff the calibration-vs-full distinction is verified for this
@@ -119,9 +133,7 @@ const MS42_PROFILE: EcuProfile = {
     // READ: full 32 KB block 0x48000-0x4FFFF (includes trailer).
     { start: 0x48000, end: 0x4ffff, binOffset: 0x48000 },
   ],
-  // BMW IDENT response carries the ECU's Bosch HW ID as the first ASCII
-  // token (e.g. `1430844` for MS42 M52TU). `MS42`/`MS_42` are never on
-  // the wire — they're our internal labels.
+  identKey: '111011',
   identSignatures: ['1430844', '7503355'],
   calibrationVerified: true,
 };
@@ -168,9 +180,7 @@ const MS43_PROFILE: EcuProfile = {
     // READ: full 64 KB block including trailer.
     { start: 0x70000, end: 0x7ffff, binOffset: 0x70000 },
   ],
-  // MS43 Bosch HW IDs (M54). Verified on the wire: `7545150`. Others
-  // come from public docs (`1430866`, `7516126`, `7508552`) — add new
-  // IDs as they're observed.
+  identKey: '111430',
   identSignatures: ['1430866', '7516126', '7508552', '7545150'],
   calibrationVerified: true,
 };
@@ -205,8 +215,7 @@ const GS20_PROFILE: EcuProfile = {
     // partial-write covers ONLY ECU[0x90000..0x9FFFF]
     { start: 0x90000, end: 0x9ffff, binOffset: 0x10000 },
   ],
-  // GS20 (5HP19/24) Bosch HW IDs — placeholder list; refine when probed
-  // against a real TCU.
+  identKey: 'G2210_',
   identSignatures: ['1422778', '1422779'],
   calibrationVerified: true,
 };
@@ -248,6 +257,17 @@ export type RegionPurpose = 'read' | 'write';
  * write path — writing the bootloader or trailer bricks the ECU).
  * Falls back to the write table when no read table is defined.
  */
+/**
+ * Look up an ECU profile by its 6-character dispatch key, returned by
+ * the MS4x-Flasher-style identification sequence (cmd 0x0D → cmd 0x06).
+ */
+export function findByIdentKey(key: string): EcuProfile | null {
+  for (const p of ALL_PROFILES) {
+    if (p.identKey === key) return p;
+  }
+  return null;
+}
+
 export function pickRegions(
   profile: EcuProfile,
   mode: FlashMode,

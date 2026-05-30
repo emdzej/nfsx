@@ -106,6 +106,15 @@ export const DS2_STATUS_FRAMING_ERR = 0xc0;
 /** Command bytes per `docs/raw-ds2-flashing.md` §2-§3. */
 export const DS2_CMD_IDENT = 0x00;
 export const DS2_CMD_MEMORY_READ = 0x06;
+/**
+ * `0x0d` — hardware-reference / extended-identification query. Response
+ * is ≥60 bytes. Bytes 57-59 of the response frame are a 3-byte memory
+ * address pointer to an 8-byte ASCII variant ID (read via cmd 0x06).
+ * The 8-byte ID's first 6 chars are the protocol-class dispatch key
+ * (e.g. "111011" = MS42, "111430" = MS43). Sequence verified against
+ * MS4x Flasher's decompiled detection routine.
+ */
+export const DS2_CMD_HW_REF = 0x0d;
 export const DS2_CMD_SEED_KEY = 0x90;
 /** Programming commands: the second byte selects the sub-operation. */
 export const DS2_CMD_PROG_PREFIX = 0x07;

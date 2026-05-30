@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { Buffer } from 'node:buffer';
 import {
-  identifyEcu,
+  findByIdentKey,
   getProfile,
   pickRegions,
   totalBytesForMode,
@@ -9,24 +8,20 @@ import {
 } from './ecu-tables.js';
 
 describe('ECU tables', () => {
-  it('identifies MS42 from an IDENT payload mentioning "MS42"', () => {
-    const ident = Buffer.from('ECU MS42 SW v1.04 BMW 1430844', 'ascii');
-    const p = identifyEcu(ident);
-    expect(p?.variant).toBe('MS42');
+  it('looks up MS42 by its 6-char dispatch key', () => {
+    expect(findByIdentKey('111011')?.variant).toBe('MS42');
   });
 
-  it('identifies MS43', () => {
-    const ident = Buffer.from('MS43 7545150', 'ascii');
-    expect(identifyEcu(ident)?.variant).toBe('MS43');
+  it('looks up MS43 by its 6-char dispatch key', () => {
+    expect(findByIdentKey('111430')?.variant).toBe('MS43');
   });
 
-  it('identifies GS20', () => {
-    const ident = Buffer.from('GS20 7544721', 'ascii');
-    expect(identifyEcu(ident)?.variant).toBe('GS20');
+  it('looks up GS20 by its 6-char dispatch key', () => {
+    expect(findByIdentKey('G2210_')?.variant).toBe('GS20');
   });
 
-  it('returns null on unknown', () => {
-    expect(identifyEcu(Buffer.from('something else'))).toBeNull();
+  it('returns null on an unknown dispatch key', () => {
+    expect(findByIdentKey('XXXXXX')).toBeNull();
   });
 
   it('full mode covers more bytes than calibration on MS42', () => {

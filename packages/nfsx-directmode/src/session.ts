@@ -21,6 +21,7 @@ import type { DirectModeTransport } from "./transport.js";
 import {
   decodeFrame,
   DS2_CMD_IDENT,
+  DS2_CMD_HW_REF,
   DS2_CMD_MEMORY_READ,
   DS2_CMD_PROG_PREFIX,
   DS2_PROG_WRITE,
@@ -36,8 +37,8 @@ import {
   deriveKey,
 } from './seed-key.js';
 import {
+  findByIdentKey,
   getProfile,
-  identifyEcu,
   pickRegions,
   totalBytesForMode,
   type EcuProfile,
@@ -159,11 +160,64 @@ async function sendAndAwaitOk(
 export async function runIdent(
   iface: DirectModeTransport,
   addr: number,
-): Promise<{ identPayload: Buffer; profile: EcuProfile | null }> {
+): Promise<{ identPayload: Buffer }> {
   const resp = await sendAndAwaitOk(iface, addr, Buffer.from([DS2_CMD_IDENT]));
   const identPayload = resp.subarray(1); // strip status byte
-  const profile = identifyEcu(identPayload);
-  return { identPayload, profile };
+  return { identPayload };
+}
+
+/**
+ * MS4x-Flasher-style ECU identification: send cmd 0x0D (hardware-
+ * reference query), extract the 3-byte memory address from bytes 57-59
+ * of the response frame, then read 8 ASCII bytes from that address via
+ * cmd 0x06. First 6 chars of those bytes are the protocol-class
+ * dispatch key. Lookup in the per-profile `identKey` table to resolve
+ * the variant.
+ *
+ * Verified against decompiled `B::A(F)` in MS4x Flasher 1.6.0 — same
+ * sequence used by the engine factory (`O::A`, addr 0x12) and TCU
+ * factory (`N::A`, addr 0x32) to pick between MS42/MS43/GS20 etc.
+ */
+export async function runDispatchIdent(
+  iface: DirectModeTransport,
+  addr: number,
+): Promise<{ identKey: string; idAscii: string; profile: EcuProfile | null }> {
+  // Step 1: cmd 0x0D — expect at least 60-byte response frame.
+  const ext = await sendAndAwaitOk(iface, addr, Buffer.from([DS2_CMD_HW_REF]));
+  // `ext` is frame.data = [STATUS, D0..Dn]. MS4x's `span2[57..59]` refers
+  // to absolute frame offsets which map to ext[55..57] (frame offset N
+  // = ext[N - 2] because frame.data starts at frame offset 2 / STATUS).
+  if (ext.length < 58) {
+    throw new DirectModeError(
+      `hardware-reference response too short: ${ext.length + 2} bytes (need ≥60)`,
+      'precheck',
+    );
+  }
+  const addrHi = ext[55];
+  const addrMid = ext[56];
+  const addrLo = ext[57];
+
+  // Inter-command pacing (MS4x Flasher uses 100 ms).
+  await new Promise((r) => setTimeout(r, 100));
+
+  // Step 2: memory read at the resolved address — 4-byte address with
+  // leading 0x00 segment (verified against MS42 earlier), 8 bytes.
+  const idResp = await sendAndAwaitOk(
+    iface,
+    addr,
+    Buffer.from([DS2_CMD_MEMORY_READ, 0x00, addrHi, addrMid, addrLo, 8]),
+  );
+  // idResp = [STATUS, 8 ASCII bytes]. Expect 9 bytes total.
+  if (idResp.length < 9) {
+    throw new DirectModeError(
+      `id-read response too short: ${idResp.length} bytes (need ≥9)`,
+      'precheck',
+    );
+  }
+  const idAscii = idResp.subarray(1, 9).toString('ascii');
+  const identKey = idAscii.slice(0, 6);
+  const profile = findByIdentKey(identKey);
+  return { identKey, idAscii, profile };
 }
 
 /**
@@ -396,33 +450,44 @@ async function ident(
 
   let profile: EcuProfile | null = null;
   let identPayload: Buffer | null = null;
+  let detectedKey: string | null = null;
   let lastErr: Error | null = null;
+
   for (const addr of candidates) {
     try {
-      const { profile: p, identPayload: ip } = await runIdent(cfg.iface, addr);
+      // Standard IDENT (cmd 0x00) for the human-readable identification
+      // string. Always issued — used downstream for `decodeIdent`.
+      const { identPayload: ip } = await runIdent(cfg.iface, addr);
+      identPayload = ip;
+
       if (cfg.forceVariant) {
-        // User explicitly told us the variant — use the matching profile
-        // unconditionally. The HW-number signature list is best-effort
-        // (we only know a handful of IDs); a forced variant means the
-        // caller knows what they have and doesn't want us second-guessing.
+        // User pinned the variant — accept whatever responded at this
+        // address. Skip the dispatch-key probe entirely.
         profile = getProfile(cfg.forceVariant);
-        identPayload = ip;
         break;
       }
-      if (p) {
-        profile = p;
-        identPayload = ip;
+
+      // MS4x-Flasher-style dispatch: cmd 0x0D → 3-byte addr at bytes
+      // 57-59 → cmd 0x06 → 8-byte ASCII → first 6 chars as the key.
+      onProgress?.({ stage: 'precheck', message: 'dispatch-ID' });
+      const dispatch = await runDispatchIdent(cfg.iface, addr);
+      detectedKey = dispatch.identKey;
+      if (dispatch.profile) {
+        profile = dispatch.profile;
         break;
       }
     } catch (err) {
       lastErr = err as Error;
     }
   }
+
   if (!profile || !identPayload) {
+    const keyHint = detectedKey ? ` (got dispatch-key "${detectedKey}")` : '';
     throw new DirectModeError(
       cfg.forceVariant
         ? `IDENT against forced variant ${cfg.forceVariant} failed: ${lastErr?.message ?? 'no response'}`
-        : `IDENT did not match any known ECU profile (last error: ${lastErr?.message ?? 'no response'})`,
+        : `IDENT did not match any known ECU profile${keyHint}` +
+          (lastErr ? ` (last error: ${lastErr.message})` : ''),
       'precheck',
     );
   }
