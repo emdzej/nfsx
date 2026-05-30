@@ -44,10 +44,27 @@ export interface EcuProfile {
   readBlockSize: number;
   /** Expected total BIN size (the source file the host loads). */
   binSize: number;
-  /** FULL-flash region table — every region the DS2 flow updates. */
+  /**
+   * FULL-flash WRITE region table — what the host erases + programs.
+   * Mirrors MS4x Flasher's per-variant L::A() path. **DO NOT** include
+   * the bootloader or reserved flash trailer bytes here; doing so will
+   * brick the ECU. Reads use {@link readFullRegions} (broader).
+   */
   fullRegions: ReadonlyArray<FlashRegion>;
-  /** CALIBRATION-only flash region table — subset of fullRegions. */
+  /** CALIBRATION-only WRITE region table. Subset of `fullRegions`. */
   calibrationRegions: ReadonlyArray<FlashRegion>;
+  /**
+   * FULL-flash READ region table — broader than `fullRegions`. Includes
+   * the bootloader (read-only) and the last bytes of each programmable
+   * region that the WRITE path correctly skips. Mirrors MS4x Flasher's
+   * dump output, byte-for-byte. Defaults to `fullRegions` when omitted.
+   */
+  readFullRegions?: ReadonlyArray<FlashRegion>;
+  /**
+   * CALIBRATION READ region — includes the full block including the
+   * checksum trailer that's read-only. Defaults to `calibrationRegions`.
+   */
+  readCalibrationRegions?: ReadonlyArray<FlashRegion>;
   /** Substrings the IDENT response should contain to match this variant. */
   identSignatures: ReadonlyArray<string>;
   /**
@@ -62,16 +79,19 @@ export interface EcuProfile {
 /**
  * MS42 — Siemens, BMW M52TU, Infineon C167CR_SR + AMD 29F400BB.
  *
- * FULL: two flash regions matching MS4x Flasher's 512 KB layout.
+ * WRITE regions (mirrors MS4x Flasher's `t::A()` — never write the
+ * bootloader, and stop 16-44 bytes short of each erase block boundary
+ * to spare reserved flash cells):
+ *   0x11000-0x3FFFF — lower program (192 KB)
+ *   0x5002C-0x7FFFF — upper program (~192 KB; skips 0x2C-byte header)
+ *   0x48000-0x4FFEF — calibration (32 KB - 16; skips checksum trailer)
  *
- *   0x00000-0x0BFFF — internal C167 flash (boot block + lower headers)
- *   0x0C000-0x10FFF — SKIPPED: C167 SFR / internal-RAM window. Reading
- *                     via DS2 here returns live device state (registers,
- *                     pending interrupt latches, RAM contents) — NOT
- *                     flash. The reference dump has 0xFF padding here.
- *   0x11000-0x7FFFF — external AMD 29F400 flash (program / data / upper).
- *
- * CALIBRATION: only the 32 KB data block at 0x48000-0x4FFFF.
+ * READ regions (mirrors MS4x Flasher's `t::A()` dump output, broader
+ * than the writeable range):
+ *   0x00000-0x0BFFF — C167 internal flash (bootloader, read-only)
+ *   0x11000-0x3FFFF — lower program
+ *   0x48000-0x4FFFF — calibration (includes the 16-byte trailer)
+ *   0x50000-0x7FFFF — upper program (includes the 0x2C-byte header)
  */
 const MS42_PROFILE: EcuProfile = {
   variant: 'MS42',
@@ -80,16 +100,23 @@ const MS42_PROFILE: EcuProfile = {
   readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
-    { start: 0x00000, end: 0x0bfff, binOffset: 0x00000 }, // C167 internal flash (48 KB)
-    { start: 0x11000, end: 0x7ffff, binOffset: 0x11000 }, // external flash (~444 KB)
+    { start: 0x11000, end: 0x3ffff, binOffset: 0x11000 }, // lower program
+    { start: 0x5002c, end: 0x7ffff, binOffset: 0x5002c }, // upper program
+    { start: 0x48000, end: 0x4ffef, binOffset: 0x48000 }, // calibration
+  ],
+  readFullRegions: [
+    { start: 0x00000, end: 0x0bfff, binOffset: 0x00000 }, // C167 internal flash
+    { start: 0x11000, end: 0x3ffff, binOffset: 0x11000 },
+    { start: 0x48000, end: 0x4ffff, binOffset: 0x48000 }, // includes trailer
+    { start: 0x50000, end: 0x7ffff, binOffset: 0x50000 }, // includes header
   ],
   calibrationRegions: [
-    // Partial-write covers only the 32 KB data block at ECU
-    // 0x48000-0x4FFFF. This is the region containing the Calibration
-    // CRC at 0x4FEE0 (per ms4x.net wiki); the Boot CRC (at 0x3C24, in
-    // the lower program region) and Program CRC (at 0x50306, in the
-    // upper program region) don't change under calibration edits and
-    // don't need updating.
+    // WRITE: 0x48000-0x4FFEF (32 KB - 16). Last 16 bytes are the
+    // Calibration CRC trailer (0x4FFF0-0x4FFFF) — read-only.
+    { start: 0x48000, end: 0x4ffef, binOffset: 0x48000 },
+  ],
+  readCalibrationRegions: [
+    // READ: full 32 KB block 0x48000-0x4FFFF (includes trailer).
     { start: 0x48000, end: 0x4ffff, binOffset: 0x48000 },
   ],
   // BMW IDENT response carries the ECU's Bosch HW ID as the first ASCII
@@ -120,15 +147,25 @@ const MS43_PROFILE: EcuProfile = {
   readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
-    { start: 0x00000, end: 0x0bfff, binOffset: 0x00000 },
-    { start: 0x90000, end: 0xeffff, binOffset: 0x10000 },
-    { start: 0x70000, end: 0x7ffff, binOffset: 0x70000 },
+    // WRITE: skips bootloader; stops 16-17 bytes short of each region
+    // boundary to spare the read-only checksum trailers. Mirrors
+    // MS4x Flasher's `T::A()` write path.
+    { start: 0x90000, end: 0xeffef, binOffset: 0x10000 }, // program, 393200
+    { start: 0x70000, end: 0x7ffee, binOffset: 0x70000 }, // calibration, 65519
+  ],
+  readFullRegions: [
+    // READ: full ranges including bootloader + checksum trailers.
+    { start: 0x00000, end: 0x0bfff, binOffset: 0x00000 }, // bootloader
+    { start: 0x90000, end: 0xeffff, binOffset: 0x10000 }, // full 393216
+    { start: 0x70000, end: 0x7ffff, binOffset: 0x70000 }, // full 65536
   ],
   calibrationRegions: [
-    // ECU 0x70000-0x7FFFF contains Calibration CRC (0x73FE0), Calibration
-    // add32 (0x72FFC), and the 4-byte calibration trailer at 0x7FFF0
-    // (per ms4x.net wiki). Boot CRC (0x3C24) and Program CRC (0x6FDE0)
-    // live in the program region and don't change under calibration edits.
+    // WRITE: 0x70000-0x7FFEE (65519 bytes). Last 17 bytes are the
+    // calibration trailer (0x7FFEF-0x7FFFF), read-only.
+    { start: 0x70000, end: 0x7ffee, binOffset: 0x70000 },
+  ],
+  readCalibrationRegions: [
+    // READ: full 64 KB block including trailer.
     { start: 0x70000, end: 0x7ffff, binOffset: 0x70000 },
   ],
   // MS43 Bosch HW IDs (M54). Verified on the wire: `7545150`. Others
@@ -202,16 +239,39 @@ export function getProfile(variant: EcuVariant): EcuProfile {
   return p;
 }
 
-export function pickRegions(profile: EcuProfile, mode: FlashMode): ReadonlyArray<FlashRegion> {
+export type RegionPurpose = 'read' | 'write';
+
+/**
+ * Pick the right region table for the requested mode + purpose. Read
+ * tables include bootloader + checksum trailers (mirrors MS4x Flasher's
+ * dump output); write tables exclude them (mirrors MS4x Flasher's safe
+ * write path — writing the bootloader or trailer bricks the ECU).
+ * Falls back to the write table when no read table is defined.
+ */
+export function pickRegions(
+  profile: EcuProfile,
+  mode: FlashMode,
+  purpose: RegionPurpose = 'write',
+): ReadonlyArray<FlashRegion> {
+  if (purpose === 'read') {
+    if (mode === 'full') {
+      return profile.readFullRegions ?? profile.fullRegions;
+    }
+    return profile.readCalibrationRegions ?? profile.calibrationRegions;
+  }
   return mode === 'full' ? profile.fullRegions : profile.calibrationRegions;
 }
 
 /**
- * Total bytes the host will push to the wire for a given mode, ignoring
- * 0xFF skipping. Useful for progress accounting.
+ * Total bytes the host will push to the wire for a given mode + purpose,
+ * ignoring 0xFF skipping. Useful for progress accounting.
  */
-export function totalBytesForMode(profile: EcuProfile, mode: FlashMode): number {
+export function totalBytesForMode(
+  profile: EcuProfile,
+  mode: FlashMode,
+  purpose: RegionPurpose = 'write',
+): number {
   let n = 0;
-  for (const r of pickRegions(profile, mode)) n += r.end - r.start + 1;
+  for (const r of pickRegions(profile, mode, purpose)) n += r.end - r.start + 1;
   return n;
 }

@@ -492,8 +492,8 @@ export async function writeFlash(
   onProgress?.({ stage: 'auth', message: 'SEED/KEY' });
   await runAuth(iface, profile, opts.nonce);
 
-  const regions = pickRegions(profile, opts.mode);
-  const total = totalBytesForMode(profile, opts.mode);
+  const regions = pickRegions(profile, opts.mode, 'write');
+  const total = totalBytesForMode(profile, opts.mode, 'write');
 
   onProgress?.({ stage: 'erase', message: `erasing ${regions.length} region(s)` });
   for (const r of regions) {
@@ -582,8 +582,8 @@ export async function readFlash(
     onProgress?.({ stage: 'precheck', message: `switching baud to ${targetBaud}` });
     await switchBaud(iface, profile, targetBaud);
   }
-  const regions = pickRegions(profile, opts.mode);
-  const total = totalBytesForMode(profile, opts.mode);
+  const regions = pickRegions(profile, opts.mode, 'read');
+  const total = totalBytesForMode(profile, opts.mode, 'read');
   // For FULL mode we lay regions out in a binSize buffer (preserves
   // 0xFF gaps between regions — matches MS4x Flasher's 512 KB layout).
   // For CALIBRATION we emit a tight buffer of just the region data
