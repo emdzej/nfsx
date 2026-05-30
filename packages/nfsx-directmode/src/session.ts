@@ -8,11 +8,17 @@
  *   ERASE      — one §3.3 telegram per region
  *   WRITE      — chunked §3.4 telegrams, 0xFF-skip optimisation
  *   VERIFY     — readback compare, or §3.5 verify command
- *   DISCONNECT — drop the session, close serial
+ *   DISCONNECT — caller closes the DirectModeTransport
+ *
+ * The interface (an `DirectModeTransport` from `@emdzej/ediabasx-interfaces`)
+ * is supplied by the caller already opened and configured with DS2 comm
+ * parameters via `setCommParameter([0x0006, baud, ...])`. The interface
+ * handles the K-line wire layer (parity, fast-init, DTR direction
+ * control, adapter echo, FTDI latency, XOR checksumming).
  */
 import { Buffer } from 'node:buffer';
+import type { DirectModeTransport } from "./transport.js";
 import {
-  encodeFrame,
   decodeFrame,
   DS2_CMD_IDENT,
   DS2_CMD_MEMORY_READ,
@@ -22,17 +28,15 @@ import {
   DS2_STATUS_OK,
   DS2_STATUS_PENDING,
 } from './ds2.js';
-import {
-  NodeDirectModeTransport,
-  type DirectModeTransport,
-  type DirectModeTransportConfig,
-} from './transport.js';
+import { decodeIdent, type IdentFields } from './identity.js';
+import { buildRequestPayload } from './transport.js';
 import {
   buildSeedRequestPayload,
   buildKeySubmitPayload,
   deriveKey,
 } from './seed-key.js';
 import {
+  getProfile,
   identifyEcu,
   pickRegions,
   totalBytesForMode,
@@ -41,11 +45,15 @@ import {
   type FlashRegion,
 } from './ecu-tables.js';
 
-export interface DirectModeSessionConfig extends DirectModeTransportConfig {
+export interface DirectModeSessionConfig {
+  /**
+   * The pre-opened, DS2-configured DirectModeTransport. The caller is
+   * responsible for `open()` and `setCommParameter([0x0006, ...])`
+   * before any session function is called, and for `close()` after.
+   */
+  iface: DirectModeTransport;
   /** Force a specific ECU profile instead of relying on IDENT auto-detect. */
   forceVariant?: 'MS42' | 'MS43' | 'GS20';
-  /** Inter-byte delay during long writes (rarely needed; default 0). */
-  interByteDelayMs?: number;
 }
 
 export interface DirectModeProgress {
@@ -73,36 +81,48 @@ export class DirectModeError extends Error {
 // ── frame round-trip helper ─────────────────────────────────────────
 
 async function sendAndReceive(
-  transport: DirectModeTransport,
+  iface: DirectModeTransport,
   addr: number,
   payload: Buffer,
-  options: { responseTimeoutMs?: number; pollOnPending?: boolean } = {},
 ): Promise<Buffer> {
-  const wire = encodeFrame(addr, payload);
-  transport.flushInput();
-  await transport.writeWithEcho(wire);
-  // Read header: ADDR + LEN
-  const header = await transport.read(2, options.responseTimeoutMs ?? 5_000);
-  if (header[0] !== addr) {
-    throw new DirectModeError(
-      `unexpected ADDR in response: expected 0x${addr.toString(16)}, got 0x${header[0].toString(16)}`,
-      'frame',
-    );
+  const request = buildRequestPayload(addr, payload);
+  // Retry transient frame errors (timeout, echo mismatch, short tail).
+  // These appear roughly every ~1000 frames on a 9600-baud K-line and
+  // are not real failures — just bus noise / momentary inter-byte gaps.
+  // Mirrors what ediabasx's SerialInterface.transmitDs2WithRetry does
+  // for the high-level path.
+  const MAX_ATTEMPTS = 8;
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      // Let the bus quiet down between attempts. Echo-mismatch errors
+      // tend to recur for a few frames after a glitch, then clear.
+      await new Promise((r) => setTimeout(r, 30 * attempt));
+    }
+    try {
+      const full = await iface.transact(request);
+      if (full.length < 4) {
+        throw new Error(`response too short: ${full.length} bytes`);
+      }
+      if (full[0] !== addr) {
+        throw new Error(
+          `unexpected ADDR in response: expected 0x${addr.toString(16)}, got 0x${full[0].toString(16)}`,
+        );
+      }
+      const { frame } = decodeFrame(full);
+      return frame.data;
+    } catch (err) {
+      lastErr = err as Error;
+      // Don't retry on a clearly-fatal error pattern
+      if (/non-OK status/.test(lastErr.message)) break;
+    }
   }
-  const total = header[1];
-  if (total < 4) {
-    throw new DirectModeError(`response LEN=${total} is impossibly small`, 'frame');
-  }
-  const remaining = total - 2;
-  const rest = await transport.read(remaining, options.responseTimeoutMs ?? 5_000);
-  const full = Buffer.concat([header, rest]);
-  const { frame } = decodeFrame(full);
-  return frame.data;
+  throw new DirectModeError(lastErr?.message ?? 'frame error', 'frame');
 }
 
-/** Read response payload, retrying on the `0xA1` "pending" status until OK or timeout. */
+/** Read response payload, retrying on `0xA1` "pending" status until OK or timeout. */
 async function sendAndAwaitOk(
-  transport: DirectModeTransport,
+  iface: DirectModeTransport,
   addr: number,
   payload: Buffer,
   options: { totalTimeoutMs?: number; pollDelayMs?: number } = {},
@@ -111,7 +131,7 @@ async function sendAndAwaitOk(
   const pollDelay = options.pollDelayMs ?? 10;
   const deadline = Date.now() + totalTimeout;
   while (true) {
-    const resp = await sendAndReceive(transport, addr, payload, { responseTimeoutMs: 5_000 });
+    const resp = await sendAndReceive(iface, addr, payload);
     if (resp.length === 0) {
       throw new DirectModeError('empty response payload', 'frame');
     }
@@ -137,13 +157,50 @@ async function sendAndAwaitOk(
 // ── PRECHECK ────────────────────────────────────────────────────────
 
 export async function runIdent(
-  transport: DirectModeTransport,
+  iface: DirectModeTransport,
   addr: number,
 ): Promise<{ identPayload: Buffer; profile: EcuProfile | null }> {
-  const resp = await sendAndAwaitOk(transport, addr, Buffer.from([DS2_CMD_IDENT]));
+  const resp = await sendAndAwaitOk(iface, addr, Buffer.from([DS2_CMD_IDENT]));
   const identPayload = resp.subarray(1); // strip status byte
   const profile = identifyEcu(identPayload);
   return { identPayload, profile };
+}
+
+/**
+ * DS2 baud-switch command payloads (sent at the current baud; ECU acks
+ * with 0xA0, then both ends move to the new rate).
+ *
+ * Per `docs/raw-ds2-flashing.md` §1.3 — verified against a real MS42.
+ */
+const BAUD_SWITCH_PAYLOADS: Record<number, Buffer> = {
+  9600:   Buffer.from([0x91, 0x00, 0x25, 0x80, 0x01]),
+  19200:  Buffer.from([0x91, 0x00, 0x4b, 0x00, 0x01]),
+  38400:  Buffer.from([0x91, 0x00, 0x96, 0x00, 0x01]),
+  62500:  Buffer.from([0x91, 0x00, 0xf4, 0x24, 0x01]),
+  125000: Buffer.from([0x91, 0x01, 0xe8, 0x48, 0x01]),
+};
+
+/**
+ * Switch the K-line to a higher baud for the rest of the session.
+ * Sends the DS2 baud-switch command at the current baud, waits for the
+ * ECU's `0xA0` ack, then reconfigures the local UART.
+ */
+export async function switchBaud(
+  iface: DirectModeTransport,
+  profile: EcuProfile,
+  newBaud: number,
+): Promise<void> {
+  const payload = BAUD_SWITCH_PAYLOADS[newBaud];
+  if (!payload) {
+    throw new DirectModeError(
+      `unsupported baud ${newBaud} (valid: ${Object.keys(BAUD_SWITCH_PAYLOADS).join(', ')})`,
+      'baud-switch',
+    );
+  }
+  await sendAndAwaitOk(iface, profile.ds2Addr, payload);
+  // Give the ECU a moment to settle on the new rate before we follow.
+  await new Promise((r) => setTimeout(r, 50));
+  await iface.reconfigureBaud(newBaud);
 }
 
 // ── AUTH ────────────────────────────────────────────────────────────
@@ -151,15 +208,15 @@ export async function runIdent(
 const DEFAULT_NONCE = 7;
 
 async function runAuth(
-  transport: DirectModeTransport,
+  iface: DirectModeTransport,
   profile: EcuProfile,
   nonce: number = DEFAULT_NONCE,
 ): Promise<void> {
   const seedReq = buildSeedRequestPayload(nonce);
-  // Wrap in 0x07 prefix because SEED_KEY is a programming-mode command
-  // per docs §3.2 — `[ADDR] 07 90 42 4D 57 NONCE`.
+  // SEED_KEY is a programming-mode command per docs §3.2 — frame:
+  // `[ADDR] LEN 07 90 42 4D 57 NONCE [XOR]`.
   const seedRespPayload = await sendAndAwaitOk(
-    transport,
+    iface,
     profile.ds2Addr,
     Buffer.concat([Buffer.from([DS2_CMD_PROG_PREFIX]), seedReq]),
   );
@@ -168,7 +225,7 @@ async function runAuth(
   const key = deriveKey(seed, nonce);
   const keySubmit = buildKeySubmitPayload(key);
   const ack = await sendAndAwaitOk(
-    transport,
+    iface,
     profile.ds2Addr,
     Buffer.concat([Buffer.from([DS2_CMD_PROG_PREFIX]), keySubmit]),
   );
@@ -177,7 +234,7 @@ async function runAuth(
   }
 }
 
-// ── ERASE / WRITE ───────────────────────────────────────────────────
+// ── ERASE / WRITE / READ ────────────────────────────────────────────
 
 function buildEraseRequest(start: number, end: number): Buffer {
   // Per docs §3.3: payload = 07 06 A_HI A_MID A_LO E_HI E_MID E_LO 00
@@ -210,23 +267,29 @@ function buildWriteRequest(addr24: number, data: Buffer): Buffer {
   return Buffer.concat([head, data]);
 }
 
-function buildReadRequest(addr24: number, size: number): Buffer {
+function buildReadRequest(addr: number, size: number): Buffer {
+  // MS42 wants a 4-byte address with a leading 0x00 segment selector.
+  // 3-byte addressing only reaches the low 32 KB; high flash needs the
+  // explicit segment byte. Verified empirically against a real MS42 —
+  // `12 09 06 00 04 80 00 10` returns flash data, `12 08 06 04 80 00 10`
+  // returns status 0xB0.
   return Buffer.from([
     DS2_CMD_MEMORY_READ,
-    (addr24 >> 16) & 0xff,
-    (addr24 >> 8) & 0xff,
-    addr24 & 0xff,
+    (addr >> 24) & 0xff,
+    (addr >> 16) & 0xff,
+    (addr >> 8) & 0xff,
+    addr & 0xff,
     size,
   ]);
 }
 
 async function eraseRegion(
-  transport: DirectModeTransport,
+  iface: DirectModeTransport,
   profile: EcuProfile,
   region: FlashRegion,
 ): Promise<void> {
   await sendAndAwaitOk(
-    transport,
+    iface,
     profile.ds2Addr,
     buildEraseRequest(region.start, region.end),
     { totalTimeoutMs: 60_000 },
@@ -239,7 +302,7 @@ async function eraseRegion(
  * not transmitted (the erased flash already reads 0xFF).
  */
 async function writeRegion(
-  transport: DirectModeTransport,
+  iface: DirectModeTransport,
   profile: EcuProfile,
   region: FlashRegion,
   image: Buffer,
@@ -272,12 +335,9 @@ async function writeRegion(
     }
     const data = image.subarray(region.binOffset + pos, region.binOffset + pos + chunkSize);
     const ecuAddr = region.start + pos;
-    await sendAndAwaitOk(
-      transport,
-      profile.ds2Addr,
-      buildWriteRequest(ecuAddr, data),
-      { totalTimeoutMs: 30_000 },
-    );
+    await sendAndAwaitOk(iface, profile.ds2Addr, buildWriteRequest(ecuAddr, data), {
+      totalTimeoutMs: 30_000,
+    });
     bytesWritten += chunkSize;
     pos += chunkSize;
     onChunk?.(pos, length);
@@ -286,7 +346,7 @@ async function writeRegion(
 }
 
 async function readRegion(
-  transport: DirectModeTransport,
+  iface: DirectModeTransport,
   profile: EcuProfile,
   region: FlashRegion,
   onChunk?: (read: number, total: number) => void,
@@ -295,9 +355,9 @@ async function readRegion(
   const out = Buffer.alloc(length);
   let pos = 0;
   while (pos < length) {
-    const chunkSize = Math.min(profile.blockSize, length - pos);
+    const chunkSize = Math.min(profile.readBlockSize, length - pos);
     const resp = await sendAndAwaitOk(
-      transport,
+      iface,
       profile.ds2Addr,
       buildReadRequest(region.start + pos, chunkSize),
       { totalTimeoutMs: 10_000 },
@@ -320,40 +380,45 @@ async function readRegion(
 // ── public API ──────────────────────────────────────────────────────
 
 interface PreparedSession {
-  transport: DirectModeTransport;
+  iface: DirectModeTransport;
   profile: EcuProfile;
+  identPayload: Buffer;
 }
 
-async function openAndIdent(
+async function ident(
   cfg: DirectModeSessionConfig,
   onProgress?: DirectModeProgressFn,
 ): Promise<PreparedSession> {
-  const transport = new NodeDirectModeTransport(cfg);
-  await transport.open();
-
   onProgress?.({ stage: 'precheck', message: 'IDENT' });
-  // Try both common addresses if not forced.
   const candidates = cfg.forceVariant
     ? [cfg.forceVariant === 'GS20' ? 0x32 : 0x12]
     : [0x12, 0x32];
 
   let profile: EcuProfile | null = null;
+  let identPayload: Buffer | null = null;
   let lastErr: Error | null = null;
-  let identUsedAddr = 0;
   for (const addr of candidates) {
     try {
-      const { profile: p } = await runIdent(transport, addr);
-      identUsedAddr = addr;
+      const { profile: p, identPayload: ip } = await runIdent(cfg.iface, addr);
+      if (cfg.forceVariant) {
+        // User explicitly told us the variant — use the matching profile
+        // unconditionally. The HW-number signature list is best-effort
+        // (we only know a handful of IDs); a forced variant means the
+        // caller knows what they have and doesn't want us second-guessing.
+        profile = getProfile(cfg.forceVariant);
+        identPayload = ip;
+        break;
+      }
       if (p) {
         profile = p;
+        identPayload = ip;
         break;
       }
     } catch (err) {
       lastErr = err as Error;
     }
   }
-  if (!profile) {
-    await transport.close();
+  if (!profile || !identPayload) {
     throw new DirectModeError(
       cfg.forceVariant
         ? `IDENT against forced variant ${cfg.forceVariant} failed: ${lastErr?.message ?? 'no response'}`
@@ -361,33 +426,27 @@ async function openAndIdent(
       'precheck',
     );
   }
-  if (profile.ds2Addr !== identUsedAddr) {
-    onProgress?.({
-      stage: 'precheck',
-      message: `ECU answered on 0x${identUsedAddr.toString(16)} but profile says 0x${profile.ds2Addr.toString(16)}`,
-    });
-  }
   onProgress?.({
     stage: 'precheck',
     message: `identified as ${profile.variant}`,
   });
-  return { transport, profile };
+  return { iface: cfg.iface, profile, identPayload };
+}
+
+export interface DirectModeProbeResult {
+  variant: string;
+  ident: IdentFields;
 }
 
 export async function probe(
   cfg: DirectModeSessionConfig,
   onProgress?: DirectModeProgressFn,
-): Promise<{ variant: string; identAscii: string }> {
-  const { transport, profile } = await openAndIdent(cfg, onProgress);
-  try {
-    const { identPayload } = await runIdent(transport, profile.ds2Addr);
-    return {
-      variant: profile.variant,
-      identAscii: identPayload.toString('ascii').replace(/[^\x20-\x7e]/g, '.'),
-    };
-  } finally {
-    await transport.close();
-  }
+): Promise<DirectModeProbeResult> {
+  const { profile, identPayload } = await ident(cfg, onProgress);
+  return {
+    variant: profile.variant,
+    ident: decodeIdent(identPayload),
+  };
 }
 
 export interface DirectModeWriteOptions {
@@ -412,100 +471,104 @@ export async function writeFlash(
   opts: DirectModeWriteOptions,
   onProgress?: DirectModeProgressFn,
 ): Promise<DirectModeWriteResult> {
-  const { transport, profile } = await openAndIdent(cfg, onProgress);
-  try {
-    if (image.length !== profile.binSize) {
-      throw new DirectModeError(
-        `BIN size mismatch: ${image.length} bytes, ${profile.variant} expects ${profile.binSize}`,
-        'precheck',
-      );
-    }
+  const { iface, profile } = await ident(cfg, onProgress);
 
-    if (opts.mode === 'calibration' && !profile.calibrationVerified) {
-      onProgress?.({
-        stage: 'precheck',
-        message:
-          `WARNING: ${profile.variant} calibration-only mode is NOT separately defined — ` +
-          `this will rewrite the same regions as --mode full.`,
-      });
-    }
-
-    onProgress?.({ stage: 'auth', message: 'SEED/KEY' });
-    await runAuth(transport, profile, opts.nonce);
-
-    const regions = pickRegions(profile, opts.mode);
-    const total = totalBytesForMode(profile, opts.mode);
-
-    onProgress?.({ stage: 'erase', message: `erasing ${regions.length} region(s)` });
-    for (const r of regions) {
-      await eraseRegion(transport, profile, r);
-    }
-
-    onProgress?.({ stage: 'write', message: 'programming', fraction: 0 });
-    let totalWritten = 0;
-    let totalSkipped = 0;
-    for (const r of regions) {
-      const { bytesWritten, bytesSkipped } = await writeRegion(
-        transport,
-        profile,
-        r,
-        image,
-        (sent, regionLen) => {
-          onProgress?.({
-            stage: 'write',
-            message: `region 0x${r.start.toString(16)}-0x${r.end.toString(16)}: ${sent}/${regionLen}`,
-            fraction: (totalWritten + sent) / total,
-          });
-        },
-      );
-      totalWritten += bytesWritten;
-      totalSkipped += bytesSkipped;
-    }
-
-    let verified = false;
-    if (!opts.skipVerify) {
-      onProgress?.({ stage: 'verify', message: 'reading back', fraction: 0 });
-      verified = true;
-      let readSoFar = 0;
-      for (const r of regions) {
-        const back = await readRegion(transport, profile, r, (read, regionLen) => {
-          onProgress?.({
-            stage: 'verify',
-            message: `region 0x${r.start.toString(16)}: ${read}/${regionLen}`,
-            fraction: (readSoFar + read) / total,
-          });
-        });
-        const expected = image.subarray(r.binOffset, r.binOffset + (r.end - r.start + 1));
-        for (let i = 0; i < back.length; i++) {
-          if (back[i] !== expected[i]) {
-            verified = false;
-            throw new DirectModeError(
-              `verify mismatch at ECU 0x${(r.start + i).toString(16)}: wrote 0x${expected[i]
-                .toString(16)
-                .padStart(2, '0')}, read 0x${back[i].toString(16).padStart(2, '0')}`,
-              'verify',
-            );
-          }
-        }
-        readSoFar += back.length;
-      }
-    }
-
-    onProgress?.({ stage: 'done', message: 'complete' });
-    return {
-      variant: profile.variant,
-      mode: opts.mode,
-      bytesWritten: totalWritten,
-      bytesSkipped: totalSkipped,
-      verified,
-    };
-  } finally {
-    await transport.close();
+  if (image.length !== profile.binSize) {
+    throw new DirectModeError(
+      `BIN size mismatch: ${image.length} bytes, ${profile.variant} expects ${profile.binSize}`,
+      'precheck',
+    );
   }
+
+  if (opts.mode === 'calibration' && !profile.calibrationVerified) {
+    onProgress?.({
+      stage: 'precheck',
+      message:
+        `WARNING: ${profile.variant} calibration-only mode is NOT separately defined — ` +
+        `this will rewrite the same regions as --mode full.`,
+    });
+  }
+
+  onProgress?.({ stage: 'auth', message: 'SEED/KEY' });
+  await runAuth(iface, profile, opts.nonce);
+
+  const regions = pickRegions(profile, opts.mode);
+  const total = totalBytesForMode(profile, opts.mode);
+
+  onProgress?.({ stage: 'erase', message: `erasing ${regions.length} region(s)` });
+  for (const r of regions) {
+    await eraseRegion(iface, profile, r);
+  }
+
+  onProgress?.({ stage: 'write', message: 'programming', fraction: 0 });
+  let totalWritten = 0;
+  let totalSkipped = 0;
+  for (const r of regions) {
+    const { bytesWritten, bytesSkipped } = await writeRegion(
+      iface,
+      profile,
+      r,
+      image,
+      (sent, regionLen) => {
+        onProgress?.({
+          stage: 'write',
+          message: `region 0x${r.start.toString(16)}-0x${r.end.toString(16)}: ${sent}/${regionLen}`,
+          fraction: (totalWritten + sent) / total,
+        });
+      },
+    );
+    totalWritten += bytesWritten;
+    totalSkipped += bytesSkipped;
+  }
+
+  let verified = false;
+  if (!opts.skipVerify) {
+    onProgress?.({ stage: 'verify', message: 'reading back', fraction: 0 });
+    verified = true;
+    let readSoFar = 0;
+    for (const r of regions) {
+      const back = await readRegion(iface, profile, r, (read, regionLen) => {
+        onProgress?.({
+          stage: 'verify',
+          message: `region 0x${r.start.toString(16)}: ${read}/${regionLen}`,
+          fraction: (readSoFar + read) / total,
+        });
+      });
+      const expected = image.subarray(r.binOffset, r.binOffset + (r.end - r.start + 1));
+      for (let i = 0; i < back.length; i++) {
+        if (back[i] !== expected[i]) {
+          verified = false;
+          throw new DirectModeError(
+            `verify mismatch at ECU 0x${(r.start + i).toString(16)}: wrote 0x${expected[i]
+              .toString(16)
+              .padStart(2, '0')}, read 0x${back[i].toString(16).padStart(2, '0')}`,
+            'verify',
+          );
+        }
+      }
+      readSoFar += back.length;
+    }
+  }
+
+  onProgress?.({ stage: 'done', message: 'complete' });
+  return {
+    variant: profile.variant,
+    mode: opts.mode,
+    bytesWritten: totalWritten,
+    bytesSkipped: totalSkipped,
+    verified,
+  };
 }
 
 export interface DirectModeReadOptions {
   mode: FlashMode;
+  /**
+   * If set, switch the K-line to this baud after IDENT to speed up the
+   * dump. Must be one of: 9600, 19200, 38400, 62500, 125000.
+   * Defaults to 38400 — a ~4× speedup over 9600 and rock-solid on K-line
+   * with the FTDI cable. Pass `9600` to skip the switch.
+   */
+  readBaud?: number;
 }
 
 export async function readFlash(
@@ -513,29 +576,49 @@ export async function readFlash(
   opts: DirectModeReadOptions,
   onProgress?: DirectModeProgressFn,
 ): Promise<{ variant: string; image: Buffer }> {
-  const { transport, profile } = await openAndIdent(cfg, onProgress);
-  try {
-    const regions = pickRegions(profile, opts.mode);
-    const total = totalBytesForMode(profile, opts.mode);
-    // Allocate the full BIN-sized buffer pre-filled with 0xFF so untouched
-    // regions look like erased flash on the resulting image.
-    const out = Buffer.alloc(profile.binSize, 0xff);
-    let done = 0;
-    onProgress?.({ stage: 'read', message: 'reading', fraction: 0 });
-    for (const r of regions) {
-      const data = await readRegion(transport, profile, r, (read) => {
-        onProgress?.({
-          stage: 'read',
-          message: `region 0x${r.start.toString(16)}: ${read}/${r.end - r.start + 1}`,
-          fraction: (done + read) / total,
-        });
-      });
-      data.copy(out, r.binOffset);
-      done += data.length;
-    }
-    onProgress?.({ stage: 'done', message: 'complete' });
-    return { variant: profile.variant, image: out };
-  } finally {
-    await transport.close();
+  const { iface, profile } = await ident(cfg, onProgress);
+  const targetBaud = opts.readBaud ?? 38400;
+  if (targetBaud !== 9600) {
+    onProgress?.({ stage: 'precheck', message: `switching baud to ${targetBaud}` });
+    await switchBaud(iface, profile, targetBaud);
   }
+  const regions = pickRegions(profile, opts.mode);
+  const total = totalBytesForMode(profile, opts.mode);
+  // For FULL mode we lay regions out in a binSize buffer (preserves
+  // 0xFF gaps between regions — matches MS4x Flasher's 512 KB layout).
+  // For CALIBRATION we emit a tight buffer of just the region data
+  // (matches MS4x Flasher's 32 KB output for partial dumps).
+  const tight = opts.mode === 'calibration';
+  const out = tight ? Buffer.alloc(total, 0xff) : Buffer.alloc(profile.binSize, 0xff);
+  let done = 0;
+  let tightCursor = 0;
+  onProgress?.({ stage: 'read', message: 'reading', fraction: 0 });
+  for (const r of regions) {
+    const data = await readRegion(iface, profile, r, (read) => {
+      onProgress?.({
+        stage: 'read',
+        message: `region 0x${r.start.toString(16)}: ${read}/${r.end - r.start + 1}`,
+        fraction: (done + read) / total,
+      });
+    });
+    if (tight) {
+      data.copy(out, tightCursor);
+      tightCursor += data.length;
+    } else {
+      data.copy(out, r.binOffset);
+    }
+    done += data.length;
+  }
+  // Restore 9600 so the ECU is in a known state for the next session.
+  // Without this, the ECU stays at the elevated rate until power-cycle,
+  // and a follow-up IDENT at 9600 times out.
+  if (targetBaud !== 9600) {
+    try {
+      await switchBaud(iface, profile, 9600);
+    } catch {
+      /* best-effort: a power cycle resets it anyway */
+    }
+  }
+  onProgress?.({ stage: 'done', message: 'complete' });
+  return { variant: profile.variant, image: out };
 }

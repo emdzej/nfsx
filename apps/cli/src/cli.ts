@@ -309,14 +309,20 @@ const directmode = program
 directmode
   .command('probe')
   .description('IDENT + ECU type detection over K-line.')
-  .requiredOption('-d, --device <path>', 'serial port')
-  .option('--baud <rate>', 'baud (DS2 default 9600)', parseBaud, 9600)
+  .option('--ediabas-config <path>', 'EDIABAS-X config file (default: ~/.config/ediabasx/config.json)')
+  .option('--interface <name>', 'override `interface` from config')
+  .option('--serial-port <path>', 'override serial port from config')
+  .option('--serial-baud <rate>', 'override serial baud rate', parseBaud)
+  .option('--gateway <host:port>', 'shortcut: gateway interface')
   .option('--variant <name>', 'force ECU variant (MS42 | MS43 | GS20)', parseVariant)
   .option('--json', 'machine-readable output', false)
   .action(async (opts: DirectmodeProbeOpts) => {
     const code = await runDirectmodeProbe({
-      device: opts.device,
-      baud: opts.baud,
+      ediabasConfig: opts.ediabasConfig,
+      interface: opts.interface,
+      serialPort: opts.serialPort,
+      serialBaud: opts.serialBaud,
+      gateway: opts.gateway,
       forceVariant: opts.variant,
       json: opts.json,
     });
@@ -326,16 +332,22 @@ directmode
 directmode
   .command('read')
   .description('Dump flash regions to a file. Choose FULL (everything BMW writes) or CALIBRATION (data block only).')
-  .requiredOption('-d, --device <path>', 'serial port')
   .requiredOption('-o, --output <path>', 'destination .bin path')
   .requiredOption('-m, --mode <mode>', 'flash mode: full | calibration', parseFlashMode)
-  .option('--baud <rate>', 'baud (DS2 default 9600)', parseBaud, 9600)
+  .option('--ediabas-config <path>', 'EDIABAS-X config file (default: ~/.config/ediabasx/config.json)')
+  .option('--interface <name>', 'override `interface` from config')
+  .option('--serial-port <path>', 'override serial port from config')
+  .option('--serial-baud <rate>', 'override serial baud rate', parseBaud)
+  .option('--gateway <host:port>', 'shortcut: gateway interface')
   .option('--variant <name>', 'force ECU variant (MS42 | MS43 | GS20)', parseVariant)
   .option('--json', 'machine-readable output', false)
   .action(async (opts: DirectmodeReadOpts) => {
     const code = await runDirectmodeRead({
-      device: opts.device,
-      baud: opts.baud,
+      ediabasConfig: opts.ediabasConfig,
+      interface: opts.interface,
+      serialPort: opts.serialPort,
+      serialBaud: opts.serialBaud,
+      gateway: opts.gateway,
       forceVariant: opts.variant,
       output: opts.output,
       mode: opts.mode,
@@ -347,10 +359,13 @@ directmode
 directmode
   .command('write')
   .description('Flash a BIN to the ECU via DS2. Use --mode full or --mode calibration to pick the region table.')
-  .requiredOption('-d, --device <path>', 'serial port')
   .requiredOption('-i, --input <path>', 'source .bin path (must match expected size for the variant)')
   .requiredOption('-m, --mode <mode>', 'flash mode: full | calibration', parseFlashMode)
-  .option('--baud <rate>', 'baud (DS2 default 9600)', parseBaud, 9600)
+  .option('--ediabas-config <path>', 'EDIABAS-X config file (default: ~/.config/ediabasx/config.json)')
+  .option('--interface <name>', 'override `interface` from config')
+  .option('--serial-port <path>', 'override serial port from config')
+  .option('--serial-baud <rate>', 'override serial baud rate', parseBaud)
+  .option('--gateway <host:port>', 'shortcut: gateway interface')
   .option('--variant <name>', 'force ECU variant (MS42 | MS43 | GS20)', parseVariant)
   .option('--nonce <n>', 'SEED/KEY nonce (1..23, default 7)', (v) => Number.parseInt(v, 10), 7)
   .option('--skip-verify', 'skip post-write readback verification', false)
@@ -358,8 +373,11 @@ directmode
   .option('--json', 'machine-readable output', false)
   .action(async (opts: DirectmodeWriteOpts) => {
     const code = await runDirectmodeWrite({
-      device: opts.device,
-      baud: opts.baud,
+      ediabasConfig: opts.ediabasConfig,
+      interface: opts.interface,
+      serialPort: opts.serialPort,
+      serialBaud: opts.serialBaud,
+      gateway: opts.gateway,
       forceVariant: opts.variant,
       input: opts.input,
       mode: opts.mode,
@@ -593,8 +611,11 @@ interface BootmodeWriteOpts extends BootmodeProbeOpts {
 }
 
 interface DirectmodeProbeOpts {
-  device: string;
-  baud: number;
+  ediabasConfig?: string;
+  interface?: string;
+  serialPort?: string;
+  serialBaud?: number;
+  gateway?: string;
   variant?: 'MS42' | 'MS43' | 'GS20';
   json: boolean;
 }

@@ -34,8 +34,14 @@ export interface EcuProfile {
   variant: EcuVariant;
   /** 8-bit diagnostic address on the K-line. */
   ds2Addr: number;
-  /** Block size used in write/read telegrams. */
+  /** Block size for programming-mode writes (after SEED/KEY + erase). */
   blockSize: number;
+  /**
+   * Block size for diagnostic-session memory reads (cmd 0x06).
+   * Smaller than `blockSize` — the ECU enforces a lower cap on raw reads
+   * than on programming-mode writes. Verified against MS42 at 123 bytes.
+   */
+  readBlockSize: number;
   /** Expected total BIN size (the source file the host loads). */
   binSize: number;
   /** FULL-flash region table — every region the DS2 flow updates. */
@@ -56,70 +62,79 @@ export interface EcuProfile {
 /**
  * MS42 — Siemens, BMW M52TU, Infineon C167CR_SR + AMD 29F400BB.
  *
- * FULL: three regions, 1:1 BIN/ECU mapping, covering 0x11000-0x7FFFF
- * with gaps for boot and metadata.
- * CALIBRATION: writes only the 32 KB data block at 0x48000-0x4FFEF.
+ * FULL: two flash regions matching MS4x Flasher's 512 KB layout.
+ *
+ *   0x00000-0x0BFFF — internal C167 flash (boot block + lower headers)
+ *   0x0C000-0x10FFF — SKIPPED: C167 SFR / internal-RAM window. Reading
+ *                     via DS2 here returns live device state (registers,
+ *                     pending interrupt latches, RAM contents) — NOT
+ *                     flash. The reference dump has 0xFF padding here.
+ *   0x11000-0x7FFFF — external AMD 29F400 flash (program / data / upper).
+ *
+ * CALIBRATION: only the 32 KB data block at 0x48000-0x4FFFF.
  */
 const MS42_PROFILE: EcuProfile = {
   variant: 'MS42',
   ds2Addr: 0x12,
   blockSize: 246,
+  readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
-    { start: 0x11000, end: 0x3ffff, binOffset: 0x11000 }, // lower program (~188 KB)
-    { start: 0x48000, end: 0x4ffef, binOffset: 0x48000 }, // data / calibration (32 KB)
-    { start: 0x5002c, end: 0x7ffff, binOffset: 0x5002c }, // upper program (~192 KB)
+    { start: 0x00000, end: 0x0bfff, binOffset: 0x00000 }, // C167 internal flash (48 KB)
+    { start: 0x11000, end: 0x7ffff, binOffset: 0x11000 }, // external flash (~444 KB)
   ],
   calibrationRegions: [
     // Partial-write covers only the 32 KB data block at ECU
-    // 0x48000-0x4FFEF. This is the region containing the Calibration
+    // 0x48000-0x4FFFF. This is the region containing the Calibration
     // CRC at 0x4FEE0 (per ms4x.net wiki); the Boot CRC (at 0x3C24, in
     // the lower program region) and Program CRC (at 0x50306, in the
     // upper program region) don't change under calibration edits and
     // don't need updating.
-    { start: 0x48000, end: 0x4ffef, binOffset: 0x48000 },
+    { start: 0x48000, end: 0x4ffff, binOffset: 0x48000 },
   ],
-  identSignatures: ['MS42', 'MS_42'],
+  // BMW IDENT response carries the ECU's Bosch HW ID as the first ASCII
+  // token (e.g. `1430844` for MS42 M52TU). `MS42`/`MS_42` are never on
+  // the wire — they're our internal labels.
+  identSignatures: ['1430844', '7503355'],
   calibrationVerified: true,
 };
 
 /**
  * MS43 — Siemens, BMW M54, Infineon C167CS-32F + AMD AM29F400.
  *
- * FULL: two regions. Program at ECU 0x90000+0x5FFF0 sourced from
- * BIN 0x10000+0x5FFF0 with a +0x80000 ECU shift; data at ECU
- * 0x70000+0xFFEF sourced from BIN 0x70000+0xFFEF direct.
+ * FULL: three regions matching MS4x Flasher's 512 KB layout.
+ *
+ *   ECU 0x00000-0x0BFFF → BIN 0x00000  C167 internal flash (48 KB)
+ *   skipped 0x0C000-0x0FFFF              C167 SFR / RAM window
+ *   ECU 0x90000-0xEFFFF → BIN 0x10000  external program (384 KB, with
+ *                                       MS43's high-byte translation
+ *                                       0x9 → 0x1 applied on read)
+ *   ECU 0x70000-0x7FFFF → BIN 0x70000  external calibration (64 KB)
+ *
+ * CALIBRATION: only the 64 KB block at ECU 0x70000-0x7FFFF.
  */
 const MS43_PROFILE: EcuProfile = {
   variant: 'MS43',
   ds2Addr: 0x12,
   blockSize: 246,
+  readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
-    {
-      start: 0x90000,
-      end: 0x90000 + 0x5fff0 - 1,
-      binOffset: 0x10000,
-    },
-    {
-      start: 0x70000,
-      end: 0x70000 + 0xffef - 1,
-      binOffset: 0x70000,
-    },
+    { start: 0x00000, end: 0x0bfff, binOffset: 0x00000 },
+    { start: 0x90000, end: 0xeffff, binOffset: 0x10000 },
+    { start: 0x70000, end: 0x7ffff, binOffset: 0x70000 },
   ],
   calibrationRegions: [
-    // Partial-write covers ONLY the 64 KB data block at ECU
-    // 0x70000-0x7FFEE. Contains MS43's Calibration CRC at 0x73FE0 and
-    // Calibration add32 at 0x72FFC (per ms4x.net wiki). The Program
-    // CRC (0x6FDE0) and Program add32 (0x6FDAE) live in the other
-    // region; they don't change under calibration edits.
-    {
-      start: 0x70000,
-      end: 0x70000 + 0xffef - 1,
-      binOffset: 0x70000,
-    },
+    // ECU 0x70000-0x7FFFF contains Calibration CRC (0x73FE0), Calibration
+    // add32 (0x72FFC), and the 4-byte calibration trailer at 0x7FFF0
+    // (per ms4x.net wiki). Boot CRC (0x3C24) and Program CRC (0x6FDE0)
+    // live in the program region and don't change under calibration edits.
+    { start: 0x70000, end: 0x7ffff, binOffset: 0x70000 },
   ],
-  identSignatures: ['MS43', 'MS_43'],
+  // MS43 Bosch HW IDs (M54). Verified on the wire: `7545150`. Others
+  // come from public docs (`1430866`, `7516126`, `7508552`) — add new
+  // IDs as they're observed.
+  identSignatures: ['1430866', '7516126', '7508552', '7545150'],
   calibrationVerified: true,
 };
 
@@ -141,6 +156,7 @@ const GS20_PROFILE: EcuProfile = {
   variant: 'GS20',
   ds2Addr: 0x32,
   blockSize: 246,
+  readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
     // erase 0xA0000, write ECU[0xA0000..0xDFFFF] from BIN[0x20000..0x5FFFF]
@@ -152,7 +168,9 @@ const GS20_PROFILE: EcuProfile = {
     // partial-write covers ONLY ECU[0x90000..0x9FFFF]
     { start: 0x90000, end: 0x9ffff, binOffset: 0x10000 },
   ],
-  identSignatures: ['GS20', 'GS_20'],
+  // GS20 (5HP19/24) Bosch HW IDs — placeholder list; refine when probed
+  // against a real TCU.
+  identSignatures: ['1422778', '1422779'],
   calibrationVerified: true,
 };
 

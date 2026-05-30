@@ -1,207 +1,257 @@
 /**
- * Serial transport for direct DS2 flashing.
+ * Direct-DS2 transport — drives the K-line wire directly via ediabasx's
+ * `NodeSerialTransport` + `Ds2Session`, with an explicit `sendFastInit`
+ * wake before the first DS2 transaction.
  *
- * DS2 line settings: 9600 8E1 (even parity, 1 stop), no flow control.
- * Half-duplex K-line: every TX byte echoes back. The transport consumes
- * the echo by reading-back-and-comparing after every write — any
- * mismatch aborts as a wire-level error.
+ * Why not use `SerialInterface` instead? Its high-level `transmitData`
+ * with a DS2-configured `setCommParameter` doesn't drive any K-line
+ * wake — the wake normally happens implicitly via the SGBD's BEST2
+ * `xinit` opcode, a path raw-DS2 callers bypass. Going one layer
+ * deeper lets us control init + framing + DTR explicitly.
+ *
+ * Settings: 9600 8N1 (DS2 default for K+DCAN cables), DTR-toggled
+ * direction control, adapter-echo consumption.
  */
 import { Buffer } from 'node:buffer';
-import { SerialPort } from 'serialport';
+import {
+  Ds2Session,
+  sendFastInit,
+  type Ds2SessionOptions,
+} from '@emdzej/ediabasx-interface-serial';
+import { NodeSerialTransport } from '@emdzej/ediabasx-interface-serial/node';
 
 export interface DirectModeTransportConfig {
-  device: string;
-  /** Baud rate. DS2 default is 9600; higher rates are negotiated via the §1.3 baud-switch. */
-  baud: number;
-  /** Default read timeout per request, in milliseconds. */
-  defaultTimeoutMs: number;
-}
-
-export interface DirectModeTransport {
-  open(): Promise<void>;
-  close(): Promise<void>;
+  /** Serial device path, e.g. `/dev/cu.usbserial-A50285BI`. */
+  port: string;
+  /** Baud rate (DS2 default 9600). */
+  baudRate?: number;
+  /** Data bits (default 8). */
+  dataBits?: 7 | 8;
+  /** Parity (DS2 over K+DCAN is `"none"` — 8N1). */
+  parity?: 'none' | 'even' | 'odd';
+  /** Stop bits (default 1). */
+  stopBits?: 1 | 2;
+  /** ParTimeoutStd in ms (default 5000). */
+  timeoutStdMs?: number;
+  /** ParRegenTime in ms (default 0). */
+  regenTimeMs?: number;
+  /** ParTimeoutTelEnd in ms (default 100). */
+  telegramEndTimeoutMs?: number;
+  /** ParInterbyteTime in ms (default 0). */
+  interByteTimeMs?: number;
   /**
-   * Write `data` then read back exactly `data.length` echo bytes and
-   * verify they match TX byte-for-byte. Throws on mismatch.
+   * Skip the fast-init wake before the first transaction. Default
+   * `false` — most K-line ECUs require fast-init to come out of sleep.
+   * Set true only if you know the bus is already warm (e.g. just ran
+   * EDIABAS against the same ECU).
    */
-  writeWithEcho(data: Buffer, echoTimeoutMs?: number): Promise<void>;
-  /** Wait for exactly `count` bytes from the ECU. */
-  read(count: number, timeoutMs?: number): Promise<Buffer>;
-  flushInput(): void;
+  skipWake?: boolean;
+  /**
+   * Whether the cable has its own echo loop. For raw FTDI K+DCAN
+   * (level-shifter only, no smart adapter MCU) this is `true` —
+   * bytes echo back via the K-line transceiver and the transport
+   * must consume them. Default `true`.
+   */
+  hasAdapterEcho?: boolean;
+  /**
+   * Raise DTR during TX so the K-line transceiver switches direction.
+   * Default = `hasAdapterEcho`. Set `false` for cables that don't
+   * need direction control.
+   */
+  sendSetDtr?: boolean;
 }
 
-export class DirectModeTransportError extends Error {
-  constructor(message: string) {
-    super(`DS2 transport: ${message}`);
-    this.name = 'DirectModeTransportError';
-  }
-}
-
-interface PendingRead {
-  count: number;
-  collected: number[];
-  resolve: (b: Buffer) => void;
-  reject: (e: Error) => void;
-  timer: NodeJS.Timeout;
-}
-
-export class NodeDirectModeTransport implements DirectModeTransport {
-  private port: SerialPort | null = null;
-  private buffer: number[] = [];
-  private pending: PendingRead | null = null;
-  private readonly config: DirectModeTransportConfig;
+export class DirectModeTransport {
+  private transport: NodeSerialTransport;
+  private session: Ds2Session;
+  private opened = false;
+  private woken = false;
+  private verbose = false;
+  private config: Required<
+    Pick<
+      DirectModeTransportConfig,
+      | 'port'
+      | 'baudRate'
+      | 'dataBits'
+      | 'parity'
+      | 'stopBits'
+      | 'timeoutStdMs'
+      | 'regenTimeMs'
+      | 'telegramEndTimeoutMs'
+      | 'interByteTimeMs'
+      | 'skipWake'
+      | 'hasAdapterEcho'
+      | 'sendSetDtr'
+    >
+  >;
 
   constructor(config: DirectModeTransportConfig) {
-    this.config = config;
-  }
-
-  open(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const port = new SerialPort(
-        {
-          path: this.config.device,
-          baudRate: this.config.baud,
-          dataBits: 8,
-          parity: 'even', // DS2 = 8E1
-          stopBits: 1,
-          rtscts: false,
-          xon: false,
-          xoff: false,
-          autoOpen: false,
-        },
-        (err) => {
-          if (err) reject(err);
-        },
-      );
-      port.on('data', (chunk: Buffer) => {
-        for (let i = 0; i < chunk.length; i++) this.buffer.push(chunk[i]);
-        this.serviceRead();
-      });
-      port.on('error', (err) => {
-        if (this.pending) {
-          const p = this.pending;
-          this.pending = null;
-          clearTimeout(p.timer);
-          p.reject(err);
+    const hasAdapterEcho = config.hasAdapterEcho ?? true;
+    this.config = {
+      port: config.port,
+      baudRate: config.baudRate ?? 9600,
+      dataBits: config.dataBits ?? 8,
+      // DS2 spec is 8E1 (even parity). Matches the wire format the ECU
+      // expects on K-line — some cables work with 8N1 too, but EVEN is
+      // the canonical setting.
+      parity: config.parity ?? 'even',
+      stopBits: config.stopBits ?? 1,
+      timeoutStdMs: config.timeoutStdMs ?? 5000,
+      regenTimeMs: config.regenTimeMs ?? 0,
+      telegramEndTimeoutMs: config.telegramEndTimeoutMs ?? 300,
+      interByteTimeMs: config.interByteTimeMs ?? 0,
+      // Raw K+DCAN cable (FTDI + transceiver, no smart MCU) needs an
+      // explicit fast-init break pulse to wake the ECU's K-line. J2534
+      // boxes do this internally so the J2534 example skips it — we
+      // can't. Set true only when chaining transactions on an already-warm
+      // bus.
+      skipWake: config.skipWake ?? false,
+      hasAdapterEcho,
+      sendSetDtr: config.sendSetDtr ?? hasAdapterEcho,
+    };
+    this.transport = new NodeSerialTransport();
+    const verbose = process.env.NFSX_DS2_VERBOSE === '1';
+    const logger: Ds2SessionOptions['logger'] | undefined = verbose
+      ? (tag, message, data) => {
+          const hex = data
+            ? ' ' + Array.from(data).map((b) => b.toString(16).padStart(2, '0')).join(' ')
+            : '';
+          process.stderr.write(`[ds2:${tag}] ${message}${hex}\n`);
         }
-      });
-      port.open((err) => {
-        if (err) return reject(err);
-        this.port = port;
-        resolve();
-      });
-    });
+      : undefined;
+    const sessionOptions: Ds2SessionOptions = {
+      concept: 0x0006,
+      baudRate: this.config.baudRate,
+      timeoutStdMs: this.config.timeoutStdMs,
+      regenTimeMs: this.config.regenTimeMs,
+      telegramEndTimeoutMs: this.config.telegramEndTimeoutMs,
+      interByteTimeMs:
+        this.config.interByteTimeMs > 0 ? this.config.interByteTimeMs : undefined,
+      sendSetDtr: this.config.sendSetDtr,
+      hasAdapterEcho: this.config.hasAdapterEcho,
+      logger,
+    };
+    this.session = new Ds2Session(sessionOptions);
+    this.verbose = verbose;
   }
 
-  close(): Promise<void> {
-    return new Promise((resolve) => {
-      if (!this.port || !this.port.isOpen) return resolve();
-      this.port.close(() => resolve());
+  async open(): Promise<void> {
+    if (this.opened) return;
+    await this.transport.configure({
+      baudRate: this.config.baudRate,
+      dataBits: this.config.dataBits,
+      parity: this.config.parity,
+      stopBits: this.config.stopBits,
     });
+    await this.transport.open(this.config.port);
+    this.opened = true;
   }
 
-  async writeWithEcho(data: Buffer, echoTimeoutMs?: number): Promise<void> {
-    if (!this.port || !this.port.isOpen) {
-      throw new DirectModeTransportError('not open');
+  async close(): Promise<void> {
+    if (!this.opened) return;
+    await this.transport.close();
+    this.opened = false;
+    this.woken = false;
+  }
+
+  /**
+   * Drive the K-line fast-init wake pulse. Idempotent across the
+   * lifetime of this transport — only runs once. Subsequent calls
+   * are no-ops until `close()` resets the state.
+   *
+   * After the break-pulse, the ECU may emit a sync byte / key-byte
+   * sequence (KWP2000 init). We drain any pending bytes opportunistically
+   * — DS2 frames work fine even if the ECU only does the wake without
+   * full KWP2000 setup.
+   */
+  async wake(): Promise<void> {
+    if (this.woken || this.config.skipWake) {
+      this.woken = true;
+      if (this.verbose) process.stderr.write('[ds2:wake] skipped\n');
+      return;
     }
-    await new Promise<void>((resolve, reject) => {
-      this.port!.write(data, (err) => {
-        if (err) return reject(err);
-        this.port!.drain((drainErr) => {
-          if (drainErr) reject(drainErr);
-          else resolve();
-        });
-      });
-    });
-    const echo = await this.read(data.length, echoTimeoutMs ?? 250);
-    for (let i = 0; i < data.length; i++) {
-      if (echo[i] !== data[i]) {
-        throw new DirectModeTransportError(
-          `echo mismatch at byte ${i}: TX=0x${data[i].toString(16).padStart(2, '0')}, RX=0x${echo[i].toString(16).padStart(2, '0')}`,
-        );
+    if (!this.opened) throw new Error('transport not open');
+    if (this.verbose) process.stderr.write(`[ds2:wake] sendFastInit setDtr=${this.config.sendSetDtr}\n`);
+    await sendFastInit(this.transport, { setDtr: this.config.sendSetDtr });
+    try {
+      const keyBytes = await this.transport.read(3, 200);
+      if (this.verbose) {
+        const hex = Array.from(keyBytes).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+        process.stderr.write(`[ds2:wake] keybytes (${keyBytes.length}): ${hex}\n`);
       }
+    } catch (err) {
+      if (this.verbose) process.stderr.write(`[ds2:wake] no keybytes: ${(err as Error).message}\n`);
     }
+    this.woken = true;
   }
 
-  read(count: number, timeoutMs?: number): Promise<Buffer> {
-    if (count <= 0) return Promise.resolve(Buffer.alloc(0));
-    if (this.pending) {
-      return Promise.reject(new DirectModeTransportError('read already in flight'));
-    }
-    const effectiveTimeout = timeoutMs ?? this.config.defaultTimeoutMs;
-    return new Promise<Buffer>((resolve, reject) => {
-      const pending: PendingRead = {
-        count,
-        collected: [],
-        resolve,
-        reject,
-        timer: setTimeout(() => {
-          const p = this.pending;
-          if (!p) return;
-          this.pending = null;
-          reject(
-            new DirectModeTransportError(
-              `read timeout: wanted ${count}, got ${p.collected.length} in ${effectiveTimeout} ms`,
-            ),
-          );
-        }, effectiveTimeout),
-      };
-      this.pending = pending;
-      this.serviceRead();
+  /**
+   * Send a DS2 request payload (`[ADDR] LEN [CMD …]` — no trailing
+   * XOR, the session appends it) and return the full received frame.
+   * Triggers `wake()` on the first call.
+   */
+  async transact(request: Buffer): Promise<Buffer> {
+    if (!this.opened) throw new Error('transport not open');
+    if (!this.woken) await this.wake();
+    const response = await this.session.sendRequest(
+      this.transport,
+      new Uint8Array(request),
+    );
+    return Buffer.from(response);
+  }
+
+  /**
+   * Reconfigure the local UART to a new baud rate. Caller is responsible
+   * for issuing the DS2 baud-switch command beforehand and confirming
+   * the ECU accepted it — this only flips the host's serial speed.
+   *
+   * Recreates the `Ds2Session` so its internal DTR-drain timing math
+   * uses the new baud.
+   */
+  async reconfigureBaud(newBaud: number): Promise<void> {
+    if (!this.opened) throw new Error('transport not open');
+    this.config.baudRate = newBaud;
+    await this.transport.configure({
+      baudRate: newBaud,
+      dataBits: this.config.dataBits,
+      parity: this.config.parity,
+      stopBits: this.config.stopBits,
     });
-  }
-
-  flushInput(): void {
-    this.buffer = [];
-  }
-
-  private serviceRead(): void {
-    const p = this.pending;
-    if (!p) return;
-    while (p.collected.length < p.count && this.buffer.length > 0) {
-      p.collected.push(this.buffer.shift()!);
-    }
-    if (p.collected.length >= p.count) {
-      this.pending = null;
-      clearTimeout(p.timer);
-      p.resolve(Buffer.from(p.collected));
-    }
+    const verbose = process.env.NFSX_DS2_VERBOSE === '1';
+    const logger: Ds2SessionOptions['logger'] | undefined = verbose
+      ? (tag, message, data) => {
+          const hex = data
+            ? ' ' + Array.from(data).map((b) => b.toString(16).padStart(2, '0')).join(' ')
+            : '';
+          process.stderr.write(`[ds2:${tag}] ${message}${hex}\n`);
+        }
+      : undefined;
+    this.session = new Ds2Session({
+      concept: 0x0006,
+      baudRate: newBaud,
+      timeoutStdMs: this.config.timeoutStdMs,
+      regenTimeMs: this.config.regenTimeMs,
+      telegramEndTimeoutMs: this.config.telegramEndTimeoutMs,
+      interByteTimeMs:
+        this.config.interByteTimeMs > 0 ? this.config.interByteTimeMs : undefined,
+      sendSetDtr: this.config.sendSetDtr,
+      hasAdapterEcho: this.config.hasAdapterEcho,
+      logger,
+    });
   }
 }
 
-/** In-memory transport for tests. Identical surface to NodeDirectModeTransport. */
-export class MockDirectModeTransport implements DirectModeTransport {
-  public writtenBytes: number[] = [];
-  private pendingResponse: number[] = [];
-  private open_ = false;
-
-  async open(): Promise<void> {
-    this.open_ = true;
+/** Build a request payload (no XOR — Ds2Session adds it). */
+export function buildRequestPayload(addr: number, payload: Buffer): Buffer {
+  const total = payload.length + 3;
+  if (total > 0xff) {
+    throw new Error(
+      `DS2 frame too large: payload ${payload.length} bytes → LEN ${total} exceeds 0xFF`,
+    );
   }
-  async close(): Promise<void> {
-    this.open_ = false;
-  }
-  async writeWithEcho(data: Buffer): Promise<void> {
-    if (!this.open_) throw new DirectModeTransportError('mock not open');
-    for (let i = 0; i < data.length; i++) this.writtenBytes.push(data[i]);
-    // Mock auto-echoes by consuming our own TX from the input queue: the
-    // test rig should prefix the response with the expected echo, or
-    // call `enqueueEcho(data)` separately.
-  }
-  async read(count: number): Promise<Buffer> {
-    if (!this.open_) throw new DirectModeTransportError('mock not open');
-    if (this.pendingResponse.length < count) {
-      throw new DirectModeTransportError(
-        `mock underflow: wanted ${count}, only ${this.pendingResponse.length} queued`,
-      );
-    }
-    return Buffer.from(this.pendingResponse.splice(0, count));
-  }
-  flushInput(): void {
-    this.pendingResponse = [];
-  }
-  enqueueResponse(bytes: number[] | Buffer): void {
-    const arr = Buffer.isBuffer(bytes) ? [...bytes] : bytes;
-    this.pendingResponse.push(...arr);
-  }
+  const buf = Buffer.alloc(total - 1);
+  buf[0] = addr & 0xff;
+  buf[1] = total;
+  payload.copy(buf, 2);
+  return buf;
 }

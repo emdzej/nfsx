@@ -584,15 +584,163 @@ export interface VerifyChecksumsOptions {
    * but you know the firmware variant for certain).
    */
   variant?: EcuVariant;
+  /**
+   * MS42-only override for the seed address. By default the cal-only
+   * path uses `0x4800C` (verified against MS42 0110AD; conventional
+   * across most MS42 firmwares — the seed-address pointer at 0x502F6/
+   * 0x502F8 in a full BIN lands here). Pass an alternate ECU absolute
+   * address if you know your firmware deviates. Ignored on full BINs
+   * (the pointer is read straight from 0x502F6/0x502F8).
+   */
+  ms42SeedAddress?: number;
+}
+
+/** Cal-only file lengths recognised by {@link verifyChecksums}. */
+const MS42_CAL_LENGTH = 0x8000;
+const MS43_CAL_LENGTH = 0x10000;
+
+/**
+ * Standard MS42 calibration block layout (verified against MS42 0110AD).
+ * The seed address is firmware-specific in theory; in practice the
+ * standard MS42 convention places it at `0x4800C` (inside the cal block).
+ */
+const MS42_CAL_BLOCK_ECU_OFFSET = 0x48000;
+const MS42_CAL_RESULT_ECU_OFFSET = 0x4fee0;
+const MS42_DEFAULT_SEED_ECU_OFFSET = 0x4800c;
+
+const MS43_CAL_BLOCK_ECU_OFFSET = 0x70000;
+
+/**
+ * For a cal-only buffer, synthesize a full 0x80000 BIN with 0xFF padding
+ * and the cal data placed at the correct ECU offset. For MS42, also
+ * write the program-block pointers that {@link computeHeaderDriven}
+ * reads — so the existing compute path "just works" against the
+ * synthesized buffer. MS43 needs no extra setup: its seed pointer at
+ * 0x6ED9A is naturally 0xFFFF here, triggering the fallback to 0x7000C
+ * which IS in the cal block.
+ */
+function synthesizeFullFromCal(
+  calBuf: Buffer,
+  variant: EcuVariant,
+  ms42SeedAddress: number,
+): Buffer {
+  const out = Buffer.alloc(EXPECTED_FILE_LENGTH, 0xff);
+  const ecuOffset =
+    variant === 'MS42' ? MS42_CAL_BLOCK_ECU_OFFSET : MS43_CAL_BLOCK_ECU_OFFSET;
+  calBuf.copy(out, ecuOffset);
+  if (variant === 'MS42') {
+    // Header pointer at 0x502F2 (24-bit LE): result address.
+    out[0x502f2] = MS42_CAL_RESULT_ECU_OFFSET & 0xff;
+    out[0x502f3] = (MS42_CAL_RESULT_ECU_OFFSET >> 8) & 0xff;
+    out[0x502f4] = (MS42_CAL_RESULT_ECU_OFFSET >> 16) & 0xff;
+    // Seed address (u16 LE lo at 0x502F6, u16 LE hi at 0x502F8).
+    writeU16LE(out, ms42SeedAddress & 0xffff, 0x502f6);
+    writeU16LE(out, (ms42SeedAddress >>> 16) & 0xffff, 0x502f8);
+  }
+  return out;
+}
+
+function detectCalVariantFromSize(length: number): EcuVariant | null {
+  if (length === MS42_CAL_LENGTH) return 'MS42';
+  if (length === MS43_CAL_LENGTH) return 'MS43';
+  return null;
+}
+
+/**
+ * Verify just the calibration CRC against a synthesized 512K buffer.
+ * Boot/Program/add32 are reported as `supported: false` because their
+ * source bytes don't exist in a calibration-only dump.
+ */
+function verifyCalibrationOnly(
+  fullBuf: Buffer,
+  variant: EcuVariant,
+  origFileLength: number,
+): ChecksumReport {
+  const results: ChecksumResult[] = [];
+  const unsupportedNote = (name: ChecksumName): ChecksumResult => ({
+    name,
+    kind: name.includes('add') ? 'add32' : 'crc16',
+    resultOffset: 0,
+    resultBytes: name.includes('add') ? 4 : 2,
+    stored: 0,
+    computed: 0,
+    match: false,
+    ranges: [],
+    supported: false,
+  });
+  results.push(unsupportedNote('Boot'));
+  results.push(unsupportedNote('Program'));
+
+  if (variant === 'MS42') {
+    const r = computeHeaderDriven(fullBuf, CALIBRATION_DEF);
+    results.push({
+      name: 'Calibration',
+      kind: 'crc16',
+      resultOffset: r.resultOffset,
+      resultBytes: 2,
+      stored: r.stored,
+      computed: r.computed,
+      match: r.stored === r.computed,
+      ranges: r.ranges,
+      seed: r.seed,
+      supported: true,
+    });
+  } else {
+    const r = computeMs43InlineCrc(fullBuf, MS43_CALIBRATION_DEF);
+    results.push({
+      name: 'Calibration',
+      kind: 'crc16',
+      resultOffset: MS43_CALIBRATION_DEF.resultOffset,
+      resultBytes: 2,
+      stored: r.stored,
+      computed: r.computed,
+      match: r.stored === r.computed,
+      ranges: r.ranges,
+      seed: r.seed,
+      supported: true,
+    });
+    results.push(unsupportedNote('Program (add)'));
+    results.push(unsupportedNote('Calibration (add)'));
+  }
+
+  const supportedResults = results.filter((r) => r.supported);
+  const allValid = supportedResults.length > 0 && supportedResults.every((r) => r.match);
+  return {
+    variant,
+    fileLength: origFileLength,
+    results,
+    allValid,
+  };
 }
 
 export function verifyChecksums(
   buf: Buffer,
   options: VerifyChecksumsOptions = {},
 ): ChecksumReport {
+  // Cal-only short buffers: synthesize a full BIN with cal data placed
+  // at the right ECU offset, then run the standard verification but
+  // skip non-calibration checksums (their bytes are missing).
+  const calVariant = detectCalVariantFromSize(buf.length);
+  if (calVariant) {
+    const variant = options.variant ?? calVariant;
+    if (variant !== calVariant) {
+      throw new Error(
+        `File length ${buf.length} indicates ${calVariant} cal-only but ` +
+          `caller forced variant=${variant}.`,
+      );
+    }
+    const fullBuf = synthesizeFullFromCal(
+      buf,
+      variant,
+      options.ms42SeedAddress ?? MS42_DEFAULT_SEED_ECU_OFFSET,
+    );
+    return verifyCalibrationOnly(fullBuf, variant, buf.length);
+  }
+
   if (buf.length !== EXPECTED_FILE_LENGTH) {
     throw new Error(
-      `Bad BIN length: ${buf.length} (expected ${EXPECTED_FILE_LENGTH})`,
+      `Bad BIN length: ${buf.length} (expected ${EXPECTED_FILE_LENGTH}, ` +
+        `${MS42_CAL_LENGTH} for MS42 cal-only, or ${MS43_CAL_LENGTH} for MS43 cal-only)`,
     );
   }
   const variant = options.variant ?? detectVariant(buf);
@@ -687,11 +835,42 @@ export function rewriteChecksums(
   buf: Buffer,
   options: VerifyChecksumsOptions = {},
 ): ChecksumReport {
+  // Cal-only short buffers: synthesize a full BIN, recompute calibration
+  // CRC into the synthesized buffer, then copy the cal block back into
+  // the caller's tight buffer in-place.
+  const calVariant = detectCalVariantFromSize(buf.length);
+  if (calVariant) {
+    const variant = options.variant ?? calVariant;
+    if (variant !== calVariant) {
+      throw new Error(
+        `File length ${buf.length} indicates ${calVariant} cal-only but ` +
+          `caller forced variant=${variant}.`,
+      );
+    }
+    const fullBuf = synthesizeFullFromCal(
+      buf,
+      variant,
+      options.ms42SeedAddress ?? MS42_DEFAULT_SEED_ECU_OFFSET,
+    );
+    const calEcuOffset =
+      variant === 'MS42' ? MS42_CAL_BLOCK_ECU_OFFSET : MS43_CAL_BLOCK_ECU_OFFSET;
+    if (variant === 'MS42') {
+      const cal = computeHeaderDriven(fullBuf, CALIBRATION_DEF);
+      writeU16LE(fullBuf, cal.computed, cal.resultOffset);
+    } else {
+      const cal = computeMs43InlineCrc(fullBuf, MS43_CALIBRATION_DEF);
+      writeU16LE(fullBuf, cal.computed, MS43_CALIBRATION_DEF.resultOffset);
+    }
+    fullBuf.copy(buf, 0, calEcuOffset, calEcuOffset + buf.length);
+    return verifyChecksums(buf, options);
+  }
+
   // Validate variant up-front (with optional override) so we fail fast
   // before mutating anything.
   if (buf.length !== EXPECTED_FILE_LENGTH) {
     throw new Error(
-      `Bad BIN length: ${buf.length} (expected ${EXPECTED_FILE_LENGTH})`,
+      `Bad BIN length: ${buf.length} (expected ${EXPECTED_FILE_LENGTH}, ` +
+        `${MS42_CAL_LENGTH} for MS42 cal-only, or ${MS43_CAL_LENGTH} for MS43 cal-only)`,
     );
   }
   const variant = options.variant ?? detectVariant(buf);

@@ -1,20 +1,26 @@
 /**
  * `nfsx directmode` — raw DS2 flashing.
  *
- * Drives the ECU through the normal diagnostic session over K-line
- * (9600 8E1): IDENT → SEED/KEY → erase → write → verify. ECU type is
- * auto-detected from the IDENT response; the host then picks the right
- * region table for FULL or CALIBRATION-only flash.
+ * Drives the ECU through the normal diagnostic session over K-line:
+ * IDENT → SEED/KEY → erase → write → verify. ECU type is auto-detected
+ * from the IDENT response; the host then picks the right region table
+ * for FULL or CALIBRATION-only flash.
  *
- * Subcommands:
- *   probe   — identify the ECU on the wire
- *   read    — dump flash regions to a file (full or calibration-only)
- *   write   — flash a BIN file (full or calibration-only)
+ * Wire layer: a dedicated `DirectModeTransport` built on ediabasx's
+ * `NodeSerialTransport` + `Ds2Session`. Port/baud are read from the
+ * user's `~/.config/ediabasx/config.json` (kdcan interface).
  */
 import chalk from 'chalk';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  loadConfig as loadEdiabasxConfig,
+  resolveSelection,
+  summariseSelection,
+  type InterfaceOverrides,
+} from '@emdzej/ediabasx-host-config';
+import {
+  DirectModeTransport,
   probe,
   readFlash,
   writeFlash,
@@ -29,8 +35,13 @@ import {
 type ForceVariant = 'MS42' | 'MS43' | 'GS20' | undefined;
 
 export interface DirectModeBaseOptions {
-  device: string;
-  baud: number;
+  // Wire-layer config (from ediabasx host-config).
+  ediabasConfig?: string;
+  interface?: string;
+  serialPort?: string;
+  serialBaud?: number;
+  gateway?: string;
+  // DS2-session knobs.
   forceVariant?: ForceVariant;
   json: boolean;
 }
@@ -63,41 +74,79 @@ function makeProgressPrinter(json: boolean): (p: DirectModeProgress) => void {
   };
 }
 
+async function openDs2Transport(opts: DirectModeBaseOptions): Promise<{
+  iface: DirectModeTransport;
+  summary: string;
+}> {
+  const fileConfig = loadEdiabasxConfig(opts.ediabasConfig);
+  const overrides: InterfaceOverrides = {
+    interfaceName: opts.interface,
+    gateway: opts.gateway,
+    options: {
+      port: opts.serialPort,
+      baudRate: opts.serialBaud,
+    },
+  };
+  const selection = resolveSelection(fileConfig, overrides);
+  if (selection.interface !== 'kdcan') {
+    throw new Error(
+      `directmode requires a kdcan interface — got "${selection.interface}". Configure ediabasx for kdcan or pass --interface kdcan.`,
+    );
+  }
+  const port = selection.options.port;
+  if (typeof port !== 'string' || port.length === 0) {
+    throw new Error('directmode: no serial port configured. Set serial.port in ediabasx config or pass --serial-port.');
+  }
+  const baudRate =
+    typeof selection.options.baudRate === 'number' ? selection.options.baudRate : 9600;
+  const transport = new DirectModeTransport({ port, baudRate });
+  await transport.open();
+  return { iface: transport, summary: summariseSelection(selection) };
+}
+
 export async function runDirectmodeProbe(opts: DirectModeBaseOptions): Promise<number> {
   const onProgress = makeProgressPrinter(opts.json);
+  let iface: DirectModeTransport | null = null;
   try {
-    const r = await probe(
-      {
-        device: opts.device,
-        baud: opts.baud,
-        defaultTimeoutMs: 3000,
-        forceVariant: opts.forceVariant,
-      },
-      onProgress,
-    );
+    const opened = await openDs2Transport(opts);
+    iface = opened.iface;
+    if (!opts.json) process.stderr.write(chalk.dim(`EDIABAS-X: ${opened.summary}\n`));
+    const r = await probe({ iface, forceVariant: opts.forceVariant }, onProgress);
     if (opts.json) {
       process.stdout.write(JSON.stringify(r) + '\n');
     } else {
+      const i = r.ident;
       process.stdout.write(chalk.green('OK ') + `variant=${r.variant}\n`);
-      process.stdout.write(chalk.dim(`identity: ${r.identAscii}\n`));
+      const row = (label: string, value: string) =>
+        process.stdout.write(`  ${chalk.dim(label.padEnd(13))} ${value || chalk.dim('-')}\n`);
+      row('HW number',    i.hwNumber);
+      row('HW index',     i.hwIndex);
+      row('SW number',    i.swNumber);
+      row('Coding idx',   i.codingIndex);
+      row('Diag idx',     i.diagIndex);
+      row('Bus idx',      i.busIndex);
+      row('BMW part #',   i.bmwNumber);
+      row('Variant',      i.variant);
+      row('SW date',      i.swDate);
     }
     return 0;
   } catch (err) {
     process.stderr.write(chalk.red(`error: ${(err as Error).message}\n`));
     return 1;
+  } finally {
+    if (iface) await iface.close().catch(() => undefined);
   }
 }
 
 export async function runDirectmodeRead(opts: DirectModeReadOpts): Promise<number> {
   const onProgress = makeProgressPrinter(opts.json);
+  let iface: DirectModeTransport | null = null;
   try {
+    const opened = await openDs2Transport(opts);
+    iface = opened.iface;
+    if (!opts.json) process.stderr.write(chalk.dim(`EDIABAS-X: ${opened.summary}\n`));
     const { variant, image } = await readFlash(
-      {
-        device: opts.device,
-        baud: opts.baud,
-        defaultTimeoutMs: 5000,
-        forceVariant: opts.forceVariant,
-      },
+      { iface, forceVariant: opts.forceVariant },
       { mode: opts.mode },
       onProgress,
     );
@@ -116,6 +165,8 @@ export async function runDirectmodeRead(opts: DirectModeReadOpts): Promise<numbe
   } catch (err) {
     process.stderr.write(chalk.red(`error: ${(err as Error).message}\n`));
     return 1;
+  } finally {
+    if (iface) await iface.close().catch(() => undefined);
   }
 }
 
@@ -129,8 +180,6 @@ export async function runDirectmodeWrite(opts: DirectModeWriteOpts): Promise<num
   }
 
   if (opts.calculateChecksum) {
-    // Auto-detect the variant from the BIN itself first (MS42 vs MS43 only —
-    // GS20 isn't covered by flash-data's checksum module).
     try {
       const pre = verifyMs4xChecksums(image);
       if (!opts.json) {
@@ -159,15 +208,14 @@ export async function runDirectmodeWrite(opts: DirectModeWriteOpts): Promise<num
   }
 
   const onProgress = makeProgressPrinter(opts.json);
+  let iface: DirectModeTransport | null = null;
   try {
+    const opened = await openDs2Transport(opts);
+    iface = opened.iface;
+    if (!opts.json) process.stderr.write(chalk.dim(`EDIABAS-X: ${opened.summary}\n`));
     const result = await writeFlash(
       image,
-      {
-        device: opts.device,
-        baud: opts.baud,
-        defaultTimeoutMs: 5000,
-        forceVariant: opts.forceVariant,
-      },
+      { iface, forceVariant: opts.forceVariant },
       { mode: opts.mode, skipVerify: opts.skipVerify, nonce: opts.nonce },
       onProgress,
     );
@@ -185,5 +233,7 @@ export async function runDirectmodeWrite(opts: DirectModeWriteOpts): Promise<num
   } catch (err) {
     process.stderr.write(chalk.red(`error: ${(err as Error).message}\n`));
     return 1;
+  } finally {
+    if (iface) await iface.close().catch(() => undefined);
   }
 }

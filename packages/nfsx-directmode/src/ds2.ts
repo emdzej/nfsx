@@ -106,7 +106,6 @@ export const DS2_STATUS_FRAMING_ERR = 0xc0;
 /** Command bytes per `docs/raw-ds2-flashing.md` §2-§3. */
 export const DS2_CMD_IDENT = 0x00;
 export const DS2_CMD_MEMORY_READ = 0x06;
-export const DS2_CMD_CAPABILITY = 0x0d;
 export const DS2_CMD_SEED_KEY = 0x90;
 /** Programming commands: the second byte selects the sub-operation. */
 export const DS2_CMD_PROG_PREFIX = 0x07;

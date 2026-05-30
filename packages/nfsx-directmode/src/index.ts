@@ -12,14 +12,18 @@ export {
   writeFlash,
   readFlash,
   runIdent,
+  switchBaud,
   DirectModeError,
   type DirectModeSessionConfig,
   type DirectModeProgress,
   type DirectModeProgressFn,
+  type DirectModeProbeResult,
   type DirectModeWriteOptions,
   type DirectModeWriteResult,
   type DirectModeReadOptions,
 } from './session.js';
+
+export { decodeIdent, type IdentFields } from './identity.js';
 
 export {
   encodeFrame,
@@ -32,7 +36,6 @@ export {
   DS2_STATUS_FRAMING_ERR,
   DS2_CMD_IDENT,
   DS2_CMD_MEMORY_READ,
-  DS2_CMD_CAPABILITY,
   DS2_CMD_SEED_KEY,
   DS2_CMD_PROG_PREFIX,
   DS2_PROG_WRITE,
@@ -64,9 +67,7 @@ export {
 } from './ecu-tables.js';
 
 export {
-  NodeDirectModeTransport,
-  MockDirectModeTransport,
-  DirectModeTransportError,
-  type DirectModeTransport,
+  DirectModeTransport,
+  buildRequestPayload,
   type DirectModeTransportConfig,
 } from './transport.js';

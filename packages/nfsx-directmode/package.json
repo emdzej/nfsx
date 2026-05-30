@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@emdzej/nfsx-flash-data": "workspace:*",
-    "serialport": "^12.0.0"
+    "@emdzej/ediabasx-interface-serial": "^0.5.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.1",
