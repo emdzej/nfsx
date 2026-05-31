@@ -28,6 +28,15 @@ export interface FlashRegion {
    * +0x80000 ECU/BIN shift for one region.
    */
   binOffset: number;
+  /**
+   * Erase block this region belongs to. Multiple regions can share the
+   * same erase address — for MS42 full mode the single erase at
+   * 0x11000 covers SA4-SA6 + SA8-SA10 of the AM29F400BB, so BOTH the
+   * lower (0x11000-0x3FFFF) and upper (0x5002C-0x7FFFF) program regions
+   * declare `eraseAddr: 0x11000`. Defaults to `start` when omitted.
+   * Verified against MS4x Flasher decomp `t::A()` / `T::A()`.
+   */
+  eraseAddr?: number;
 }
 
 export interface EcuProfile {
@@ -119,9 +128,13 @@ const MS42_PROFILE: EcuProfile = {
   readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
-    { start: 0x11000, end: 0x3ffff, binOffset: 0x11000 }, // lower program
-    { start: 0x5002c, end: 0x7ffff, binOffset: 0x5002c }, // upper program
-    { start: 0x48000, end: 0x4ffef, binOffset: 0x48000 }, // calibration
+    // Both program regions share ONE erase at 0x11000 — that single
+    // 0x07 0x06 command erases AM29F400BB's SA4-SA6 + SA8-SA10
+    // (everything between bootloader and cal block). Doing a second
+    // erase between them would wipe the data we just wrote.
+    { start: 0x11000, end: 0x3ffff, binOffset: 0x11000, eraseAddr: 0x11000 },
+    { start: 0x5002c, end: 0x7ffff, binOffset: 0x5002c, eraseAddr: 0x11000 },
+    { start: 0x48000, end: 0x4ffef, binOffset: 0x48000, eraseAddr: 0x48000 },
   ],
   readFullRegions: [
     { start: 0x00000, end: 0x0bfff, binOffset: 0x00000 }, // C167 internal flash

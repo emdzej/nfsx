@@ -790,54 +790,84 @@ export async function writeFlash(
   // After ALL regions are written, the terminating per-region poll is
   // strict on the LAST region (MS4x's `B(uint, …)` — checks op-result
   // byte at frame[8]) and loose on intermediate regions.
+  // Group regions by erase-block address. A single 0x07 0x06 erase
+  // command on MS4x ECUs can wipe MULTIPLE sectors, so multiple regions
+  // can share one erase point. For MS42 full mode the lower program
+  // (0x11000) and upper program (0x5002C) both declare eraseAddr=0x11000
+  // — ONE erase covers both. Erasing between them would wipe the data
+  // we just wrote (this is what caused the earlier verify-fail at
+  // 0x11000 / 0xff). Mirrors MS4x's `t::A()` / `T::A()` decomp.
+  type EraseGroup = { eraseAddr: number; regions: FlashRegion[] };
+  const groups: EraseGroup[] = [];
+  for (const r of regions) {
+    const eraseAddr = r.eraseAddr ?? r.start;
+    let g = groups.find((x) => x.eraseAddr === eraseAddr);
+    if (!g) {
+      g = { eraseAddr, regions: [] };
+      groups.push(g);
+    }
+    g.regions.push(r);
+  }
+
   onProgress?.({ stage: 'write', message: 'programming', fraction: 0 });
-  for (let idx = 0; idx < regions.length; idx++) {
-    const r = regions[idx];
-    const isLast = idx === regions.length - 1;
-    onProgress?.({
-      stage: 'erase',
-      message: `pre-poll @ 0x${r.start.toString(16)}`,
-    });
-    await runPoll(iface, profile, r.start, false);
+  for (let gIdx = 0; gIdx < groups.length; gIdx++) {
+    const g = groups[gIdx];
+    const isLastGroup = gIdx === groups.length - 1;
 
     onProgress?.({
       stage: 'erase',
-      message: `erase sector @ 0x${r.start.toString(16)}`,
+      message: `pre-poll @ 0x${g.eraseAddr.toString(16)}`,
     });
-    await eraseRegion(iface, profile, r);
+    await runPoll(iface, profile, g.eraseAddr, false);
 
-    // NO post-erase poll. MS4x Flasher's per-region sequence is:
-    //   pollLoose → (set long timeout) → erase → (set short timeout) → write → pollStrict
-    // Inserting an extra pollLoose between erase and the first write
-    // transitions the programming state machine into a state that
-    // rejects the next 0x07 0x02 write with status 0xB0. Verified
-    // empirically: bench MS42 returns 0xB0 on the first write after
-    // a redundant post-erase pollLoose.
+    onProgress?.({
+      stage: 'erase',
+      message: `erase block @ 0x${g.eraseAddr.toString(16)} (covers ${g.regions.length} region(s))`,
+    });
+    {
+      const eFrame = await sendAndReceiveRaw(
+        iface,
+        profile.ds2Addr,
+        buildEraseRequest(g.eraseAddr),
+      );
+      if (eFrame[2] !== DS2_STATUS_OK) {
+        throw new DirectModeError(
+          `erase rejected (status 0x${eFrame[2].toString(16)})`,
+          'erase',
+        );
+      }
+      checkOpResult(eFrame, 'erase');
+    }
 
-    const { bytesWritten, bytesSkipped } = await writeRegion(
-      iface,
-      profile,
-      r,
-      image,
-      (sent, regionLen) => {
-        onProgress?.({
-          stage: 'write',
-          message: `region 0x${r.start.toString(16)}-0x${r.end.toString(16)}: ${sent}/${regionLen}`,
-          fraction: (totalWritten + sent) / total,
-        });
-      },
-    );
-    totalWritten += bytesWritten;
-    totalSkipped += bytesSkipped;
+    // NO post-erase poll. Inserting one transitions the state machine
+    // such that the first 0x07 0x02 write is rejected with 0xB0
+    // (verified empirically against MS42).
 
-    // Final per-region poll: strict (op-result == 0x01) on the LAST
-    // region, loose otherwise. MS4x calls this `B(uint, …)` strict
-    // for the terminating sector, `a(uint, …)` loose between sectors.
+    for (const r of g.regions) {
+      const { bytesWritten, bytesSkipped } = await writeRegion(
+        iface,
+        profile,
+        r,
+        image,
+        (sent, regionLen) => {
+          onProgress?.({
+            stage: 'write',
+            message: `region 0x${r.start.toString(16)}-0x${r.end.toString(16)}: ${sent}/${regionLen}`,
+            fraction: (totalWritten + sent) / total,
+          });
+        },
+      );
+      totalWritten += bytesWritten;
+      totalSkipped += bytesSkipped;
+    }
+
+    // Post-group poll: strict on the LAST group (MS4x's `B(uint, …)`),
+    // loose between groups (`a(uint, …)`).
     onProgress?.({
       stage: 'write',
-      message: `post-write poll @ 0x${r.start.toString(16)}`,
+      message: `post-write poll @ 0x${g.eraseAddr.toString(16)}`,
     });
-    await runPoll(iface, profile, r.start, isLast /* strict on final */);
+    await runPoll(iface, profile, g.eraseAddr, isLastGroup);
   }
 
   if (!opts.skipVerify) {
