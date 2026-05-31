@@ -26,6 +26,7 @@ import {
   DS2_CMD_PROG_PREFIX,
   DS2_PROG_WRITE,
   DS2_PROG_ERASE,
+  DS2_PROG_VERIFY,
   DS2_STATUS_OK,
   DS2_STATUS_PENDING,
 } from './ds2.js';
@@ -35,6 +36,8 @@ import {
   buildSeedRequestPayload,
   buildKeySubmitPayload,
   deriveKey,
+  SEED_RESP_LEN_AUTHORISED,
+  SEED_RESP_LEN_FULL,
 } from './seed-key.js';
 import {
   findByIdentKey,
@@ -80,6 +83,39 @@ export class DirectModeError extends Error {
 }
 
 // ── frame round-trip helper ─────────────────────────────────────────
+
+async function sendAndReceiveRaw(
+  iface: DirectModeTransport,
+  addr: number,
+  payload: Buffer,
+): Promise<Buffer> {
+  const request = buildRequestPayload(addr, payload);
+  const MAX_ATTEMPTS = 8;
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 30 * attempt));
+    }
+    try {
+      const full = await iface.transact(request);
+      if (full.length < 4) {
+        throw new Error(`response too short: ${full.length} bytes`);
+      }
+      if (full[0] !== addr) {
+        throw new Error(
+          `unexpected ADDR in response: expected 0x${addr.toString(16)}, got 0x${full[0].toString(16)}`,
+        );
+      }
+      // Validate frame integrity (LEN + XOR) by decoding.
+      decodeFrame(full);
+      return full;
+    } catch (err) {
+      lastErr = err as Error;
+      if (/non-OK status/.test(lastErr.message)) break;
+    }
+  }
+  throw new DirectModeError(lastErr?.message ?? 'frame error', 'frame');
+}
 
 async function sendAndReceive(
   iface: DirectModeTransport,
@@ -266,23 +302,45 @@ async function runAuth(
   profile: EcuProfile,
   nonce: number = DEFAULT_NONCE,
 ): Promise<void> {
+  // 1. Send seed request: payload = [0x90, 0x42, 0x4D, 0x57, NONCE].
+  //    NO 0x07 programming-prefix — verified against MS4x Flasher
+  //    decomp at ᄁ/A/B.cs:211-273. The ECU's full DS2 frame on the
+  //    wire is [ADDR] [LEN=8] [0x90, 0x42, 0x4D, 0x57, NONCE] [XOR].
   const seedReq = buildSeedRequestPayload(nonce);
-  // SEED_KEY is a programming-mode command per docs §3.2 — frame:
-  // `[ADDR] LEN 07 90 42 4D 57 NONCE [XOR]`.
-  const seedRespPayload = await sendAndAwaitOk(
-    iface,
-    profile.ds2Addr,
-    Buffer.concat([Buffer.from([DS2_CMD_PROG_PREFIX]), seedReq]),
-  );
-  // The seed bytes follow the status byte.
-  const seed = seedRespPayload.subarray(1);
-  const key = deriveKey(seed, nonce);
+  const seedFrame = await sendAndReceiveRaw(iface, profile.ds2Addr, seedReq);
+
+  // Response shape:
+  //   - STATUS (frame[2]) must be 0xA0.
+  //   - If LEN (frame[1]) == 5 → ECU already authorised, no key needed.
+  //   - If LEN == 46 → seed material present, derive + submit key.
+  const status = seedFrame[2];
+  const lenByte = seedFrame[1];
+  if (status !== DS2_STATUS_OK) {
+    throw new DirectModeError(
+      `seed request rejected (status 0x${status.toString(16)})`,
+      'auth',
+    );
+  }
+  if (lenByte === SEED_RESP_LEN_AUTHORISED) {
+    // ECU was already in programming mode (e.g. previous session left
+    // it authorised). No key submission needed.
+    return;
+  }
+  if (lenByte !== SEED_RESP_LEN_FULL) {
+    throw new DirectModeError(
+      `unexpected seed response LEN: 0x${lenByte.toString(16)} (expected 0x05 or 0x2E)`,
+      'auth',
+    );
+  }
+
+  // 2. Derive key from the FULL received frame (NOT just the data).
+  //    Indices 1, 18, 41, (nonce+i) mod frame[1] are frame-absolute.
+  const key = deriveKey(seedFrame, nonce);
+
+  // 3. Submit key: payload = [0x90, k0, k1, k2, k3]. Same opcode as the
+  //    seed request — the ECU disambiguates by payload shape.
   const keySubmit = buildKeySubmitPayload(key);
-  const ack = await sendAndAwaitOk(
-    iface,
-    profile.ds2Addr,
-    Buffer.concat([Buffer.from([DS2_CMD_PROG_PREFIX]), keySubmit]),
-  );
+  const ack = await sendAndAwaitOk(iface, profile.ds2Addr, keySubmit);
   if (ack[0] !== DS2_STATUS_OK) {
     throw new DirectModeError(`key rejected (status 0x${ack[0].toString(16)})`, 'auth');
   }
@@ -290,19 +348,102 @@ async function runAuth(
 
 // ── ERASE / WRITE / READ ────────────────────────────────────────────
 
-function buildEraseRequest(start: number, end: number): Buffer {
-  // Per docs §3.3: payload = 07 06 A_HI A_MID A_LO E_HI E_MID E_LO 00
+function buildEraseRequest(sectorStart: number): Buffer {
+  // Verified against MS4x Flasher decomp (B.cs:335-396):
+  //   payload = [0x07, 0x06, A_HI, A_MID, A_LO, 0x00]
+  // The ECU erases one flash SECTOR identified by its start address;
+  // there is no "end" parameter (the chip itself defines sector size).
+  // Earlier versions of this function sent an 8-byte address-pair which
+  // the ECU rejected with status 0xB0.
   return Buffer.from([
     DS2_CMD_PROG_PREFIX,
     DS2_PROG_ERASE,
-    (start >> 16) & 0xff,
-    (start >> 8) & 0xff,
-    start & 0xff,
-    (end >> 16) & 0xff,
-    (end >> 8) & 0xff,
-    end & 0xff,
+    (sectorStart >> 16) & 0xff,
+    (sectorStart >> 8) & 0xff,
+    sectorStart & 0xff,
     0,
   ]);
+}
+
+function buildPollRequest(addr: number): Buffer {
+  // Verified against MS4x Flasher decomp (B.cs:521-577):
+  //   payload = [0x07, 0x0F, A_HI, A_MID, A_LO, 0x00]
+  // Cmd 0x07 0x0F polls the programming-state machine. Used after
+  // erase + write to wait for the operation to complete and (in strict
+  // mode) check the result byte at frame[8].
+  return Buffer.from([
+    DS2_CMD_PROG_PREFIX,
+    DS2_PROG_VERIFY,
+    (addr >> 16) & 0xff,
+    (addr >> 8) & 0xff,
+    addr & 0xff,
+    0,
+  ]);
+}
+
+/**
+ * Operation result byte at frame offset 8 of erase/write/poll responses.
+ * Values from MS4x Flasher decomp B.cs:351-383, 451-477, 550-563.
+ */
+const OP_RESULT_OK = 1;
+const OP_RESULT_ERRORS: Record<number, string> = {
+  2: 'op result 0x02 (write-protect or generic erase failure)',
+  9: 'op result 0x09 (address out of range)',
+  10: 'op result 0x0A (alignment error)',
+  11: 'op result 0x0B (flash not erased before write)',
+  12: 'op result 0x0C (voltage out of spec)',
+  13: 'op result 0x0D (programming timeout)',
+  14: 'op result 0x0E (protection bit set)',
+  15: 'op result 0x0F (verify / CRC mismatch)',
+};
+
+function checkOpResult(frame: Buffer, stage: 'erase' | 'write' | 'verify'): void {
+  if (frame.length < 9) {
+    throw new DirectModeError(
+      `${stage} response too short for result byte: ${frame.length} bytes`,
+      stage,
+    );
+  }
+  const rb = frame[8];
+  if (rb === OP_RESULT_OK) return;
+  const msg = OP_RESULT_ERRORS[rb] ?? `unknown op-result byte 0x${rb.toString(16)}`;
+  throw new DirectModeError(`${stage}: ${msg}`, stage);
+}
+
+/**
+ * Poll the programming state machine at `addr` until it reports a
+ * non-pending status (0xA1 means "still busy, retry"). When `strict`
+ * is true, also enforce that the op-result byte at frame[8] is OK.
+ * Mirrors MS4x Flasher's `a(uint, …)` (loose) and `B(uint, …)` (strict).
+ */
+async function runPoll(
+  iface: DirectModeTransport,
+  profile: EcuProfile,
+  addr: number,
+  strict: boolean,
+  totalTimeoutMs: number = 30_000,
+): Promise<void> {
+  const req = buildPollRequest(addr);
+  const deadline = Date.now() + totalTimeoutMs;
+  while (true) {
+    const frame = await sendAndReceiveRaw(iface, profile.ds2Addr, req);
+    const status = frame[2];
+    if (status === DS2_STATUS_OK) {
+      if (strict) checkOpResult(frame, 'verify');
+      return;
+    }
+    if (status === DS2_STATUS_PENDING) {
+      if (Date.now() > deadline) {
+        throw new DirectModeError(`poll still pending after ${totalTimeoutMs} ms`, 'verify');
+      }
+      await new Promise((r) => setTimeout(r, 30));
+      continue;
+    }
+    throw new DirectModeError(
+      `poll returned status 0x${status.toString(16)}`,
+      'verify',
+    );
+  }
 }
 
 function buildWriteRequest(addr24: number, data: Buffer): Buffer {
@@ -342,12 +483,22 @@ async function eraseRegion(
   profile: EcuProfile,
   region: FlashRegion,
 ): Promise<void> {
-  await sendAndAwaitOk(
+  // Single erase command per region. The ECU erases the sector that
+  // contains `region.start`; the chip itself defines sector boundaries.
+  // For MS42/MS43 the writeable regions in `fullRegions` align with
+  // AM29F400's sector boundaries, so one erase covers the whole region.
+  const frame = await sendAndReceiveRaw(
     iface,
     profile.ds2Addr,
-    buildEraseRequest(region.start, region.end),
-    { totalTimeoutMs: 60_000 },
+    buildEraseRequest(region.start),
   );
+  if (frame[2] !== DS2_STATUS_OK) {
+    throw new DirectModeError(
+      `erase rejected (status 0x${frame[2].toString(16)})`,
+      'erase',
+    );
+  }
+  checkOpResult(frame, 'erase');
 }
 
 /**
@@ -389,9 +540,21 @@ async function writeRegion(
     }
     const data = image.subarray(region.binOffset + pos, region.binOffset + pos + chunkSize);
     const ecuAddr = region.start + pos;
-    await sendAndAwaitOk(iface, profile.ds2Addr, buildWriteRequest(ecuAddr, data), {
-      totalTimeoutMs: 30_000,
-    });
+    const frame = await sendAndReceiveRaw(
+      iface,
+      profile.ds2Addr,
+      buildWriteRequest(ecuAddr, data),
+    );
+    if (frame[2] !== DS2_STATUS_OK) {
+      throw new DirectModeError(
+        `write rejected at 0x${ecuAddr.toString(16)} (status 0x${frame[2].toString(16)})`,
+        'write',
+      );
+    }
+    // MS4x Flasher always inspects the op-result byte at frame[8] — a
+    // 0xA0 status with op-result != 1 means the ECU accepted the
+    // command frame but the flash operation itself failed.
+    checkOpResult(frame, 'write');
     bytesWritten += chunkSize;
     pos += chunkSize;
     onChunk?.(pos, length);
@@ -560,15 +723,36 @@ export async function writeFlash(
   const regions = pickRegions(profile, opts.mode, 'write');
   const total = totalBytesForMode(profile, opts.mode, 'write');
 
-  onProgress?.({ stage: 'erase', message: `erasing ${regions.length} region(s)` });
-  for (const r of regions) {
-    await eraseRegion(iface, profile, r);
-  }
-
+  // Sequence per region, mirroring MS4x Flasher's `t::A()` / `T::A()`:
+  //   pollLoose(start) → erase(start) → pollLoose(start) → write region
+  //
+  // After ALL regions are written, do a final strict poll on the last
+  // erase block to confirm everything committed (MS4x uses `B(uint, …)`
+  // on the last sector — strict = check op-result byte).
   onProgress?.({ stage: 'write', message: 'programming', fraction: 0 });
   let totalWritten = 0;
   let totalSkipped = 0;
-  for (const r of regions) {
+  for (let idx = 0; idx < regions.length; idx++) {
+    const r = regions[idx];
+    const isLast = idx === regions.length - 1;
+    onProgress?.({
+      stage: 'erase',
+      message: `pre-poll @ 0x${r.start.toString(16)}`,
+    });
+    await runPoll(iface, profile, r.start, false);
+
+    onProgress?.({
+      stage: 'erase',
+      message: `erase sector @ 0x${r.start.toString(16)}`,
+    });
+    await eraseRegion(iface, profile, r);
+
+    onProgress?.({
+      stage: 'erase',
+      message: `post-erase poll @ 0x${r.start.toString(16)}`,
+    });
+    await runPoll(iface, profile, r.start, false);
+
     const { bytesWritten, bytesSkipped } = await writeRegion(
       iface,
       profile,
@@ -584,6 +768,12 @@ export async function writeFlash(
     );
     totalWritten += bytesWritten;
     totalSkipped += bytesSkipped;
+
+    onProgress?.({
+      stage: 'write',
+      message: `post-write poll @ 0x${r.start.toString(16)}`,
+    });
+    await runPoll(iface, profile, r.start, isLast /* strict on final */);
   }
 
   let verified = false;

@@ -270,17 +270,30 @@ A session lasts until either disconnect or the ECU's idle timeout fires
 
 ## 3.2 SEED/KEY authentication
 
+Verified against MS4x Flasher 1.6.0 decomp (`ᄁ/A/B.cs:211-273`).
+
+> **Earlier versions of this document were wrong** on three counts:
+> they prepended a `0x07` programming-prefix to the SEED/KEY payloads
+> (the ECU rejects this), they specified `0x91` as the key-submit
+> opcode (the actual opcode is `0x90`, same as the seed request — the
+> ECU disambiguates by payload shape), and the key-derivation indices
+> were payload-relative rather than frame-relative. All three are
+> corrected below.
+
 ### Step 1 — Request seed (`CMD = 0x90`)
 
 ```
 [ADDR] [0x07] [0x90] [0x42] [0x4D] [0x57] [NONCE] [XOR]
 ```
 
+- `LEN = 7` total frame
 - Command byte `0x90`
 - Three fixed bytes spelling `BMW` in ASCII
 - `NONCE`: one random byte in the range **1..23 inclusive**. Values
   outside this range produce undefined behaviour (the ECU may derive
   a different key, causing silent auth failure).
+- **NO** `0x07` programming-prefix — the payload is just the 5 bytes
+  shown after `[ADDR][LEN]`.
 
 ### Step 2 — Receive seed material
 
@@ -289,32 +302,39 @@ A session lasts until either disconnect or the ECU's idle timeout fires
 ```
 
 - `LEN = 46` (`0x2E`)
-- 43 bytes of seed material at response positions `[3..45]`
+- 43 bytes of seed material at frame positions `[3..45]`
 - If `LEN == 5` instead, authentication is already unlocked for this
   session — skip to Step 4.
 
 ### Step 3 — Derive the key
 
-The 4-byte response key is computed from the seed material and the
+The 4-byte key is computed from the **full received frame** and the
 nonce. For `i ∈ {0, 1, 2, 3}`:
 
 ```
-key[i] = ( seed[(nonce + i) mod seed[1]]
-         + seed[18 + i]
-         + seed[41 + i] ) mod 256
+key[i] = ( frame[(nonce + i) mod frame[1]]
+         + frame[18 + i]
+         + frame[41 + i] ) mod 256
 ```
 
-Where `seed[k]` is the `k`-th byte of the response (so `seed[0] = ADDR`,
-`seed[1] = LEN = 0x2E`, `seed[2] = 0xA0` status, `seed[3]…` is the
-material). The first term uses `seed[1]` as the modulus, yielding a
-cyclic index into the response bytes. Arithmetic is unsigned 8-bit
-addition with implicit truncation.
+`frame[k]` is the `k`-th byte of the **full received DS2 frame**:
+`frame[0] = ADDR`, `frame[1] = LEN = 0x2E` (also the wrap modulus),
+`frame[2] = STATUS = 0xA0`, `frame[3]…` = seed material, `frame[45] = XOR`.
+
+The first term wraps modulo the LEN byte, yielding a cyclic index into
+the response bytes. Arithmetic is unsigned 8-bit addition with implicit
+truncation.
 
 ### Step 4 — Submit the key
 
 ```
-[ADDR] [0x06] [KEY_0] [KEY_1] [KEY_2] [KEY_3] [XOR]
+[ADDR] [0x07] [0x90] [KEY_0] [KEY_1] [KEY_2] [KEY_3] [XOR]
 ```
+
+- `LEN = 7`
+- Command byte is **`0x90`** — the **same** opcode as the seed request,
+  not `0x91`. The ECU distinguishes seed-request from key-submit by the
+  payload pattern (BMW magic vs raw key bytes).
 
 Response on success: `[ADDR] [0x05] [0xA0] [SBYTE_3] [XOR]`. Any status
 other than `0xA0` means authentication failed; the ECU may impose a
@@ -322,7 +342,14 @@ back-off before accepting another attempt.
 
 ## 3.3 Erase (`CMD = 0x07 0x06`)
 
-Erases a memory region in preparation for writes.
+Erases a single flash **sector** identified by its start address. The
+ECU/chip itself defines sector boundaries (AM29F400 has 11 sectors of
+mixed 4 KB/8 KB/32 KB/64 KB).
+
+> **Earlier versions of this document specified a start+end address
+> pair (9-byte payload). That was wrong** — the actual erase request
+> takes only a 3-byte start address (6-byte payload). Verified against
+> MS4x Flasher decomp at `ᄁ/A/B.cs:335-396`.
 
 ### Request
 
@@ -330,7 +357,8 @@ Erases a memory region in preparation for writes.
 [ADDR] [0x08] [0x07] [0x06] [A_HI] [A_MID] [A_LO] [0x00] [XOR]
 ```
 
-- 24-bit big-endian start address (`0x000000` for full-image erase)
+- `LEN = 8`
+- 24-bit big-endian sector-start address
 - Reserved trailing byte `0x00`
 
 ### Response
@@ -382,11 +410,12 @@ When trailing bytes are stripped, the next block's destination address
 must still account for the stripped bytes (address += original block
 length, not trimmed length).
 
-## 3.5 Verify (`CMD = 0x07 0x0F`)
+## 3.5 Poll / verify (`CMD = 0x07 0x0F`)
 
-Triggers an ECU-internal integrity check over a region and waits for the
-result. Issued after all writes are complete; can also confirm an
-existing firmware image is intact.
+Poll the programming state machine — used between erase + write
+operations to wait for the previous step to finish, and on the final
+sector to confirm the whole sequence committed. Verified against MS4x
+Flasher decomp (`ᄁ/A/B.cs:521-577`, methods `a()` loose / `B()` strict).
 
 ### Request
 
@@ -400,17 +429,43 @@ existing firmware image is intact.
 [ADDR] [LEN] [STATUS] [...] [RESULT] [XOR]
 ```
 
-- `STATUS = 0xA1` ⇒ **pending** — re-issue after ~10 ms
+- `STATUS = 0xA1` ⇒ **pending** — re-issue after ~30 ms
 - `STATUS = 0xA0` AND `RESULT = 0x01` ⇒ **passed**
 - `STATUS = 0xA0` AND `RESULT ≠ 0x01` ⇒ **failed** (operation-specific
-  error code)
+  error code at frame offset 8, see §3.7)
+- `STATUS = 0xA2` ⇒ permanent fail (don't retry)
+- `STATUS = 0xB0` ⇒ frame error
 
-The ECU computes its own CRC internally; the response carries only
-pass/fail, not the CRC value. For byte-for-byte verification, the host
-can read back the region via §2.2 and compare against the source image.
+### Loose vs strict polling
+
+MS4x Flasher dispatches two variants:
+
+- **Loose** (between operations) — only checks that STATUS is not
+  pending. Used after every erase and after every region's writes,
+  except the last.
+- **Strict** (final check) — also verifies `RESULT == 0x01`. Used on
+  the last sector to assert the whole flash operation committed.
+
+The ECU computes its own integrity check internally; the response
+carries only pass/fail at frame offset 8, not a CRC value. For
+byte-for-byte verification, the host should also read back the region
+via §2.2 and compare against the source image.
 
 There is no hard limit on polling iterations — the host should rely on
 a cancellation token or wall-clock timeout to bound the operation.
+
+### Per-region sequence
+
+Each `(erase + write)` region pair follows this sequence:
+
+```
+pollLoose(sector.start)
+erase(sector.start)
+pollLoose(sector.start)
+write region data (skipping 0xFF pairs)
+pollLoose(sector.start)        ← if not the last region
+pollStrict(sector.start)       ← if this IS the last region
+```
 
 
 ## 3.6 Disconnect

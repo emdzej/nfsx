@@ -1,28 +1,45 @@
 /**
- * BMW DS2 SEED/KEY authentication.
+ * BMW DS2 SEED/KEY authentication — verified against MS4x Flasher 1.6.0
+ * `ᄁ/A/B.cs:211-273` (engine ECUs / TCUs share the same algorithm).
  *
- * Per `docs/raw-ds2-flashing.md` §3.2:
+ * Flow:
+ *   1. Host sends `[ADDR] 0x07 0x90 0x42 0x4D 0x57 <NONCE> [XOR]`
+ *      Payload = `[0x90, 0x42, 0x4D, 0x57, NONCE]` (NO `0x07` prog
+ *      prefix — that turned out to be wrong in our earlier doc).
+ *      `NONCE` is a random byte in 1..23 inclusive.
+ *   2. ECU response framed as `[ADDR] LEN STATUS …seed bytes… XOR`.
+ *      - If `LEN == 5` → ECU is already authorised; skip step 3.
+ *      - If `LEN == 46` (0x2E) → seed material follows. Anything else
+ *        is a protocol error.
+ *   3. Compute the 4-byte key from the **full received frame**:
  *
- *   1. Host sends `[ADDR] 07 90 42 4D 57 <NONCE> [XOR]` — "BMW" + 1-byte
- *      nonce in 1..23.
- *   2. ECU responds with a 64-byte seed buffer.
- *   3. Host computes a 4-byte key:
+ *        key[i] = (frame[(NONCE + i) mod frame[1]]
+ *               +  frame[18 + i]
+ *               +  frame[41 + i]) mod 256          for i = 0..3
  *
- *        key[i] = (seed[(nonce + i) mod seed[1]]
- *               +  seed[18 + i]
- *               +  seed[41 + i]) mod 256        for i = 0..3
- *
- *   4. Host sends `[ADDR] 0A 91 <key0..key3> [XOR]` — "submit key".
+ *      Note: indices are into the FRAME (including ADDR at [0] and LEN
+ *      at [1]), not into the payload — earlier versions of this file
+ *      used payload-relative indices and produced wrong keys.
+ *   4. Host sends `[ADDR] LEN 0x90 <k0..k3> [XOR]`
+ *      Payload = `[0x90, k0, k1, k2, k3]`. Key submit uses the **same**
+ *      command byte `0x90` as the seed request — the ECU disambiguates
+ *      by payload length / shape, not by opcode.
  *   5. ECU returns status `0xA0` (accept) or an error.
- *
- * Nonce MUST be in 1..23 inclusive; 0 and ≥24 give undefined behaviour.
  */
 import { Buffer } from 'node:buffer';
 
 export const SEED_KEY_PREFIX = Buffer.from([0x42, 0x4d, 0x57]); // "BMW"
 export const SEED_REQUEST_CMD = 0x90;
-export const KEY_SUBMIT_CMD = 0x91;
-/** Some ECUs use a 2-byte programming-prefix for SEED/KEY; MS-class uses just 0x90 / 0x91. */
+/**
+ * Key submit uses the same opcode as the seed request (verified in
+ * MS4x Flasher decomp at B.cs:215). Our earlier impl had `0x91` which
+ * the ECU rejects.
+ */
+export const KEY_SUBMIT_CMD = 0x90;
+
+/** Successful seed-request response LEN values. */
+export const SEED_RESP_LEN_AUTHORISED = 5; // ECU is already authed
+export const SEED_RESP_LEN_FULL = 46; // 0x2E — seed material present
 
 export class SeedKeyError extends Error {
   constructor(message: string) {
@@ -33,7 +50,8 @@ export class SeedKeyError extends Error {
 
 /**
  * Build the seed-request payload (the bytes after LEN and before XOR
- * in a DS2 frame). The full frame is `[ADDR] LEN <payload> XOR`.
+ * in a DS2 frame). The full frame the transport sends will be
+ * `[ADDR] LEN <payload> XOR`.
  *
  * Payload: `0x90 0x42 0x4D 0x57 <nonce>` (5 bytes).
  */
@@ -45,45 +63,50 @@ export function buildSeedRequestPayload(nonce: number): Buffer {
 }
 
 /**
- * Compute the 4-byte key from the seed buffer and nonce.
+ * Compute the 4-byte key from the **full received DS2 frame** and the
+ * nonce that was sent in the seed request.
  *
- * The seed buffer is the DS2 *payload* of the response (i.e. after
- * LEN/STATUS, before XOR — the actual seed material). Layout:
- *   seed[0..1]   header / status bytes (the wraparound modulus uses seed[1])
- *   seed[2..17]  variant material
- *   seed[18..21] key-derivation table A (used directly for indices 0..3)
- *   seed[22..40] more variant material
- *   seed[41..44] key-derivation table B
- *   ...
+ * `frame` must be the complete received frame:
+ *   frame[0]      = ADDR (echoed back)
+ *   frame[1]      = LEN  (= 46 for a full seed response)
+ *   frame[2]      = STATUS (= 0xA0)
+ *   frame[3..]    = seed material
+ *   frame[LEN-1]  = XOR
  *
- * `seed[1]` is the modulus used when wrapping the nonce index —
- * different ECUs may use a different field. If your ECU rejects the
- * derived key, dump the seed and check whether `seed[1]` is the actual
- * modulus on that variant.
+ * Algorithm (verified vs B.cs:275-283):
+ *   key[i] = ( frame[(NONCE + i) mod frame[1]]
+ *           +  frame[18 + i]
+ *           +  frame[41 + i] ) mod 256       for i = 0..3
+ *
+ * If your ECU rejects the derived key, dump the frame and double-check
+ * frame[1] (the modulus) and the bytes at frame[18..21] and
+ * frame[41..44] — those are the variant-specific entropy sources.
  */
-export function deriveKey(seed: Buffer, nonce: number): Buffer {
-  if (seed.length < 45) {
+export function deriveKey(frame: Buffer, nonce: number): Buffer {
+  if (frame.length < 45) {
     throw new SeedKeyError(
-      `seed buffer too short: ${seed.length} bytes (need ≥ 45 to compute key)`,
+      `frame too short: ${frame.length} bytes (need ≥ 45 to read frame[41..44])`,
     );
   }
   if (nonce < 1 || nonce > 23) {
     throw new SeedKeyError(`nonce must be in 1..23 (got ${nonce})`);
   }
-  const modulus = seed[1];
+  const modulus = frame[1];
   if (modulus === 0) {
-    throw new SeedKeyError(`seed[1] (the wraparound modulus) is 0 — refusing to divide by zero`);
+    throw new SeedKeyError('frame[1] (LEN / modulus) is 0 — invalid frame');
   }
   const key = Buffer.alloc(4);
   for (let i = 0; i < 4; i++) {
     const idx = (nonce + i) % modulus;
-    key[i] = (seed[idx] + seed[18 + i] + seed[41 + i]) & 0xff;
+    key[i] = (frame[idx] + frame[18 + i] + frame[41 + i]) & 0xff;
   }
   return key;
 }
 
 /**
- * Build the key-submit payload: `0x91 <key0..key3>` (5 bytes).
+ * Build the key-submit payload: `0x90 <key0..key3>` (5 bytes).
+ * Note the leading byte is `0x90`, the same as the seed-request cmd —
+ * the ECU disambiguates by frame length / contents.
  */
 export function buildKeySubmitPayload(key: Buffer): Buffer {
   if (key.length !== 4) {
