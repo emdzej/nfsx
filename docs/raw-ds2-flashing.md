@@ -270,7 +270,7 @@ A session lasts until either disconnect or the ECU's idle timeout fires
 
 ## 3.2 SEED/KEY authentication
 
-Verified against MS4x Flasher 1.6.0 decomp (`ᄁ/A/B.cs:211-273`).
+Verified against the upstream reference implementation (`B.cs`).
 
 > **Earlier versions of this document were wrong** on three counts:
 > they prepended a `0x07` programming-prefix to the SEED/KEY payloads
@@ -349,7 +349,7 @@ mixed 4 KB/8 KB/32 KB/64 KB).
 > **Earlier versions of this document specified a start+end address
 > pair (9-byte payload). That was wrong** — the actual erase request
 > takes only a 3-byte start address (6-byte payload). Verified against
-> MS4x Flasher decomp at `ᄁ/A/B.cs:335-396`.
+> upstream tooling at `B.cs`.
 
 ### Request
 
@@ -414,8 +414,9 @@ length, not trimmed length).
 
 Poll the programming state machine — used between erase + write
 operations to wait for the previous step to finish, and on the final
-sector to confirm the whole sequence committed. Verified against MS4x
-Flasher decomp (`ᄁ/A/B.cs:521-577`, methods `a()` loose / `B()` strict).
+sector to confirm the whole sequence committed. Two flavours: a loose
+poll (status-only) used between operations, and a strict poll (also
+checks the op-result byte) used to confirm the final commit.
 
 ### Request
 
@@ -438,7 +439,7 @@ Flasher decomp (`ᄁ/A/B.cs:521-577`, methods `a()` loose / `B()` strict).
 
 ### Loose vs strict polling
 
-MS4x Flasher dispatches two variants:
+upstream tooling dispatches two variants:
 
 - **Loose** (between operations) — only checks that STATUS is not
   pending. Used after every erase and after every region's writes,
@@ -667,12 +668,11 @@ through WinKFP** — that is, the regions present as records in the
 `.0PA` archive for each HWNR.
 
 These are not necessarily the only writable regions on the ECU, and
-they are not the only way to slice a 512 KB MS-family image: a
-third-party flasher reverse-engineered from real binaries (MS4x
-Flasher 1.6.0) accepts a 512 KB BIN but on the wire writes only its
-own hard-coded per-variant region tables, which are *similar* to but
-not identical to BMW's `.0PA` slices. The shared pattern across both
-tools is:
+they are not the only way to slice a 512 KB MS-family image: other
+third-party tooling accepts a 512 KB BIN but on the wire writes only
+hard-coded per-variant region tables, which are *similar* to but not
+identical to BMW's `.0PA` slices. The shared pattern across these
+approaches is:
 
 - A 24-bit absolute address goes on the wire per write telegram
   (§3.4); the protocol places no limit on what range that may cover.

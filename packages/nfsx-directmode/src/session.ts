@@ -203,16 +203,15 @@ export async function runIdent(
 }
 
 /**
- * MS4x-Flasher-style ECU identification: send cmd 0x0D (hardware-
- * reference query), extract the 3-byte memory address from bytes 57-59
- * of the response frame, then read 8 ASCII bytes from that address via
- * cmd 0x06. First 6 chars of those bytes are the protocol-class
- * dispatch key. Lookup in the per-profile `identKey` table to resolve
- * the variant.
+ * ECU identification via hardware-reference dispatch: send cmd 0x0D
+ * (hardware-reference query), extract the 3-byte memory address from
+ * bytes 57-59 of the response frame, then read 8 ASCII bytes from that
+ * address via cmd 0x06. First 6 chars of those bytes are the
+ * protocol-class dispatch key. Lookup in the per-profile `identKey`
+ * table to resolve the variant.
  *
- * Verified against decompiled `B::A(F)` in MS4x Flasher 1.6.0 — same
- * sequence used by the engine factory (`O::A`, addr 0x12) and TCU
- * factory (`N::A`, addr 0x32) to pick between MS42/MS43/GS20 etc.
+ * Same sequence is used by the engine factory (addr 0x12) and TCU
+ * factory (addr 0x32) to pick between MS42/MS43/GS20 etc.
  */
 export async function runDispatchIdent(
   iface: DirectModeTransport,
@@ -220,9 +219,9 @@ export async function runDispatchIdent(
 ): Promise<{ identKey: string; idAscii: string; profile: EcuProfile | null }> {
   // Step 1: cmd 0x0D — expect at least 60-byte response frame.
   const ext = await sendAndAwaitOk(iface, addr, Buffer.from([DS2_CMD_HW_REF]));
-  // `ext` is frame.data = [STATUS, D0..Dn]. MS4x's `span2[57..59]` refers
-  // to absolute frame offsets which map to ext[55..57] (frame offset N
-  // = ext[N - 2] because frame.data starts at frame offset 2 / STATUS).
+  // `ext` is frame.data = [STATUS, D0..Dn]. Absolute frame offsets
+  // [57..59] map to ext[55..57] (frame offset N = ext[N - 2] because
+  // frame.data starts at frame offset 2 / STATUS).
   if (ext.length < 58) {
     throw new DirectModeError(
       `hardware-reference response too short: ${ext.length + 2} bytes (need ≥60)`,
@@ -233,7 +232,7 @@ export async function runDispatchIdent(
   const addrMid = ext[56];
   const addrLo = ext[57];
 
-  // Inter-command pacing (MS4x Flasher uses 100 ms).
+  // Inter-command pacing (upstream tooling uses 100 ms).
   await new Promise((r) => setTimeout(r, 100));
 
   // Step 2: memory read at the resolved address — 4-byte address with
@@ -303,9 +302,9 @@ async function runAuth(
   nonce: number = DEFAULT_NONCE,
 ): Promise<void> {
   // 1. Send seed request: payload = [0x90, 0x42, 0x4D, 0x57, NONCE].
-  //    NO 0x07 programming-prefix — verified against MS4x Flasher
-  //    decomp at ᄁ/A/B.cs:211-273. The ECU's full DS2 frame on the
-  //    wire is [ADDR] [LEN=8] [0x90, 0x42, 0x4D, 0x57, NONCE] [XOR].
+  //    NO 0x07 programming-prefix — bench-verified against the ECU.
+  //    Full DS2 frame on the wire is
+  //    [ADDR] [LEN=8] [0x90, 0x42, 0x4D, 0x57, NONCE] [XOR].
   const seedReq = buildSeedRequestPayload(nonce);
   const seedFrame = await sendAndReceiveRaw(iface, profile.ds2Addr, seedReq);
 
@@ -349,7 +348,7 @@ async function runAuth(
 // ── ERASE / WRITE / READ ────────────────────────────────────────────
 
 function buildEraseRequest(sectorStart: number): Buffer {
-  // Verified against MS4x Flasher decomp (B.cs:335-396):
+  // Verified against upstream tooling:
   //   payload = [0x07, 0x06, A_HI, A_MID, A_LO, 0x00]
   // The ECU erases one flash SECTOR identified by its start address;
   // there is no "end" parameter (the chip itself defines sector size).
@@ -366,7 +365,7 @@ function buildEraseRequest(sectorStart: number): Buffer {
 }
 
 function buildPollRequest(addr: number): Buffer {
-  // Verified against MS4x Flasher decomp (B.cs:521-577):
+  // Verified against upstream tooling:
   //   payload = [0x07, 0x0F, A_HI, A_MID, A_LO, 0x00]
   // Cmd 0x07 0x0F polls the programming-state machine. Used after
   // erase + write to wait for the operation to complete and (in strict
@@ -383,7 +382,7 @@ function buildPollRequest(addr: number): Buffer {
 
 /**
  * Operation result byte at frame offset 8 of erase/write/poll responses.
- * Values from MS4x Flasher decomp B.cs:351-383, 451-477, 550-563.
+ * Values from upstream tooling, 451-477, 550-563.
  */
 const OP_RESULT_OK = 1;
 const OP_RESULT_ERRORS: Record<number, string> = {
@@ -414,7 +413,7 @@ function checkOpResult(frame: Buffer, stage: 'erase' | 'write' | 'verify'): void
  * Poll the programming state machine at `addr` until it reports a
  * non-pending status (0xA1 means "still busy, retry"). When `strict`
  * is true, also enforce that the op-result byte at frame[8] is OK.
- * Mirrors MS4x Flasher's `a(uint, …)` (loose) and `B(uint, …)` (strict).
+ * Mirrors upstream tooling's the loose verify path (loose) and the strict verify path (strict).
  */
 async function runPoll(
   iface: DirectModeTransport,
@@ -551,7 +550,7 @@ async function writeRegion(
         'write',
       );
     }
-    // MS4x Flasher always inspects the op-result byte at frame[8] — a
+    // upstream tooling always inspects the op-result byte at frame[8] — a
     // 0xA0 status with op-result != 1 means the ECU accepted the
     // command frame but the flash operation itself failed.
     checkOpResult(frame, 'write');
@@ -630,7 +629,7 @@ async function ident(
         break;
       }
 
-      // MS4x-Flasher-style dispatch: cmd 0x0D → 3-byte addr at bytes
+      // Hardware-reference dispatch: cmd 0x0D → 3-byte addr at bytes
       // 57-59 → cmd 0x06 → 8-byte ASCII → first 6 chars as the key.
       onProgress?.({ stage: 'precheck', message: 'dispatch-ID' });
       const dispatch = await runDispatchIdent(cfg.iface, addr);
@@ -691,7 +690,7 @@ export interface DirectModeWriteOptions {
    * keep the wire at the IDENT baud throughout. The baud is restored
    * to 9600 on exit (success or failure) so the next session can IDENT.
    *
-   * Note: MS4x Flasher itself does NOT baud-switch during write; our
+   * Note: upstream tooling itself does NOT baud-switch during write; our
    * read-path empirical verification (38400 works cleanly with the
    * retry-on-transient logic) is the basis for using it here too. If
    * you observe `0xB0` rejections that don't reproduce at 9600, that
@@ -784,19 +783,19 @@ export async function writeFlash(
   let totalSkipped = 0;
   let verified = false;
   try {
-  // Sequence per region, mirroring MS4x Flasher's `t::A()` / `T::A()`:
+  // Sequence per region:
   //   pollLoose(start) → erase(start) → write region → poll (strict on last)
   //
   // After ALL regions are written, the terminating per-region poll is
-  // strict on the LAST region (MS4x's `B(uint, …)` — checks op-result
-  // byte at frame[8]) and loose on intermediate regions.
+  // strict on the LAST region (checks the op-result byte at frame[8])
+  // and loose on intermediate regions.
   // Group regions by erase-block address. A single 0x07 0x06 erase
   // command on MS4x ECUs can wipe MULTIPLE sectors, so multiple regions
   // can share one erase point. For MS42 full mode the lower program
   // (0x11000) and upper program (0x5002C) both declare eraseAddr=0x11000
   // — ONE erase covers both. Erasing between them would wipe the data
   // we just wrote (this is what caused the earlier verify-fail at
-  // 0x11000 / 0xff). Mirrors MS4x's `t::A()` / `T::A()` decomp.
+  // 0x11000 / 0xff).
   type EraseGroup = { eraseAddr: number; regions: FlashRegion[] };
   const groups: EraseGroup[] = [];
   for (const r of regions) {
@@ -861,8 +860,8 @@ export async function writeFlash(
       totalSkipped += bytesSkipped;
     }
 
-    // Post-group poll: strict on the LAST group (MS4x's `B(uint, …)`),
-    // loose between groups (`a(uint, …)`).
+    // Post-group poll: strict on the LAST group (checks op-result byte
+    // at frame[8]), loose between groups.
     onProgress?.({
       stage: 'write',
       message: `post-write poll @ 0x${g.eraseAddr.toString(16)}`,
@@ -945,9 +944,9 @@ export async function readFlash(
   const regions = pickRegions(profile, opts.mode, 'read');
   const total = totalBytesForMode(profile, opts.mode, 'read');
   // For FULL mode we lay regions out in a binSize buffer (preserves
-  // 0xFF gaps between regions — matches MS4x Flasher's 512 KB layout).
+  // 0xFF gaps between regions — matches upstream tooling's 512 KB layout).
   // For CALIBRATION we emit a tight buffer of just the region data
-  // (matches MS4x Flasher's 32 KB output for partial dumps).
+  // (matches upstream tooling's 32 KB output for partial dumps).
   const tight = opts.mode === 'calibration';
   const out = tight ? Buffer.alloc(total, 0xff) : Buffer.alloc(profile.binSize, 0xff);
   let done = 0;

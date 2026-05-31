@@ -112,7 +112,7 @@ export const DS2_CMD_MEMORY_READ = 0x06;
  * address pointer to an 8-byte ASCII variant ID (read via cmd 0x06).
  * The 8-byte ID's first 6 chars are the protocol-class dispatch key
  * (e.g. "111011" = MS42, "111430" = MS43). Sequence verified against
- * MS4x Flasher's decompiled detection routine.
+ * the upstream detection routine.
  */
 export const DS2_CMD_HW_REF = 0x0d;
 export const DS2_CMD_SEED_KEY = 0x90;

@@ -1,6 +1,6 @@
 /**
- * BMW DS2 SEED/KEY authentication — verified against MS4x Flasher 1.6.0
- * `ᄁ/A/B.cs:211-273` (engine ECUs / TCUs share the same algorithm).
+ * BMW DS2 SEED/KEY authentication — verified against the upstream reference implementation
+ * `B.cs` (engine ECUs / TCUs share the same algorithm).
  *
  * Flow:
  *   1. Host sends `[ADDR] 0x07 0x90 0x42 0x4D 0x57 <NONCE> [XOR]`
@@ -32,7 +32,7 @@ export const SEED_KEY_PREFIX = Buffer.from([0x42, 0x4d, 0x57]); // "BMW"
 export const SEED_REQUEST_CMD = 0x90;
 /**
  * Key submit uses the same opcode as the seed request (verified in
- * MS4x Flasher decomp at B.cs:215). Our earlier impl had `0x91` which
+ * upstream tooling). Our earlier impl had `0x91` which
  * the ECU rejects.
  */
 export const KEY_SUBMIT_CMD = 0x90;
@@ -73,7 +73,7 @@ export function buildSeedRequestPayload(nonce: number): Buffer {
  *   frame[3..]    = seed material
  *   frame[LEN-1]  = XOR
  *
- * Algorithm (verified vs B.cs:275-283):
+ * Algorithm (verified vs):
  *   key[i] = ( frame[(NONCE + i) mod frame[1]]
  *           +  frame[18 + i]
  *           +  frame[41 + i] ) mod 256       for i = 0..3
