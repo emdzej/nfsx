@@ -701,7 +701,36 @@ export async function writeFlash(
 ): Promise<DirectModeWriteResult> {
   const { iface, profile } = await ident(cfg, onProgress);
 
-  if (image.length !== profile.binSize) {
+  // Calibration mode accepts EITHER a full binSize BIN (data at the
+  // ECU-absolute offset) or a tight cal-only BIN (data at offset 0).
+  // The tight size equals the READ-region length — i.e. what
+  // `readFlash -m calibration` produces — which is slightly larger than
+  // the writable subset (the last 16/17 bytes are the read-only
+  // checksum trailer the write path skips).
+  if (opts.mode === 'calibration') {
+    const readRegions = pickRegions(profile, 'calibration', 'read');
+    const tightSize = readRegions.reduce((n, r) => n + (r.end - r.start + 1), 0);
+    if (image.length === tightSize) {
+      // Expand into a binSize-padded buffer so the existing region
+      // walkers (which index by `region.binOffset`) keep working
+      // unchanged. The expansion is local — the caller's buffer is
+      // never mutated.
+      const expanded = Buffer.alloc(profile.binSize, 0xff);
+      let cursor = 0;
+      for (const r of readRegions) {
+        const len = r.end - r.start + 1;
+        image.copy(expanded, r.binOffset, cursor, cursor + len);
+        cursor += len;
+      }
+      image = expanded;
+    } else if (image.length !== profile.binSize) {
+      throw new DirectModeError(
+        `BIN size mismatch: ${image.length} bytes — expected ${tightSize} (tight cal-only) ` +
+          `or ${profile.binSize} (full BIN) for ${profile.variant} calibration mode`,
+        'precheck',
+      );
+    }
+  } else if (image.length !== profile.binSize) {
     throw new DirectModeError(
       `BIN size mismatch: ${image.length} bytes, ${profile.variant} expects ${profile.binSize}`,
       'precheck',
