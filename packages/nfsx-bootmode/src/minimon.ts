@@ -9,8 +9,10 @@
  *   host → ECU:  [payload...]
  *   ECU → host:  [response data, if any] + A_ACK2 (0xEA)
  *
- * All addresses are 32-bit little-endian; all length fields are 16-bit
- * little-endian.
+ * Addresses are 24-bit little-endian (3 bytes). Length fields are
+ * 16-bit little-endian (2 bytes). Sending a 4-byte address is wrong
+ * — MiniMon parses the extra byte as the start of the length field
+ * and the state machine diverges.
  */
 import { Buffer } from 'node:buffer';
 import type { BootmodeTransport } from './transport.js';
@@ -24,6 +26,7 @@ export const C_WRITE_BLOCK = 0x84;
 export const C_READ_BLOCK = 0x85;
 export const C_CALL_FUNCTION = 0x9f;
 export const C_GETCHECKSUM = 0x33;
+export const C_TEST_COMM = 0x93;
 
 export interface MinimonOptions {
   ackTimeoutMs?: number;
@@ -37,12 +40,12 @@ export class MinimonError extends Error {
   }
 }
 
+/** 24-bit little-endian address (MiniMon protocol — NOT 32-bit). */
 function leAddr(addr: number): Buffer {
   return Buffer.from([
     addr & 0xff,
     (addr >> 8) & 0xff,
     (addr >> 16) & 0xff,
-    (addr >>> 24) & 0xff,
   ]);
 }
 
@@ -77,8 +80,20 @@ export class MinimonClient {
     private readonly transport: BootmodeTransport,
     options: MinimonOptions = {},
   ) {
-    this.ackTimeoutMs = options.ackTimeoutMs ?? 500;
+    this.ackTimeoutMs = options.ackTimeoutMs ?? 2000;
     this.readTimeoutMs = options.readTimeoutMs ?? 5000;
+  }
+
+  /**
+   * Test communication with MiniMon. Sends `C_TEST_COMM` and expects
+   * `[A_ACK1, A_ACK2]` back. The reference flasher calls this once
+   * right after the handshake completes — it's effectively a
+   * "MiniMon, are you alive?" probe that primes the comms state.
+   */
+  async testComm(): Promise<void> {
+    await this.transport.write(Buffer.from([C_TEST_COMM]));
+    await expectByte(this.transport, A_ACK1, 'testComm', 'A_ACK1', this.ackTimeoutMs);
+    await expectByte(this.transport, A_ACK2, 'testComm', 'A_ACK2', this.ackTimeoutMs);
   }
 
   /** Read one 16-bit word from `addr`. */

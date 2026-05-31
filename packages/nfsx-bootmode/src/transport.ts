@@ -14,6 +14,15 @@ export interface BootmodeTransportConfig {
   baud: number;
   /** Default read-timeout per request, in milliseconds. */
   defaultTimeoutMs: number;
+  /**
+   * If true, every `write()` automatically reads back the same number
+   * of bytes and verifies them as echo. Required for raw K-line cables
+   * (FTDI K+DCAN) whose transceiver loops every TX byte back to RX.
+   * Default: true.
+   */
+  hasAdapterEcho?: boolean;
+  /** Per-byte echo read timeout (ms). Default: 250. */
+  echoTimeoutMs?: number;
 }
 
 export interface BootmodeTransport {
@@ -40,9 +49,13 @@ export class NodeBootmodeTransport implements BootmodeTransport {
   private buffer: number[] = [];
   private pending: PendingRead | null = null;
   private readonly config: BootmodeTransportConfig;
+  private readonly hasAdapterEcho: boolean;
+  private readonly echoTimeoutMs: number;
 
   constructor(config: BootmodeTransportConfig) {
     this.config = config;
+    this.hasAdapterEcho = config.hasAdapterEcho ?? true;
+    this.echoTimeoutMs = config.echoTimeoutMs ?? 250;
   }
 
   open(): Promise<void> {
@@ -90,11 +103,11 @@ export class NodeBootmodeTransport implements BootmodeTransport {
     });
   }
 
-  write(data: Buffer): Promise<void> {
+  async write(data: Buffer): Promise<void> {
     if (!this.port || !this.port.isOpen) {
-      return Promise.reject(new Error('transport not open'));
+      throw new Error('transport not open');
     }
-    return new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       this.port!.write(data, (err) => {
         if (err) return reject(err);
         this.port!.drain((drainErr) => {
@@ -103,6 +116,25 @@ export class NodeBootmodeTransport implements BootmodeTransport {
         });
       });
     });
+    if (this.hasAdapterEcho && data.length > 0) {
+      const echo = await this.read(
+        data.length,
+        this.echoTimeoutMs + data.length, // small per-byte slack
+      );
+      for (let i = 0; i < data.length; i++) {
+        if (echo[i] !== data[i]) {
+          throw new Error(
+            `echo mismatch at byte ${i}/${data.length}: TX=0x${data[i]
+              .toString(16)
+              .padStart(2, '0')
+              .toUpperCase()}, echo=0x${echo[i]
+              .toString(16)
+              .padStart(2, '0')
+              .toUpperCase()}`,
+          );
+        }
+      }
+    }
   }
 
   read(count: number, timeoutMs?: number): Promise<Buffer> {

@@ -88,11 +88,12 @@ async function sendAndReceiveRaw(
   iface: DirectModeTransport,
   addr: number,
   payload: Buffer,
+  options: { maxAttempts?: number } = {},
 ): Promise<Buffer> {
   const request = buildRequestPayload(addr, payload);
-  const MAX_ATTEMPTS = 8;
+  const maxAttempts = options.maxAttempts ?? 8;
   let lastErr: Error | null = null;
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) {
       await new Promise((r) => setTimeout(r, 30 * attempt));
     }
@@ -813,22 +814,45 @@ export async function writeFlash(
     const g = groups[gIdx];
     const isLastGroup = gIdx === groups.length - 1;
 
-    onProgress?.({
-      stage: 'erase',
-      message: `pre-poll @ 0x${g.eraseAddr.toString(16)}`,
-    });
-    await runPoll(iface, profile, g.eraseAddr, false);
+    // Pre-poll ONLY for the first group. Subsequent groups skip the
+    // pre-poll because the previous group's post-write poll has already
+    // confirmed the state machine is ready. Adding an extra
+    // `0x07 0x0F` at the next group's address before erase transitions
+    // the ECU into a state where the next write is rejected with op
+    // result 0x02 (verified empirically on MS43 full mode).
+    if (gIdx === 0) {
+      onProgress?.({
+        stage: 'erase',
+        message: `pre-poll @ 0x${g.eraseAddr.toString(16)}`,
+      });
+      await runPoll(iface, profile, g.eraseAddr, false);
+    }
 
     onProgress?.({
       stage: 'erase',
       message: `erase block @ 0x${g.eraseAddr.toString(16)} (covers ${g.regions.length} region(s))`,
     });
     {
-      const eFrame = await sendAndReceiveRaw(
-        iface,
-        profile.ds2Addr,
-        buildEraseRequest(g.eraseAddr),
-      );
+      // Bump the host-side read timeout for the erase frame ONLY.
+      // AM29F400 multi-sector erase can take 10-30 s to return, well
+      // past the default 5 s. A retry under short timeout would
+      // re-issue the erase command while the ECU is still processing
+      // the first one — corrupting chip state. Single attempt with a
+      // 60 s timeout, then restore the default for writes/polls (which
+      // respond in milliseconds and benefit from fast failure on
+      // transient errors).
+      await iface.setSessionTimeout(60_000);
+      let eFrame: Buffer;
+      try {
+        eFrame = await sendAndReceiveRaw(
+          iface,
+          profile.ds2Addr,
+          buildEraseRequest(g.eraseAddr),
+          { maxAttempts: 1 },
+        );
+      } finally {
+        await iface.setSessionTimeout(5000);
+      }
       if (eFrame[2] !== DS2_STATUS_OK) {
         throw new DirectModeError(
           `erase rejected (status 0x${eFrame[2].toString(16)})`,
@@ -881,17 +905,43 @@ export async function writeFlash(
           fraction: (readSoFar + read) / total,
         });
       });
-      const expected = image.subarray(r.binOffset, r.binOffset + (r.end - r.start + 1));
-      for (let i = 0; i < back.length; i++) {
-        if (back[i] !== expected[i]) {
-          verified = false;
-          throw new DirectModeError(
-            `verify mismatch at ECU 0x${(r.start + i).toString(16)}: wrote 0x${expected[i]
-              .toString(16)
-              .padStart(2, '0')}, read 0x${back[i].toString(16).padStart(2, '0')}`,
-            'verify',
-          );
+      const length = r.end - r.start + 1;
+      const expected = image.subarray(r.binOffset, r.binOffset + length);
+      // Mirror writeRegion's 0xFF-skip logic: only verify bytes that
+      // writeRegion would have actually put on the wire. Cells skipped
+      // by leading/trailing 0xFF/0xFF trim aren't written, so their
+      // post-flash content is whatever was on the chip beforehand —
+      // not a write failure.
+      let pos = 0;
+      while (pos < length) {
+        while (
+          pos + 1 < length &&
+          expected[pos] === 0xff &&
+          expected[pos + 1] === 0xff
+        ) {
+          pos += 2;
         }
+        if (pos >= length) break;
+        let chunkSize = Math.min(profile.blockSize, length - pos);
+        while (
+          chunkSize > 2 &&
+          expected[pos + chunkSize - 2] === 0xff &&
+          expected[pos + chunkSize - 1] === 0xff
+        ) {
+          chunkSize -= 2;
+        }
+        for (let i = pos; i < pos + chunkSize; i++) {
+          if (back[i] !== expected[i]) {
+            verified = false;
+            throw new DirectModeError(
+              `verify mismatch at ECU 0x${(r.start + i).toString(16)}: wrote 0x${expected[i]
+                .toString(16)
+                .padStart(2, '0')}, read 0x${back[i].toString(16).padStart(2, '0')}`,
+              'verify',
+            );
+          }
+        }
+        pos += chunkSize;
       }
       readSoFar += back.length;
     }

@@ -217,6 +217,23 @@ export class DirectModeTransport {
       parity: this.config.parity,
       stopBits: this.config.stopBits,
     });
+    this.rebuildSession();
+  }
+
+  /**
+   * Override the host-side response timeout for subsequent transactions.
+   * Used by writeFlash to allow up to 60 s for the AM29F400 multi-sector
+   * erase command to return — the default 5 s is fine for reads/writes
+   * but not for sector-erase, which can take 10-30 s on a long-running
+   * erase. Caller is responsible for restoring the default on exit.
+   */
+  async setSessionTimeout(timeoutMs: number): Promise<void> {
+    if (!this.opened) throw new Error('transport not open');
+    this.config.timeoutStdMs = timeoutMs;
+    this.rebuildSession();
+  }
+
+  private rebuildSession(): void {
     const verbose = process.env.NFSX_DS2_VERBOSE === '1';
     const logger: Ds2SessionOptions['logger'] | undefined = verbose
       ? (tag, message, data) => {
@@ -228,7 +245,7 @@ export class DirectModeTransport {
       : undefined;
     this.session = new Ds2Session({
       concept: 0x0006,
-      baudRate: newBaud,
+      baudRate: this.config.baudRate,
       timeoutStdMs: this.config.timeoutStdMs,
       regenTimeMs: this.config.regenTimeMs,
       telegramEndTimeoutMs: this.config.telegramEndTimeoutMs,

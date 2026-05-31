@@ -270,8 +270,6 @@ A session lasts until either disconnect or the ECU's idle timeout fires
 
 ## 3.2 SEED/KEY authentication
 
-Verified against the upstream reference implementation (`B.cs`).
-
 > **Earlier versions of this document were wrong** on three counts:
 > they prepended a `0x07` programming-prefix to the SEED/KEY payloads
 > (the ECU rejects this), they specified `0x91` as the key-submit
@@ -348,8 +346,7 @@ mixed 4 KB/8 KB/32 KB/64 KB).
 
 > **Earlier versions of this document specified a start+end address
 > pair (9-byte payload). That was wrong** — the actual erase request
-> takes only a 3-byte start address (6-byte payload). Verified against
-> upstream tooling at `B.cs`.
+> takes only a 3-byte start address (6-byte payload).
 
 ### Request
 
@@ -1116,6 +1113,68 @@ and its own command vocabulary. The architectural pattern
 (thin RAM monitor exposing read / write / call-function, with
 chip-specific flash logic uploaded separately or baked into the
 secondary) is what's universal.
+
+### 7.4.1 Alternative secondary loader protocol (`--alt`)
+
+The `--alt` flag selects a different secondary loader — a
+monolithic 898-byte blob (`JMG_BLOB.hex`, loaded at `0xFA60`) with
+a built-in AMD AM29F400B flash driver. Unlike MiniMon, it does
+**not** require a separate driver upload — erase, program, and read
+logic are baked into the blob itself.
+
+**Handshake differences from MiniMon:**
+
+- Primary loader (`JMG_LOADK.hex`): 32 bytes, differs from the
+  MiniMon LOADK by 2 bytes — the primary ack byte (`0xC5` instead
+  of `0x01`) and the end-address (`0xFDE1` instead of `0xFBE9`,
+  matching the larger secondary).
+- Both primary and secondary ack bytes are `0xC5` (vs MiniMon's
+  `0x01` / `0x03`).
+
+**Post-handshake command set:**
+
+Single-byte commands — no framing, no checksums, no multi-byte
+command headers. `0xC5` is the universal acknowledge / ready byte.
+
+| Cmd | Name | Protocol |
+|---|---|---|
+| `0x10` | EINIT | → ack `0xC5` |
+| `0x99` | SRST | (no response — MCU resets) |
+| `0xA7` | READ | host sends page byte (`0x00`–`0x1F`) → blob returns 16 384 bytes (8 192 LE words) |
+| `0xA8` | SPI_READ | (MS43 EEPROM — not used on MS42) |
+| `0xA9` | SPI_WRITE | (MS43 EEPROM — not used on MS42) |
+| `0xB0` | PROGRAM | host sends page byte, then 16 384 data bytes; blob acks `0xC5` every 128 bytes |
+| `0xB4` | ERASE | full-chip erase → ack `0xC5` when complete (several seconds) |
+
+Commands that take parameters (READ, PROGRAM) do **not** ack the
+command byte — the blob immediately waits for the page parameter.
+Parameterless commands (EINIT, ERASE) ack with `0xC5` after
+execution.
+
+**Flash addressing (from C167 disassembly):**
+
+- Writes go to segment `0x10` (CPU address `0x100000`).
+- Reads / DQ7 polling go from segment `0x08` (CPU address
+  `0x080000`).
+- AMD unlock addresses: `0xAAAA` (cmd1) and `0x5554` (cmd2) —
+  x16-mode word addresses.
+- On MS42, A19–A23 are not connected, so segments `0x08`, `0x10`,
+  and `0x80` all alias to the same physical flash chip.
+
+**Page model:**
+
+512 KB = 32 pages of 16 KB each (pages `0x00`–`0x1F`). All
+read / program operations are page-granular. Erase is full-chip
+only (not per-sector). Blank pages (all `0xFF`) can be skipped
+during programming.
+
+**PROGRAM flow control:**
+
+After receiving the page byte, the blob enters a tight loop that
+reads 2 bytes (lo, hi) per word. Every 128 bytes received, the
+blob sends a `0xC5` flow-control ack. The host must wait for each
+ack before sending the next 128-byte burst. 16 384 bytes / 128 =
+128 acks per page.
 
 ## 7.5 Why the full 512 KB is writable here
 

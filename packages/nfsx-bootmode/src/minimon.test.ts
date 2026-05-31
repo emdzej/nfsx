@@ -13,20 +13,20 @@ describe('MinimonClient framing (mock transport)', () => {
     client = new MinimonClient(mock, { ackTimeoutMs: 1000, readTimeoutMs: 1000 });
   });
 
-  it('readWord sends CMD + addr-LE and reads 2 bytes + ACK2', async () => {
+  it('readWord sends CMD + 24-bit addr-LE and reads 2 bytes + ACK2', async () => {
     mock.enqueueResponse([A_ACK1, 0xcd, 0xab, A_ACK2]);
-    const w = await client.readWord(0x12345678);
+    const w = await client.readWord(0x345678);
     expect(w).toBe(0xabcd);
-    // Sent bytes: C_READ_WORD then 4-byte LE address.
-    expect(mock.writtenBytes).toEqual([C_READ_WORD, 0x78, 0x56, 0x34, 0x12]);
+    // Sent bytes: C_READ_WORD then 3-byte LE address (24-bit).
+    expect(mock.writtenBytes).toEqual([C_READ_WORD, 0x78, 0x56, 0x34]);
   });
 
-  it('writeWord sends CMD + addr-LE + word-LE and waits for both ACKs', async () => {
+  it('writeWord sends CMD + 24-bit addr-LE + word-LE and waits for both ACKs', async () => {
     mock.enqueueResponse([A_ACK1, A_ACK2]);
-    await client.writeWord(0x00001000, 0xbeef);
+    await client.writeWord(0x001000, 0xbeef);
     expect(mock.writtenBytes).toEqual([
       0x82, // C_WRITE_WORD
-      0x00, 0x10, 0x00, 0x00,
+      0x00, 0x10, 0x00,
       0xef, 0xbe,
     ]);
   });
@@ -34,10 +34,10 @@ describe('MinimonClient framing (mock transport)', () => {
   it('writeBlock streams the data after the header', async () => {
     mock.enqueueResponse([A_ACK1, A_ACK2]);
     const data = Buffer.from([0x11, 0x22, 0x33, 0x44]);
-    await client.writeBlock(0x20000000, data);
+    await client.writeBlock(0xfa0000, data);
     expect(mock.writtenBytes).toEqual([
       C_WRITE_BLOCK,
-      0x00, 0x00, 0x00, 0x20,
+      0x00, 0x00, 0xfa,
       0x04, 0x00,
       0x11, 0x22, 0x33, 0x44,
     ]);

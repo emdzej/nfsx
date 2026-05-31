@@ -1,6 +1,6 @@
 /**
- * BMW DS2 SEED/KEY authentication — verified against the upstream reference implementation
- * `B.cs` (engine ECUs / TCUs share the same algorithm).
+ * BMW DS2 SEED/KEY authentication. Engine ECUs and TCUs share the
+ * same algorithm.
  *
  * Flow:
  *   1. Host sends `[ADDR] 0x07 0x90 0x42 0x4D 0x57 <NONCE> [XOR]`

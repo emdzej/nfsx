@@ -31,10 +31,9 @@ export interface FlashRegion {
   /**
    * Erase block this region belongs to. Multiple regions can share the
    * same erase address — for MS42 full mode the single erase at
-   * 0x11000 covers SA4-SA6 + SA8-SA10 of the AM29F400BB, so BOTH the
-   * lower (0x11000-0x3FFFF) and upper (0x5002C-0x7FFFF) program regions
-   * declare `eraseAddr: 0x11000`. Defaults to `start` when omitted.
-   * Verified against upstream toolingn the upstream write path.
+   * 0x11000 wipes a range that spans BOTH the lower (0x11000-0x3FFFF)
+   * and upper (0x5002C-0x7FFFF) program regions, so both declare
+   * `eraseAddr: 0x11000`. Defaults to `start` when omitted.
    */
   eraseAddr?: number;
 }
@@ -105,7 +104,7 @@ export interface EcuProfile {
 }
 
 /**
- * MS42 — Siemens, BMW M52TU, Infineon C167CR_SR + AMD 29F400BB.
+ * MS42 — Siemens, BMW M52TU, Infineon C167CR_SR.
  *
  * WRITE regions (mirrors upstream tooling's — never write the
  * bootloader, and stop 16-44 bytes short of each erase block boundary
@@ -128,10 +127,10 @@ const MS42_PROFILE: EcuProfile = {
   readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
-    // Both program regions share ONE erase at 0x11000 — that single
-    // 0x07 0x06 command erases AM29F400BB's SA4-SA6 + SA8-SA10
-    // (everything between bootloader and cal block). Doing a second
-    // erase between them would wipe the data we just wrote.
+    // Both program regions share ONE erase at 0x11000 — empirically
+    // that single 0x07 0x06 command erases everything between the
+    // bootloader and the cal block. Doing a second erase between them
+    // would wipe the data we just wrote.
     { start: 0x11000, end: 0x3ffff, binOffset: 0x11000, eraseAddr: 0x11000 },
     { start: 0x5002c, end: 0x7ffff, binOffset: 0x5002c, eraseAddr: 0x11000 },
     { start: 0x48000, end: 0x4ffef, binOffset: 0x48000, eraseAddr: 0x48000 },
@@ -157,15 +156,15 @@ const MS42_PROFILE: EcuProfile = {
 };
 
 /**
- * MS43 — Siemens, BMW M54, Infineon C167CS-32F + AMD AM29F400.
+ * MS43 — Siemens, BMW M54, Infineon C167CS-32F.
  *
- * FULL: three regions matching upstream tooling's 512 KB layout.
+ * FULL layout (512 KB BIN, ECU-side addresses):
  *
  *   ECU 0x00000-0x0BFFF → BIN 0x00000  C167 internal flash (48 KB)
  *   skipped 0x0C000-0x0FFFF              C167 SFR / RAM window
- *   ECU 0x90000-0xEFFFF → BIN 0x10000  external program (384 KB, with
- *                                       MS43's high-byte translation
- *                                       0x9 → 0x1 applied on read)
+ *   ECU 0x90000-0xEFFFF → BIN 0x10000  external program (384 KB, ECU
+ *                                       applies 0x9 → 0x1 high-byte
+ *                                       translation to chip address)
  *   ECU 0x70000-0x7FFFF → BIN 0x70000  external calibration (64 KB)
  *
  * CALIBRATION: only the 64 KB block at ECU 0x70000-0x7FFFF.
@@ -177,9 +176,9 @@ const MS43_PROFILE: EcuProfile = {
   readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
-    // WRITE: skips bootloader; stops 16-17 bytes short of each region
-    // boundary to spare the read-only checksum trailers. Mirrors
-    // upstream tooling's write path.
+    // Single erase at 0x90000 covers the whole program range;
+    // single erase at 0x70000 covers the cal range. Stops 16-17 bytes
+    // short of each region end to spare the read-only trailers.
     { start: 0x90000, end: 0xeffef, binOffset: 0x10000 }, // program, 393200
     { start: 0x70000, end: 0x7ffee, binOffset: 0x70000 }, // calibration, 65519
   ],

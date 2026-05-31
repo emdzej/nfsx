@@ -261,6 +261,7 @@ bootmode
   .option('--baud <rate>', 'baud rate', parseBaud, 19200)
   .option('--bsl-id <hex>', 'expected BSL ID (default C167CR=0xC5)', parseHexByte, DEFAULT_BSL_ID)
   .option('--loader-delay <ms>', 'inter-byte delay during loader upload', (v) => Number.parseInt(v, 10), 0)
+  .option('--alt', 'use alternative bootmode blob (monolithic flash driver, different protocol)', false)
   .option('--json', 'machine-readable output', false)
   .action(async (opts: BootmodeReadOpts) => {
     const code = await runBootmodeRead({
@@ -270,6 +271,7 @@ bootmode
       loaderInterByteDelayMs: opts.loaderDelay,
       json: opts.json,
       output: opts.output,
+      alt: opts.alt,
     });
     if (code !== 0) process.exit(code);
   });
@@ -284,6 +286,7 @@ bootmode
   .option('--loader-delay <ms>', 'inter-byte delay during loader upload', (v) => Number.parseInt(v, 10), 0)
   .option('--skip-verify', 'skip the post-write readback verification', false)
   .option('--calculate-checksum', 'recompute MS42/MS43 CRC-16 checksums before flashing', false)
+  .option('--alt', 'use alternative bootmode blob (monolithic flash driver, different protocol)', false)
   .option('--json', 'machine-readable output', false)
   .action(async (opts: BootmodeWriteOpts) => {
     const code = await runBootmodeWrite({
@@ -295,6 +298,7 @@ bootmode
       input: opts.input,
       skipVerify: opts.skipVerify,
       calculateChecksum: opts.calculateChecksum,
+      alt: opts.alt,
     });
     if (code !== 0) process.exit(code);
   });
@@ -604,12 +608,14 @@ interface BootmodeProbeOpts {
 
 interface BootmodeReadOpts extends BootmodeProbeOpts {
   output: string;
+  alt: boolean;
 }
 
 interface BootmodeWriteOpts extends BootmodeProbeOpts {
   input: string;
   skipVerify: boolean;
   calculateChecksum: boolean;
+  alt: boolean;
 }
 
 interface DirectmodeProbeOpts {

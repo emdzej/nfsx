@@ -8,6 +8,8 @@
 export {
   readFullFlash,
   writeFullFlash,
+  readFullFlashJmg,
+  writeFullFlashJmg,
   probeBootmode,
   describeBundle,
   C167CR_BSL_ID,
@@ -40,14 +42,14 @@ export {
 
 export {
   FlashDriver,
-  AM29F400B_SECTORS,
+  FlashDriverError,
+  AM29F400BB_SECTORS,
   AM29F400B_TOTAL_BYTES,
   DEFAULT_DRIVER_ADDRESS,
   FC_PROG,
   FC_ERASE,
   FC_GETSTATE,
-  FC_UNLOCK,
-  type SectorDef,
+  type SectorLayout,
 } from './flash-driver.js';
 
 export {
@@ -75,3 +77,15 @@ export {
   type BlobIntegrity,
   type IntegrityReport,
 } from './manifest.js';
+
+export {
+  JmgClient,
+  JmgClientError,
+  JMG_ACK,
+  CMD_EINIT,
+  CMD_ERASE,
+  CMD_READ,
+  CMD_PROGRAM,
+  JMG_PAGE_SIZE,
+  JMG_TOTAL_PAGES,
+} from './jmg-client.js';

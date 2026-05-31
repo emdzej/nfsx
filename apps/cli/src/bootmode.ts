@@ -17,6 +17,8 @@ import { resolve } from 'node:path';
 import {
   readFullFlash,
   writeFullFlash,
+  readFullFlashJmg,
+  writeFullFlashJmg,
   probeBootmode,
   verifyBundleIntegrity,
   describeBundle,
@@ -38,12 +40,14 @@ export interface BootmodeBaseOptions {
 
 export interface BootmodeReadOptions extends BootmodeBaseOptions {
   output: string;
+  alt: boolean;
 }
 
 export interface BootmodeWriteOptions extends BootmodeBaseOptions {
   input: string;
   skipVerify: boolean;
   calculateChecksum: boolean;
+  alt: boolean;
 }
 
 function makeProgressPrinter(json: boolean): (p: BootmodeProgress) => void {
@@ -77,11 +81,7 @@ export async function runBootmodeProbe(opts: BootmodeBaseOptions): Promise<numbe
     if (opts.json) {
       process.stdout.write(JSON.stringify(id) + '\n');
     } else {
-      process.stdout.write(
-        chalk.green('OK ') +
-          `flash ID — manufacturer=0x${id.manufacturer.toString(16).padStart(2, '0').toUpperCase()}, ` +
-          `device=0x${id.device.toString(16).padStart(2, '0').toUpperCase()}\n`,
-      );
+      process.stdout.write(chalk.green('OK ') + `bootmode handshake + comms test passed\n`);
     }
     return 0;
   } catch (err) {
@@ -93,16 +93,16 @@ export async function runBootmodeProbe(opts: BootmodeBaseOptions): Promise<numbe
 export async function runBootmodeRead(opts: BootmodeReadOptions): Promise<number> {
   const onProgress = makeProgressPrinter(opts.json);
   try {
-    const image = await readFullFlash(
-      {
-        device: opts.device,
-        baud: opts.baud,
-        defaultTimeoutMs: 5000,
-        expectedBslId: opts.bslId,
-        loaderInterByteDelayMs: opts.loaderInterByteDelayMs,
-      },
-      onProgress,
-    );
+    const cfg = {
+      device: opts.device,
+      baud: opts.baud,
+      defaultTimeoutMs: 5000,
+      expectedBslId: opts.bslId,
+      loaderInterByteDelayMs: opts.loaderInterByteDelayMs,
+    };
+    const image = opts.alt
+      ? await readFullFlashJmg(cfg, onProgress)
+      : await readFullFlash(cfg, onProgress);
     writeFileSync(resolve(opts.output), image);
     if (opts.json) {
       process.stdout.write(JSON.stringify({ written: opts.output, bytes: image.length }) + '\n');
@@ -155,18 +155,17 @@ export async function runBootmodeWrite(opts: BootmodeWriteOptions): Promise<numb
 
   const onProgress = makeProgressPrinter(opts.json);
   try {
-    const result = await writeFullFlash(
-      image,
-      {
-        device: opts.device,
-        baud: opts.baud,
-        defaultTimeoutMs: 5000,
-        expectedBslId: opts.bslId,
-        loaderInterByteDelayMs: opts.loaderInterByteDelayMs,
-      },
-      { skipVerify: opts.skipVerify },
-      onProgress,
-    );
+    const cfg = {
+      device: opts.device,
+      baud: opts.baud,
+      defaultTimeoutMs: 5000,
+      expectedBslId: opts.bslId,
+      loaderInterByteDelayMs: opts.loaderInterByteDelayMs,
+    };
+    const flashOpts = { skipVerify: opts.skipVerify };
+    const result = opts.alt
+      ? await writeFullFlashJmg(image, cfg, flashOpts, onProgress)
+      : await writeFullFlash(image, cfg, flashOpts, onProgress);
     if (opts.json) {
       process.stdout.write(JSON.stringify({ verified: result.verified }) + '\n');
     } else {

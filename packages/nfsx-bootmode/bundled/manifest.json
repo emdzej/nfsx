@@ -17,9 +17,21 @@
     },
     {
       "name": "A29F400B.hex",
-      "role": "AMD AM29F400B flash driver (chip used in MS42/MS43)",
+      "role": "AMD AM29F400B flash driver (erase + program)",
       "format": "Intel HEX",
       "sha256": "c6318901d11ec5ba7c5524ccbed9a7c31194a2978628dc2ec39afece0053b829"
+    },
+    {
+      "name": "JMG_LOADK.hex",
+      "role": "alternative primary loader (32-byte BSL upload, ack=0xC5, end=0xFDE1)",
+      "format": "Intel HEX",
+      "sha256": "6f17f71187f5b4bc222c9b177b960c032bfa5212ea96fa19dbd66eb1aeec6deb"
+    },
+    {
+      "name": "JMG_BLOB.hex",
+      "role": "alternative monolithic secondary (898 bytes, built-in flash driver, custom single-byte protocol)",
+      "format": "Intel HEX",
+      "sha256": "b08316e73c80004c01ae4566581142e522b07a9f3544ff85dbd00f3fe29810df"
     }
   ]
 }

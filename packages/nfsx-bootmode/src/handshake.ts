@@ -69,22 +69,16 @@ export async function performHandshake(
   const byteTimeoutMs = opts.byteTimeoutMs ?? 200;
   const interByteDelayMs = opts.interByteDelayMs ?? 0;
 
-  // Step 1-2: send auto-baud calibration byte.
+  // Step 1-2: send auto-baud calibration byte. Transport consumes the
+  // K-line echo of the 0x00 itself.
   transport.flushInput();
   await transport.write(Buffer.from([0x00]));
 
-  // Step 3: BSL identification byte. K-line is half-duplex so we may see
-  // an echo of our 0x00 first; accept either [id] or [0x00, id].
+  // Step 3: BSL identification byte.
   let idByte: number;
   try {
-    const first = await transport.read(1, byteTimeoutMs * 5);
-    if (first[0] === 0x00) {
-      // half-duplex echo of the probe; read again for the real id
-      const second = await transport.read(1, byteTimeoutMs * 5);
-      idByte = second[0];
-    } else {
-      idByte = first[0];
-    }
+    const resp = await transport.read(1, byteTimeoutMs * 5);
+    idByte = resp[0];
   } catch (err) {
     throw new BootmodeHandshakeError(
       `no response to BSL probe (BOOT pin not grounded? wrong K-line wiring? wrong baud rate?): ${(err as Error).message}`,
@@ -137,26 +131,22 @@ async function uploadEchoed(
   data: Buffer,
   stage: 'primary' | 'secondary',
   interByteDelayMs: number,
-  byteTimeoutMs: number,
+  _byteTimeoutMs: number,
   onProgress?: (stage: 'primary' | 'secondary', byte: number, total: number) => void,
 ): Promise<void> {
+  // Echo verification happens inside transport.write() when the
+  // transport's hasAdapterEcho is enabled (default for raw K-line
+  // cables). We just need to upload byte-by-byte so the BSL/primary
+  // loader can stage each byte at the right RAM offset.
   for (let i = 0; i < data.length; i++) {
-    await transport.write(data.subarray(i, i + 1));
-    let echo: number;
     try {
-      echo = (await transport.read(1, byteTimeoutMs))[0];
+      await transport.write(data.subarray(i, i + 1));
     } catch (err) {
       throw new BootmodeHandshakeError(
-        `no echo for byte ${i}/${data.length} (TX=0x${data[i].toString(16).padStart(2, '0').toUpperCase()}): ${(err as Error).message}`,
-        stage,
-      );
-    }
-    if (echo !== data[i]) {
-      throw new BootmodeHandshakeError(
-        `echo mismatch at byte ${i}/${data.length}: TX=0x${data[i]
+        `byte ${i}/${data.length} (TX=0x${data[i]
           .toString(16)
           .padStart(2, '0')
-          .toUpperCase()}, echo=0x${echo.toString(16).padStart(2, '0').toUpperCase()}`,
+          .toUpperCase()}): ${(err as Error).message}`,
         stage,
       );
     }
