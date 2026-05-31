@@ -776,11 +776,13 @@ export async function writeFlash(
     });
     await eraseRegion(iface, profile, r);
 
-    onProgress?.({
-      stage: 'erase',
-      message: `post-erase poll @ 0x${r.start.toString(16)}`,
-    });
-    await runPoll(iface, profile, r.start, false);
+    // NO post-erase poll. MS4x Flasher's per-region sequence is:
+    //   pollLoose → (set long timeout) → erase → (set short timeout) → write → pollStrict
+    // Inserting an extra pollLoose between erase and the first write
+    // transitions the programming state machine into a state that
+    // rejects the next 0x07 0x02 write with status 0xB0. Verified
+    // empirically: bench MS42 returns 0xB0 on the first write after
+    // a redundant post-erase pollLoose.
 
     const { bytesWritten, bytesSkipped } = await writeRegion(
       iface,
@@ -798,6 +800,9 @@ export async function writeFlash(
     totalWritten += bytesWritten;
     totalSkipped += bytesSkipped;
 
+    // Final per-region poll: strict (op-result == 0x01) on the LAST
+    // region, loose otherwise. MS4x calls this `B(uint, …)` strict
+    // for the terminating sector, `a(uint, …)` loose between sectors.
     onProgress?.({
       stage: 'write',
       message: `post-write poll @ 0x${r.start.toString(16)}`,
