@@ -34,12 +34,17 @@ export interface EcuProfile {
   variant: EcuVariant;
   /** 8-bit diagnostic address on the K-line. */
   ds2Addr: number;
-  /** Block size for programming-mode writes (after SEED/KEY + erase). */
+  /**
+   * Max bytes per `0x07 0x02` write telegram after SEED/KEY + erase.
+   * Verified against MS4x Flasher decomp (base-class constructor 4th
+   * argument): 118 for MS42/MS43/(GS20 protocol class `p`), 246 for
+   * the high-capacity TCU classes (`r`, `R`, `q`, `Q`).
+   */
   blockSize: number;
   /**
-   * Block size for diagnostic-session memory reads (cmd 0x06).
-   * Smaller than `blockSize` — the ECU enforces a lower cap on raw reads
-   * than on programming-mode writes. Verified against MS42 at 123 bytes.
+   * Max bytes per cmd 0x06 memory-read request. Verified against MS4x
+   * Flasher (base-class 3rd argument): 123 for MS42/MS43/p, 251 for
+   * r/R/q/Q. Reading past the cap returns DS2 status 0xB0.
    */
   readBlockSize: number;
   /** Expected total BIN size (the source file the host loads). */
@@ -110,7 +115,7 @@ export interface EcuProfile {
 const MS42_PROFILE: EcuProfile = {
   variant: 'MS42',
   ds2Addr: 0x12,
-  blockSize: 246,
+  blockSize: 118,
   readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
@@ -155,7 +160,7 @@ const MS42_PROFILE: EcuProfile = {
 const MS43_PROFILE: EcuProfile = {
   variant: 'MS43',
   ds2Addr: 0x12,
-  blockSize: 246,
+  blockSize: 118,
   readBlockSize: 123,
   binSize: 0x80000,
   fullRegions: [
@@ -202,8 +207,10 @@ const MS43_PROFILE: EcuProfile = {
 const GS20_PROFILE: EcuProfile = {
   variant: 'GS20',
   ds2Addr: 0x32,
+  // GS20 (key "G2210_") maps to MS4x Flasher's `r` protocol class which
+  // declares (251 read, 246 write) — high-capacity TCU variant.
   blockSize: 246,
-  readBlockSize: 123,
+  readBlockSize: 251,
   binSize: 0x80000,
   fullRegions: [
     // erase 0xA0000, write ECU[0xA0000..0xDFFFF] from BIN[0x20000..0x5FFFF]
