@@ -57,6 +57,7 @@ export interface DirectModeWriteOpts extends DirectModeBaseOptions {
   skipVerify: boolean;
   calculateChecksum: boolean;
   nonce: number;
+  writeBaud?: number;
 }
 
 function makeProgressPrinter(json: boolean): (p: DirectModeProgress) => void {
@@ -216,7 +217,12 @@ export async function runDirectmodeWrite(opts: DirectModeWriteOpts): Promise<num
     const result = await writeFlash(
       image,
       { iface, forceVariant: opts.forceVariant },
-      { mode: opts.mode, skipVerify: opts.skipVerify, nonce: opts.nonce },
+      {
+        mode: opts.mode,
+        skipVerify: opts.skipVerify,
+        nonce: opts.nonce,
+        writeBaud: opts.writeBaud,
+      },
       onProgress,
     );
     if (opts.json) {

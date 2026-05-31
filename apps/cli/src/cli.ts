@@ -368,6 +368,7 @@ directmode
   .option('--gateway <host:port>', 'shortcut: gateway interface')
   .option('--variant <name>', 'force ECU variant (MS42 | MS43 | GS20)', parseVariant)
   .option('--nonce <n>', 'SEED/KEY nonce (1..23, default 7)', (v) => Number.parseInt(v, 10), 7)
+  .option('--write-baud <rate>', 'K-line baud during write (9600 | 19200 | 38400 | 62500 | 125000; default 38400)', parseBaud, 38400)
   .option('--skip-verify', 'skip post-write readback verification', false)
   .option('--calculate-checksum', 'recompute MS42/MS43 CRC-16 checksums before flashing', false)
   .option('--json', 'machine-readable output', false)
@@ -384,6 +385,7 @@ directmode
       skipVerify: opts.skipVerify,
       calculateChecksum: opts.calculateChecksum,
       nonce: opts.nonce,
+      writeBaud: opts.writeBaud,
       json: opts.json,
     });
     if (code !== 0) process.exit(code);
@@ -631,4 +633,5 @@ interface DirectmodeWriteOpts extends DirectmodeProbeOpts {
   skipVerify: boolean;
   calculateChecksum: boolean;
   nonce: number;
+  writeBaud: number;
 }

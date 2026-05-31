@@ -683,6 +683,21 @@ export interface DirectModeWriteOptions {
   skipVerify?: boolean;
   /** SEED/KEY nonce (default 7; must be 1..23). */
   nonce?: number;
+  /**
+   * If set, switch the K-line to this baud after SEED/KEY to speed up
+   * the write loop. Same set of supported rates as {@link readFlash}:
+   * 9600 / 19200 / 38400 / 62500 / 125000. Defaults to 38400 — a ~4×
+   * speedup over 9600 and bench-verified for reads. Pass `9600` to
+   * keep the wire at the IDENT baud throughout. The baud is restored
+   * to 9600 on exit (success or failure) so the next session can IDENT.
+   *
+   * Note: MS4x Flasher itself does NOT baud-switch during write; our
+   * read-path empirical verification (38400 works cleanly with the
+   * retry-on-transient logic) is the basis for using it here too. If
+   * you observe `0xB0` rejections that don't reproduce at 9600, that
+   * suggests the write path is more baud-sensitive than read.
+   */
+  writeBaud?: number;
 }
 
 export interface DirectModeWriteResult {
@@ -749,18 +764,33 @@ export async function writeFlash(
   onProgress?.({ stage: 'auth', message: 'SEED/KEY' });
   await runAuth(iface, profile, opts.nonce);
 
+  // Speed-up: switch the K-line to a higher baud for the bulk write.
+  // Same mechanism as readFlash — sends the DS2 baud-switch command,
+  // waits for 0xA0, then reconfigures our UART. Restored to 9600 in
+  // the `finally` after writeFlash returns (success or failure).
+  const targetBaud = opts.writeBaud ?? 38400;
+  if (targetBaud !== 9600) {
+    onProgress?.({
+      stage: 'auth',
+      message: `switching baud to ${targetBaud}`,
+    });
+    await switchBaud(iface, profile, targetBaud);
+  }
+
   const regions = pickRegions(profile, opts.mode, 'write');
   const total = totalBytesForMode(profile, opts.mode, 'write');
 
-  // Sequence per region, mirroring MS4x Flasher's `t::A()` / `T::A()`:
-  //   pollLoose(start) → erase(start) → pollLoose(start) → write region
-  //
-  // After ALL regions are written, do a final strict poll on the last
-  // erase block to confirm everything committed (MS4x uses `B(uint, …)`
-  // on the last sector — strict = check op-result byte).
-  onProgress?.({ stage: 'write', message: 'programming', fraction: 0 });
   let totalWritten = 0;
   let totalSkipped = 0;
+  let verified = false;
+  try {
+  // Sequence per region, mirroring MS4x Flasher's `t::A()` / `T::A()`:
+  //   pollLoose(start) → erase(start) → write region → poll (strict on last)
+  //
+  // After ALL regions are written, the terminating per-region poll is
+  // strict on the LAST region (MS4x's `B(uint, …)` — checks op-result
+  // byte at frame[8]) and loose on intermediate regions.
+  onProgress?.({ stage: 'write', message: 'programming', fraction: 0 });
   for (let idx = 0; idx < regions.length; idx++) {
     const r = regions[idx];
     const isLast = idx === regions.length - 1;
@@ -810,7 +840,6 @@ export async function writeFlash(
     await runPoll(iface, profile, r.start, isLast /* strict on final */);
   }
 
-  let verified = false;
   if (!opts.skipVerify) {
     onProgress?.({ stage: 'verify', message: 'reading back', fraction: 0 });
     verified = true;
@@ -836,6 +865,18 @@ export async function writeFlash(
         }
       }
       readSoFar += back.length;
+    }
+  }
+  } finally {
+    // Restore baud to 9600 so the next session can IDENT. Best-effort
+    // — if this fails (e.g. ECU power-cycled mid-write), a fresh
+    // power-cycle on the ECU side resets it to 9600 anyway.
+    if (targetBaud !== 9600) {
+      try {
+        await switchBaud(iface, profile, 9600);
+      } catch {
+        /* swallow — primary error takes precedence */
+      }
     }
   }
 
