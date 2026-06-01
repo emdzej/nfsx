@@ -2,7 +2,7 @@
  * @emdzej/nfsx-bootmode — bootmode (C167 BSL) flashing for BMW MS42/MS43.
  *
  * High-level API: `readFullFlash`, `writeFullFlash`, `probeBootmode`.
- * Low-level pieces (`MinimonClient`, `FlashDriver`, `performHandshake`,
+ * Low-level pieces (`MinimonClient`, `performHandshake`,
  * `NodeBootmodeTransport`) are also exported for advanced use.
  */
 export {
@@ -39,18 +39,6 @@ export {
   C_CALL_FUNCTION,
   C_GETCHECKSUM,
 } from './minimon.js';
-
-export {
-  FlashDriver,
-  FlashDriverError,
-  AM29F400BB_SECTORS,
-  AM29F400B_TOTAL_BYTES,
-  DEFAULT_DRIVER_ADDRESS,
-  FC_PROG,
-  FC_ERASE,
-  FC_GETSTATE,
-  type SectorLayout,
-} from './flash-driver.js';
 
 export {
   NodeBootmodeTransport,

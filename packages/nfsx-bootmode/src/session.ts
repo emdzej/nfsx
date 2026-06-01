@@ -28,10 +28,23 @@ import {
 } from './transport.js';
 import { performHandshake } from './handshake.js';
 import { MinimonClient } from './minimon.js';
-import {
-  AM29F400B_TOTAL_BYTES,
-  AM29F400BB_SECTORS,
-} from './flash-driver.js';
+/** Total flash size: AMD AM29F400BB = 512 KB. */
+const AM29F400B_TOTAL_BYTES = 0x80000;
+
+/** Bottom-boot AM29F400BB sector layout (confirmed for BMW MS42). */
+const AM29F400BB_SECTORS = [
+  { index: 0, start: 0x00000, size: 0x04000 }, // 16 KB
+  { index: 1, start: 0x04000, size: 0x02000 }, // 8 KB
+  { index: 2, start: 0x06000, size: 0x02000 }, // 8 KB
+  { index: 3, start: 0x08000, size: 0x08000 }, // 32 KB
+  { index: 4, start: 0x10000, size: 0x10000 }, // 64 KB
+  { index: 5, start: 0x20000, size: 0x10000 },
+  { index: 6, start: 0x30000, size: 0x10000 },
+  { index: 7, start: 0x40000, size: 0x10000 },
+  { index: 8, start: 0x50000, size: 0x10000 },
+  { index: 9, start: 0x60000, size: 0x10000 },
+  { index: 10, start: 0x70000, size: 0x10000 },
+] as const;
 import {
   JmgClient,
   JMG_ACK,
