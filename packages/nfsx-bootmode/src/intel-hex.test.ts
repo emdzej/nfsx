@@ -115,9 +115,4 @@ describe('bundled MiniMon binaries', () => {
     expect(flat.length).toBe(r.totalBytes);
   });
 
-  it('parses A29F400B.hex into a non-empty contiguous buffer', () => {
-    const text = readFileSync(resolve(bundled, 'A29F400B.hex'), 'utf8');
-    const r = parseIntelHex(text);
-    expect(r.totalBytes).toBeGreaterThan(0);
-  });
 });

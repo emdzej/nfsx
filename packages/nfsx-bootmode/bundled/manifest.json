@@ -15,12 +15,7 @@
       "format": "Intel HEX",
       "sha256": "e08ab832059b46ca6a0f5f7d9e07135df1648320b99875b159a2a5760c03886e"
     },
-    {
-      "name": "A29F400B.hex",
-      "role": "AMD AM29F400B flash driver (erase + program)",
-      "format": "Intel HEX",
-      "sha256": "c6318901d11ec5ba7c5524ccbed9a7c31194a2978628dc2ec39afece0053b829"
-    },
+
     {
       "name": "JMG_LOADK.hex",
       "role": "alternative primary loader (32-byte BSL upload, ack=0xC5, end=0xFDE1)",
