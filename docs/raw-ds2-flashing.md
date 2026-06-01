@@ -109,15 +109,17 @@ or another ECU is asserting — abort the transaction.
 
 Recommended at the transaction layer (all command classes below):
 
-| Operation class | Attempts | Inter-attempt sleep |
+| Operation class | Attempts | Backoff |
 |---|---|---|
-| Single-shot requests (identity, memory read, …) | 5 | 10 ms |
-| Long-running operations during "pending" status (see §3.5) | unbounded — driven by user-side cancel | 10 ms |
+| Single-shot requests (identity, memory read, …) | 8 | `30 × attempt` ms (0, 30, 60, 90, …) |
+| Erase | 1 (no retry — avoid re-issuing mid-operation) | 60 s timeout |
+| Long-running "pending" polling (erase, verify) | unbounded — driven by timeout or cancel | 10–30 ms between polls |
 
 A retry should fire on any transport-layer failure (timeout, framing
-error, checksum mismatch). Status byte `0xA1` ("pending", §1.6) is **not**
-an error — the same request is re-sent, but doesn't count against the
-attempt budget.
+error, echo mismatch, short frame). Status byte `0xA1` ("pending",
+§1.6) is **not** an error — the same request is re-sent, but doesn't
+count against the attempt budget. A non-OK status (other than `0xA1`)
+aborts immediately without further retries.
 
 ## 1.6 Response status byte
 
@@ -175,16 +177,26 @@ diagnostic purposes; some ECUs gate certain regions behind authentication
 (see §3.2). For the engine / transmission ECU families covered here,
 unrestricted reads work without authentication.
 
-### Request
+### Request (4-byte addressing)
 
 ```
-[ADDR] [LEN] [0x06] [A_HI] [A_MID] [A_LO] [SIZE] [XOR]
+[ADDR] [0x09] [0x06] [SEG] [A_HI] [A_MID] [A_LO] [SIZE] [XOR]
 ```
 
-- 24-bit big-endian start address
-- `SIZE`: 1 byte, number of bytes to fetch in this transaction. Bounded
-  by a per-ECU block-size limit (see §3.7 for the engine-family values).
-- `LEN = SIZE + 6`
+- `SEG`: segment selector byte (e.g. `0x00` for addresses ≥ 0x10000)
+- 24-bit big-endian address within the segment
+- `SIZE`: 1 byte, number of bytes to fetch. Bounded by the ECU's
+  read block-size limit (see §3.7).
+- `LEN = 9` (fixed — the request is always 9 bytes on the wire)
+
+4-byte addressing is required for MS42-class ECUs to reach high flash.
+3-byte addressing (`[ADDR] [0x08] [0x06] [A_HI] [A_MID] [A_LO] [SIZE]
+[XOR]`) only covers the low 32 KB; addresses above that return status
+`0xB0`. Verified empirically: `12 09 06 00 04 80 00 10` succeeds;
+`12 08 06 04 80 00 10` returns `0xB0`.
+
+GS20 and MS43 also accept 4-byte addressing (with `SEG = 0x00`).
+Using 4-byte unconditionally is safe across all three targets.
 
 ### Response
 
@@ -281,10 +293,10 @@ A session lasts until either disconnect or the ECU's idle timeout fires
 ### Step 1 — Request seed (`CMD = 0x90`)
 
 ```
-[ADDR] [0x07] [0x90] [0x42] [0x4D] [0x57] [NONCE] [XOR]
+[ADDR] [0x08] [0x90] [0x42] [0x4D] [0x57] [NONCE] [XOR]
 ```
 
-- `LEN = 7` total frame
+- `LEN = 8` total frame
 - Command byte `0x90`
 - Three fixed bytes spelling `BMW` in ASCII
 - `NONCE`: one random byte in the range **1..23 inclusive**. Values
@@ -326,10 +338,10 @@ truncation.
 ### Step 4 — Submit the key
 
 ```
-[ADDR] [0x07] [0x90] [KEY_0] [KEY_1] [KEY_2] [KEY_3] [XOR]
+[ADDR] [0x08] [0x90] [KEY_0] [KEY_1] [KEY_2] [KEY_3] [XOR]
 ```
 
-- `LEN = 7`
+- `LEN = 8`
 - Command byte is **`0x90`** — the **same** opcode as the seed request,
   not `0x91`. The ECU distinguishes seed-request from key-submit by the
   payload pattern (BMW magic vs raw key bytes).
@@ -485,37 +497,44 @@ required to recover.
 
 ### Block size (read §2.2 and write §3.4)
 
-| ECU class | Block size | Max-data variant |
-|---|---|---|
-| MS43 / MS45 engine, small-memory GS20 transmission | 123 | 118 |
-| High-capacity variants (extended flash) | 251 | 246 |
+Read and write block sizes differ. The read block size is the max
+`SIZE` in a `CMD 0x06` memory-read request; the write block size is
+the max data payload in a `CMD 0x07 0x02` write request. Exceeding
+either cap returns DS2 status `0xB0`.
 
-The "max-data variant" applies to a small number of internal operations
-that need extra header space; default to the block size unless the
-implementation has reason to differ.
+| ECU variant | Read block size | Write block size | Protocol class |
+|---|---|---|---|
+| MS42 / MS43 engine | 123 | 118 | `p` (small-memory) |
+| GS20 transmission | 251 | 246 | `r` (high-capacity TCU) |
+
+Verified against the upstream tooling's base-class constructor:
+3rd argument = read block size, 4th argument = write block size.
 
 ### Memory layout (full firmware dump)
 
-High-capacity ECUs span three contiguous regions, with suggested
-progress weights for a UI:
+Per-variant region tables are in §5. Each variant has distinct address
+ranges, erase addresses, and BIN-file offset mappings — there is no
+single "generic" layout.
 
-| Region | Start | Size | Weight |
-|---|---|---|---|
-| 1 | `0x00000` | 32 KB | 0.13 |
-| 2 | `0x10000` | 196 KB | 0.75 |
-| 3 | `0x08000` | 32 KB | 0.12 |
-| Total | | ~260 KB | 1.00 |
+### Operation result byte (response offset 8, where applicable)
 
-Smaller MS43-class ECUs span ~520 KB across a different offset layout —
-the exact regions are per-variant.
+For erase / write / verify the operation outcome is carried at frame
+offset 8. Convention:
 
-### Operation result byte (response position 8, where applicable)
+| Value | Meaning |
+|---|---|
+| `0x01` | Success |
+| `0x02` | Address out of range |
+| `0x03` | Flash not erased before write |
+| `0x04` | Voltage out of spec |
+| `0x05` | Write verify failed |
+| `0x06` | Protection bit set |
+| `0x07` | Erase error |
+| `0x08` | Programming error |
+| `0x09` | CRC / integrity mismatch |
+| `0x0A`–`0x0F` | Reserved / unspecified error |
 
-For erase / write / verify the operation outcome is carried in a separate
-byte at offset 8. Convention is `0x01` = success; values `0x02` and
-`0x09..0x0F` are operation-specific error codes (address out of range,
-flash not erased before write, voltage out of spec, protection bit set,
-CRC mismatch, etc.). Treat any non-`0x01` as a fatal error and abort.
+Treat any non-`0x01` as a fatal error and abort.
 
 ---
 
@@ -552,8 +571,8 @@ reported block-size limit (§4.3.2 — same chunk-size table used in the
 write loop).
 
 ```
-# For each chunk in the regions:
-TX  [ADDR] LEN 06 A_HI A_MID A_LO SIZE [XOR]      ; LEN = SIZE + 6
+# For each chunk in the regions (4-byte addressing, see §2.2):
+TX  [ADDR] 09 06 SEG A_HI A_MID A_LO SIZE [XOR]   ; LEN = 9
 RX  [ADDR] (SIZE+4) A0 <SIZE bytes of flash> [XOR]
 ```
 
@@ -569,13 +588,13 @@ order:
 
 ```
 # Seed request
-TX  [ADDR] 07 90 42 4D 57 NONCE [XOR]          ; NONCE ∈ 1..23
+TX  [ADDR] 08 90 42 4D 57 NONCE [XOR]          ; NONCE ∈ 1..23
 RX  [ADDR] 2E A0 <seed[0..42]> [XOR]            ; LEN = 0x2E (46 bytes)
 
 # Derive key — see §3.2 step 3 for the algorithm.
 
 # Submit key
-TX  [ADDR] 06 K0 K1 K2 K3 [XOR]
+TX  [ADDR] 08 90 K0 K1 K2 K3 [XOR]             ; CMD = 0x90 (same as seed)
 RX  [ADDR] 05 A0 . [XOR]                        ; LEN = 0x05
 ```
 
@@ -688,66 +707,113 @@ known flasher exercises.
 
 ## 5.1 GS20 transmission (HWNR 7544721)
 
-| # | Start | End | Size | Notes |
-|---|---|---|---|---|
-| 1 | `0xA0000` | `0xAFFFF` | 64 KB | |
-| 2 | `0xB0000` | `0xBFFFF` | 64 KB | |
-| 3 | `0xC0000` | `0xCFFFF` | 64 KB | |
-| 4 | `0xD0000` | `0xDFFFF` | 64 KB | |
-| | | | **256 KB** | total addressable |
+DS2 address: `0x32`. Read block size: 251. Write block size: 246.
+BIN size: 512 KB (0x80000). Protocol class: `r` (high-capacity TCU).
+Ident key: `G2210_`.
 
-Four contiguous 64 KB blocks. Approximately 32 bytes between sectors
-in the `.0PA` record stream that look like checksums / terminators
-(not user-flashable data). Bootloader and read-only regions sit
-outside `0xA0000–0xDFFFF` and are never touched by the flash loop.
+### Full-flash WRITE regions
+
+| # | ECU start | ECU end | BIN offset | Size | Notes |
+|---|---|---|---|---|---|
+| 1 | `0xA0000` | `0xDFFFF` | `0x20000` | 256 KB | data (erase @ `0xA0000`) |
+| 2 | `0x90000` | `0x9FFFF` | `0x10000` | 64 KB | program (erase @ `0x90000`) |
+| | | | | **320 KB** | total |
+
+Two erase operations: one at `0xA0000`, one at `0x90000`. Write order
+matches the region table above (data first, then program).
+
+### Calibration-only WRITE regions
+
+| # | ECU start | ECU end | BIN offset | Size |
+|---|---|---|---|---|
+| 1 | `0x90000` | `0x9FFFF` | `0x10000` | 64 KB |
+
+`nfsx directmode write --mode calibration` uses this single region.
+
+### BIN-file mapping
+
+512 KB BIN layout:
+
+- BIN `0x10000–0x1FFFF` → ECU `0x90000–0x9FFFF` (64 KB program)
+- BIN `0x20000–0x5FFFF` → ECU `0xA0000–0xDFFFF` (256 KB data)
+- BIN `0x00000–0x0FFFF` and `0x60000–0x7FFFF` are header / padding
 
 Real-bench evidence: ~440 KB pushed over ~1,900 iterator calls (≈ 246
 bytes per call), iterator drained, ECU returned to normal operation
 post-flash.
 
-**Tool layout — broader than the WinKFP `.0PA` slices above.** Most
-DS2 TCU flashers use a 512 KB BIN with this mapping:
-
-- BIN `0x10000-0x1FFFF` → ECU `0x90000-0x9FFFF` (64 KB program)
-- BIN `0x20000-0x5FFFF` → ECU `0xA0000-0xDFFFF` (256 KB data)
-- BIN `0x00000-0x0FFFF` and `0x60000-0x7FFFF` are header / padding
-
-A real calibration-only mode rewrites just the 64 KB program block at
-`0x90000`. `nfsx directmode write --mode calibration` uses this. The
-WinKFP `.0PA` table (above) covers an overlapping but not identical
-set of bytes; if you have a BIN authored from a WinKFP dump rather
-than a tool-produced 512 KB BIN, translate first or use the WinKFP
-`.0PA` path through `nfsx flash`.
-
 ## 5.2 MS42 engine (HWNR 1430844)
 
-HWNR not present in the E46_v74 SP-Daten drop — couldn't enumerate
-the regions directly. From family conventions in the MS-class engine ECUs
-the layout is expected to mirror GS20's pattern at a different base
-(typically `0xE0000–0xEFFFF` for MS42-class memory maps), but this is
-unverified for this specific HWNR. Real-bench confirmation needed.
+DS2 address: `0x12`. Read block size: 123. Write block size: 118.
+BIN size: 512 KB (0x80000). Protocol class: `p` (small-memory).
+Ident key: `111011`.
+
+### Full-flash WRITE regions
+
+| # | ECU start | ECU end | BIN offset | Erase addr | Size | Notes |
+|---|---|---|---|---|---|---|
+| 1 | `0x11000` | `0x3FFFF` | `0x11000` | `0x11000` | 192 KB | lower program |
+| 2 | `0x5002C` | `0x7FFFF` | `0x5002C` | `0x11000` | ~192 KB | upper program (skips 0x2C header) |
+| 3 | `0x48000` | `0x4FFEF` | `0x48000` | `0x48000` | 32 KB - 16 | calibration (skips CRC trailer) |
+
+Regions 1 and 2 share a single erase at `0x11000` — that one
+`0x07 0x06` command wipes everything between the bootloader and the
+cal block. Do NOT issue a second erase between them or the data from
+region 1 is destroyed.
+
+### Calibration-only WRITE regions
+
+| # | ECU start | ECU end | BIN offset | Size |
+|---|---|---|---|---|
+| 1 | `0x48000` | `0x4FFEF` | `0x48000` | 32 KB - 16 |
+
+Last 16 bytes (`0x4FFF0–0x4FFFF`) are the calibration CRC trailer —
+read-only, never written.
+
+### Full-flash READ regions
+
+| # | ECU start | ECU end | BIN offset | Size | Notes |
+|---|---|---|---|---|---|
+| 1 | `0x00000` | `0x0BFFF` | `0x00000` | 48 KB | C167 internal flash (bootloader, read-only) |
+| 2 | `0x11000` | `0x3FFFF` | `0x11000` | 192 KB | lower program |
+| 3 | `0x48000` | `0x4FFFF` | `0x48000` | 32 KB | calibration (includes trailer) |
+| 4 | `0x50000` | `0x7FFFF` | `0x50000` | 192 KB | upper program (includes header) |
 
 ## 5.3 MS43 engine (HWNR 7545150)
 
-| # | Start | End | Size | Notes |
+DS2 address: `0x12`. Read block size: 123. Write block size: 118.
+BIN size: 512 KB (0x80000). Protocol class: `p` (small-memory).
+Ident key: `111430`.
+
+### Full-flash WRITE regions
+
+| # | ECU start | ECU end | BIN offset | Size | Notes |
+|---|---|---|---|---|---|
+| 1 | `0x90000` | `0xEFFEF` | `0x10000` | ~384 KB - 16 | program (erase @ `0x90000`) |
+| 2 | `0x70000` | `0x7FFEE` | `0x70000` | 64 KB - 17 | calibration (erase @ `0x70000`) |
+
+ECU addresses use an `0x80000` offset from BIN addresses for the
+program region: ECU `0x90000` maps to BIN `0x10000`. The C167 hardware
+applies a high-byte translation (`0x9→0x1`, `0xA→0x2`, …, `0xE→0x6`).
+Calibration at `0x70000` maps 1:1.
+
+Write stops 16–17 bytes short of each region boundary to spare the
+read-only checksum trailers (`0xEFFF0–0xEFFFF` program trailer,
+`0x7FFEF–0x7FFFF` calibration trailer).
+
+### Calibration-only WRITE regions
+
+| # | ECU start | ECU end | BIN offset | Size |
 |---|---|---|---|---|
-| 1 | `0x90000` | … | 64 KB | program region 1 |
-| 2 | … | … | 64 KB | program region 2 |
-| 3 | … | … | 64 KB | program region 3 |
-| 4 | … | … | 64 KB | program region 4 (after a ~22.5 KB gap from region 5) |
-| 5 | … | … | data region | calibration |
-| 6 | … | … | data region | calibration |
-| 7 | `0xEFDAE` | `0xEFFED` | 576 B | metadata footer (not 4 KB-aligned) |
-| | | | **~357 KB** | total addressable |
+| 1 | `0x70000` | `0x7FFEE` | `0x70000` | 64 KB - 17 |
 
-Seven non-contiguous regions, ~39 % larger than GS20. The trailing
-576-byte unaligned footer at `0xEFDAE` is likely CVN / build-info
-metadata that the bootloader expects at a fixed offset.
+### Full-flash READ regions
 
-The flash loop respects this layout: one erase telegram (§3.3) per
-64 KB block in the program regions; data regions may be erased at a
-different granularity; then writes (§3.4) go sequentially through the
-firmware archive.
+| # | ECU start | ECU end | BIN offset | Size | Notes |
+|---|---|---|---|---|---|
+| 1 | `0x00000` | `0x0BFFF` | `0x00000` | 48 KB | bootloader (read-only) |
+| 2 | `0x90000` | `0xEFFFF` | `0x10000` | 384 KB | program (includes trailer) |
+| 3 | `0x70000` | `0x7FFFF` | `0x70000` | 64 KB | calibration (includes trailer) |
 
 ## 5.4 MS-family firmware checksums
 
@@ -794,11 +860,32 @@ crc   = crc16_ccitt(image[start..=end], seed)
 write_u16_le(0x3C24, crc)
 ```
 
-### MS43 (HWNR 7545150) — single checksum
+### MS43 (HWNR 7545150) — five checksums (3 CRC-16 + 2 addition-32)
 
-Same algorithm. Single CRC-16/CCITT pass; ranges are read from the
-firmware header (variant-specific offsets, not hard-coded like MS42's
-`0x3C24` block).
+MS43 is more complex than MS42. It has three CRC-16/CCITT checksums
+and two 32-bit addition checksums:
+
+| # | Name | Kind | Result @ | Notes |
+|---|---|---|---|---|
+| 1 | Boot | CRC-16 | `0x3C24` (u16) | Same layout as MS42 Boot (shared) |
+| 2 | Program | CRC-16 | `0x6FDE0` (u16) | Inline metadata: count + region table at `0x6FDE2`; seed pointer at `0x6ED42` |
+| 3 | Calibration | CRC-16 | `0x73FE0` (u16) | Inline metadata at `0x73FE2`; seed pointer at `0x6ED9A` (fallback: `0x7000C`) |
+| 4 | Program (add) | add-32 | `0x6FDAE` (u32) | Initial accumulator at `0x6FDB2`; 2-region table at `0x6FDBE` |
+| 5 | Calibration (add) | add-32 | `0x72FFC` (u32) | Initial accumulator at `0x6FDB8`; 2-region table at `0x6FDCE` |
+
+**Critical ordering:** the addition checksums (#4, #5) MUST be
+recomputed BEFORE the CRC-16s (#2, #3), because the add-32 result
+bytes sit inside the CRC-16 input ranges. Computing CRC-16 first
+locks in a stale addition-checksum value.
+
+Region addresses in the MS43 metadata use ECU bus addresses (e.g.
+`0x90000`). To get BIN offsets, a high-byte translation applies:
+upper-word `0x9→0x1`, `0xA→0x2`, …, `0xE→0x6`. Upper-word `0x7`
+stays `0x7` (calibration; no shift).
+
+The add-32 algorithm: `initial_accumulator + sum_u16_LE(region_0) +
+sum_u16_LE(region_1)`, all mod 2^32. Each add-32 checksum covers
+two small sub-regions of the program / calibration block.
 
 ### GS20 (HWNR 7544721)
 
@@ -927,8 +1014,8 @@ The ~32 bytes of non-program data between region boundaries in the
 2. TX  [ADDR] 04 00 [XOR]                              ; IDENT (optional)
    RX  [ADDR] LEN A0 ... [XOR]
 
-3. For each block of the region to dump:
-     TX  [ADDR] LEN 06 AH AM AL SIZE [XOR]
+3. For each block of the region to dump (4-byte addressing, §2.2):
+     TX  [ADDR] 09 06 SEG AH AM AL SIZE [XOR]
      RX  [ADDR] (SIZE+4) A0 DATA[0..SIZE-1] [XOR]
      Append DATA to output buffer; advance address by SIZE.
 
@@ -944,12 +1031,12 @@ The ~32 bytes of non-program data between region boundaries in the
 2. TX  [ADDR] 04 00 [XOR]                              ; IDENT
    RX  [ADDR] LEN A0 ... [XOR]                         ; LEN ≥ 45
 
-3. TX  [ADDR] 07 90 42 4D 57 NONCE [XOR]               ; seed request
+3. TX  [ADDR] 08 90 42 4D 57 NONCE [XOR]               ; seed request
    RX  [ADDR] 2E A0 seed[0..42] [XOR]                  ; NONCE ∈ 1..23
 
 4. Derive KEY[0..3] from seed + NONCE (see §3.2 step 3)
 
-5. TX  [ADDR] 06 K0 K1 K2 K3 [XOR]                     ; submit key
+5. TX  [ADDR] 08 90 K0 K1 K2 K3 [XOR]                  ; submit key
    RX  [ADDR] 05 A0 . [XOR]
 
 6. TX  [ADDR] 08 07 06 00 00 00 00 [XOR]               ; erase @ 0x000000

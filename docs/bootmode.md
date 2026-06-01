@@ -266,10 +266,7 @@ block size.
 
 # JMG blob disassembly
 
-Annotated C166 assembly (via dacigg) and Ghidra pseudo-C of the
-898-byte JMG blob. For any discrepancy, trust the dacigg assembly —
-Ghidra's C166 module struggles with `EXTS` segment overrides,
-register calling conventions, and `BFLDH`/`BFLDL` bit manipulation.
+Annotated C166 assembly (via dacigg) of the 898-byte JMG blob.
 
 ## Function map
 
@@ -375,32 +372,6 @@ Then sends `0xC5` "ready" and enters the command loop.
 0xFAF2  BB0D        CALLR    serial_tx_byte         ; send 0xC5
 ```
 
-### Ghidra pseudo-C
-
-```c
-void RESET_VECTOR(void) {
-    __disable_watchdog();
-    S0RIC &= 0xFF7F;
-    S0TIC &= 0xFF7F;
-    SSCBR = 0x17;
-    SSCCON &= 0x7FFF;
-    SSCCON = 0xC07F;
-    // P3/DP3 pin config, DPP2, bus controller setup ...
-    ADDRSEL1 = 0x1008;         // seg 0x10 window (flash write)
-    ADDRSEL2 = 0x08E1;         // seg 0x08 window (flash read/poll)
-    ADDRSEL3 = 0x00A0;
-    ADDRSEL4 = 0xFFF0;
-    // BUSCON0–4 timing ...
-    P3 &= 0xFF7F;              // P3.7 low (SPI CS)
-    DP3 |= 0x80;               // output
-    SSCEIC &= 0xFFBF;
-
-    rh0 = 0xC5;
-    serial_tx_byte();           // send 0xC5 "ready"
-    // fall through to command dispatch ...
-}
-```
-
 ## Command dispatch (`0xFAF4`–`0xFB34`)
 
 ### Assembly
@@ -448,26 +419,6 @@ void RESET_VECTOR(void) {
 0xFDE0  0DF7        JMPR     CC_UC, 0xFDD0
 ```
 
-### Ghidra pseudo-C
-
-```c
-while (true) {
-    S0RIC &= 0xFF7F;
-    S0TIC &= 0xFF7F;
-    while ((S0RIC & 0x80) == 0) {}
-    S0RIC &= 0xFF7F;
-    char cmd = S0RBUF;
-
-    if (cmd == 0x10) { __end_of_init(); rh0 = 0xC5; serial_tx_byte(); continue; }
-    if (cmd == 0x99) { __software_reset(); }
-    if (cmd == 0xA7) { /* READ */ }
-    if (cmd == 0xB0) { /* PROGRAM */ }
-    if (cmd == 0xB4) { /* ERASE */ }
-    if (cmd == 0xA9) { /* SPI_WRITE */ }
-    if (cmd == 0xA8) { /* SPI_READ */ }
-}
-```
-
 ## READ (`0xA7`)
 
 ### Assembly
@@ -507,24 +458,6 @@ no_fc:
 0xFB80  3DF1        JMPR     CC_NZ_NE, 0xFB62
 
 0xFB82  0DB8        JMPR     CC_UC, 0xFAF4         ; back to loop
-```
-
-### Ghidra pseudo-C
-
-```c
-void handle_read(void) {
-    byte page = serial_rx_with_delay();   // no cmd ack
-    DPP0 = 0x0200 | page;
-
-    if (page >= 0x20) goto sentinel;
-
-    for (ushort off = 0; off < 0x4000; off += 2) {
-        // flow control pause every 1024 bytes
-        ushort word = *(ushort*)(off);
-        serial_tx_word(word);
-        serial_tx_hi();
-    }
-}
 ```
 
 ## PROGRAM (`0xB0`)
@@ -583,36 +516,6 @@ no_ack:
 0xFC2E  0D8D        JMPR     CC_UC, cmd_dispatch
 ```
 
-### Ghidra pseudo-C
-
-```c
-void handle_program(void) {
-    ushort seg = 0x0010;
-    ushort fc = 0;
-
-    byte page = serial_rx_byte();         // no cmd ack
-    ushort base = page << 14;
-    seg |= (page >> 2);
-
-    for (ushort off = 0; off < 0x4000; off += 2) {
-        if (fc == 0x0400) {
-            rh0 = 0xC5;
-            serial_tx_hi();               // flow control ack
-            fc = 0;
-        }
-        byte lo = serial_rx_byte();
-        byte hi = serial_rx_byte();
-        ushort word = (hi << 8) | lo;
-
-        amd_unlock();
-        *(ushort*)(0x10:0xAAAA) = 0xA0;   // program cmd
-        *(ushort*)(seg:(base+off)) = word;
-
-        fc += 0x10;
-    }
-}
-```
-
 Flow control counter increments `0x10` per word. Ack at `0x400` =
 64 words = 128 bytes. **128 acks per page.**
 
@@ -643,21 +546,6 @@ Flow control counter increments `0x10` per word. Ack at `0x400` =
 0xFC60  0DE6        JMPR     CC_UC, cmd_dispatch   ; ack + loop
 ```
 
-### Ghidra pseudo-C
-
-```c
-void handle_erase(void) {
-    amd_unlock();
-    *(byte*)(0x10:0xAAAA) = 0x80;    // erase setup
-    amd_unlock();
-    *(byte*)(0x10:0xAAAA) = 0x10;    // chip erase confirm
-
-    do {
-        byte status = *(byte*)(0x08:0xAAAA);
-    } while ((status & 0x80) == 0);  // DQ7=1 → done
-}
-```
-
 ## AMD unlock (`0xFBB2`)
 
 ```asm
@@ -671,13 +559,6 @@ void handle_erase(void) {
 0xFBC8  D7001000    EXTS     #0x10, #1
 0xFBCC  B898        MOV      [r8], r9              ; [10:5554] ← 0x55
 0xFBCE  CB00        RET
-```
-
-```c
-void amd_unlock(void) {
-    *(ushort*)(0x10:0xAAAA) = 0xAA;
-    *(ushort*)(0x10:0x5554) = 0x55;
-}
 ```
 
 Standard AMD/Fujitsu AM29F400B x16-mode unlock. Word addresses

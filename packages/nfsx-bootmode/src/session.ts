@@ -78,315 +78,48 @@ const P3_ADDR = 0x00ffc4;
 const DP3_ADDR = 0x00ffc6;
 
 /**
- * Build a tiny C167 stub that executes the AMD sector-erase command
- * sequence. Derived from JMGarage's secondary loader (RE'd).
- *
- * Key insight from JMG RE:
- *   - Writes use segment 0x10 (via EXTS #0x10, #1 + MOV word)
- *   - Reads/polls use segment 0x08 (via EXTS #0x08, #1)
- *   - x16 word addresses: 0xAAAA (cmd1), 0x5554 (cmd2)
- *   - MOV word writes (not MOVB) for command sequences
+ * Load the erase stub from bundled ERASE_STUB.hex.
+ * Source: scripts/build-stubs.ts (see for full annotated C167 assembly).
  *
  * Register interface (callFunction R8-R15):
- *   R9  = sector base offset within segment (e.g. 0x0000 for sector 0)
- *   R10 = flash WRITE segment (0x0010)
- *   R11 = flash READ segment (0x0008)
+ *   R9  = sector base offset within segment
+ *   R10 = flash WRITE segment (0x0010 + pageDelta)
+ *   R11 = flash READ segment (0x0008 + pageDelta)
  *   R15 = return: 0=OK, 1=DQ5 timeout, 2=verify fail
  */
-function buildEraseStub(): Buffer {
-  const code: number[] = [];
-  const emit16 = (lo: number, hi: number) => { code.push(lo, hi); };
-  const emit32 = (b0: number, b1: number, b2: number, b3: number) => { code.push(b0, b1, b2, b3); };
-
-  // Setup constants (x16 mode: word addresses per JMG)
-  // R0 = 0xAAAA (AMD cmd addr 1 = 0x5555 * 2)
-  emit32(0xe6, 0xf0, 0xaa, 0xaa);                    // offset 0
-  // R1 = 0x5554 (AMD cmd addr 2 = 0x2AAA * 2)
-  emit32(0xe6, 0xf1, 0x54, 0x55);                    // offset 4
-  // R2 = 0x00AA (data for unlock cycle 1)
-  emit32(0xe6, 0xf2, 0xaa, 0x00);                    // offset 8
-  // R3 = 0x0055 (data for unlock cycle 2)
-  emit32(0xe6, 0xf3, 0x55, 0x00);                    // offset 12
-  // R15 = 0 (return status = OK)
-  emit32(0xe6, 0xff, 0x00, 0x00);                    // offset 16
-
-  // --- 6-cycle AMD erase command sequence (MOV word writes to seg 0x10) ---
-  // Cycle 1: write 0x00AA to writeSeg:0xAAAA
-  emit16(0xdc, 0x0a);                                 // EXTS R10, #1  (offset 20)
-  emit16(0xb8, 0x20);                                 // MOV [R0], R2  (offset 22)
-
-  // Cycle 2: write 0x0055 to writeSeg:0x5554
-  emit16(0xdc, 0x0a);                                 // EXTS R10, #1  (offset 24)
-  emit16(0xb8, 0x31);                                 // MOV [R1], R3  (offset 26)
-
-  // Cycle 3: write 0x0080 to writeSeg:0xAAAA
-  emit32(0xe6, 0xf4, 0x80, 0x00);                    // MOV R4, #0x0080 (offset 28)
-  emit16(0xdc, 0x0a);                                 // EXTS R10, #1  (offset 32)
-  emit16(0xb8, 0x40);                                 // MOV [R0], R4  (offset 34)
-
-  // Cycle 4: write 0x00AA to writeSeg:0xAAAA
-  emit16(0xdc, 0x0a);                                 // EXTS R10, #1  (offset 36)
-  emit16(0xb8, 0x20);                                 // MOV [R0], R2  (offset 38)
-
-  // Cycle 5: write 0x0055 to writeSeg:0x5554
-  emit16(0xdc, 0x0a);                                 // EXTS R10, #1  (offset 40)
-  emit16(0xb8, 0x31);                                 // MOV [R1], R3  (offset 42)
-
-  // Cycle 6: write 0x0030 to writeSeg:sector_base (R9 = sector offset)
-  emit32(0xe6, 0xf4, 0x30, 0x00);                    // MOV R4, #0x0030 (offset 44)
-  emit16(0xdc, 0x0a);                                 // EXTS R10, #1  (offset 48)
-  emit16(0xb8, 0x49);                                 // MOV [R9], R4  (offset 50)
-
-  // --- Poll DQ7 (read from READ segment 0x08) ---
-  const pollOffset = code.length;                     // offset 52
-  // EXTS R11, #1 (read segment)
-  emit16(0xdc, 0x0b);                                 // offset 52
-  // MOV R4, [R9]        ; read status from sector base
-  emit16(0xa8, 0x49);                                 // offset 54
-  // MOV R5, R4
-  emit16(0xf0, 0x54);                                 // offset 56
-  // AND R5, #0x0080     ; isolate DQ7
-  emit32(0x66, 0xf5, 0x80, 0x00);                    // offset 58
-  // JMPR cc_NZ, erase_done  ; DQ7=1 → erase complete
-  emit16(0x3d, 0x00); // placeholder                  // offset 62
-
-  // Check DQ5 (device timeout)
-  // MOV R5, R4
-  emit16(0xf0, 0x54);                                 // offset 64
-  // AND R5, #0x0020
-  emit32(0x66, 0xf5, 0x20, 0x00);                    // offset 66
-  // JMPR cc_Z, poll      ; DQ5 not set → keep polling
-  emit16(0x2d, 0x00); // placeholder                  // offset 70
-
-  // DQ5 set — re-read once more (from read segment)
-  // EXTS R11, #1
-  emit16(0xdc, 0x0b);                                 // offset 72
-  // MOV R4, [R9]
-  emit16(0xa8, 0x49);                                 // offset 74
-  // AND R4, #0x0080
-  emit32(0x66, 0xf4, 0x80, 0x00);                    // offset 76
-  // JMPR cc_NZ, erase_done ; actually OK
-  emit16(0x3d, 0x00); // placeholder                  // offset 80
-
-  // Genuine DQ5 timeout failure
-  // MOV R15, #0x0001
-  emit32(0xe6, 0xff, 0x01, 0x00);                    // offset 82
-  // Reset chip: write 0x00F0 to writeSeg:0x0000
-  emit32(0xe6, 0xf4, 0xf0, 0x00);                    // offset 86 MOV R4, #0x00F0
-  emit32(0xe6, 0xf5, 0x00, 0x00);                    // offset 90 MOV R5, #0x0000
-  emit16(0xdc, 0x0a);                                 // offset 94 EXTS R10, #1
-  emit16(0xb8, 0x45);                                 // offset 96 MOV [R5], R4
-  // RETS (inter-segment return, matches MiniMon's RETS-based call)
-  emit16(0xdb, 0x00);                                 // offset 98
-
-  const eraseDoneOffset = code.length;                // offset 100
-
-  // --- erase_done: verify by reading back (should be 0xFFFF) ---
-  // EXTS R11, #1 (read segment)
-  emit16(0xdc, 0x0b);                                 // offset 100
-  // MOV R4, [R9]
-  emit16(0xa8, 0x49);                                 // offset 102
-  // CMP R4, #0xFFFF
-  emit32(0x46, 0xf4, 0xff, 0xff);                    // offset 104
-  // JMPR cc_Z, success   ; erased correctly
-  emit16(0x2d, 0x00); // placeholder                  // offset 108
-
-  // Verify failed — store read value in R8 for diagnostics
-  // MOV R8, R4
-  emit16(0xf0, 0x84);                                 // offset 110
-  // MOV R15, #0x0002
-  emit32(0xe6, 0xff, 0x02, 0x00);                    // offset 112
-  // RETS
-  emit16(0xdb, 0x00);                                 // offset 116
-
-  const successOffset = code.length;                  // offset 118
-  // RETS (R15 already 0)
-  emit16(0xdb, 0x00);                                 // offset 118
-
-  // --- Fix up relative jumps ---
-  // offset 62: JMPR cc_NZ → erase_done (100)
-  // rel = (100 - 64) / 2 = 18
-  code[62 + 1] = 18;
-
-  // offset 70: JMPR cc_Z → poll (52)
-  // rel = (52 - 72) / 2 = -10 → 0xF6
-  code[70 + 1] = 0xf6;
-
-  // offset 80: JMPR cc_NZ → erase_done (100)
-  // rel = (100 - 82) / 2 = 9
-  code[80 + 1] = 9;
-
-  // offset 108: JMPR cc_Z → success (118)
-  // rel = (118 - 110) / 2 = 4
-  code[108 + 1] = 4;
-
-  return Buffer.from(code);
+function loadEraseStub(): Buffer {
+  return flattenIntelHex(parseIntelHex(readBundledBlob('ERASE_STUB.hex').toString('utf8')));
 }
 
 /** Address where we upload the erase stub in XRAM. */
 const ERASE_STUB_ADDR = 0x00e200;
 
 /**
- * Build a stub that issues the AMD autoselect command and reads
- * manufacturer + device IDs. Used as a diagnostic to confirm writes
- * actually reach the flash chip.
- *
- * Uses JMG-derived addressing:
- *   - Writes to segment 0x10 (R10) with MOV word, x16 addresses (0xAAAA/0x5554)
- *   - Reads from segment 0x08 (R11) 
+ * Load the autoselect probe stub from bundled PROBE_STUB.hex.
+ * Source: scripts/build-stubs.ts
  *
  * Input: R10 = flash WRITE segment (0x0010), R11 = flash READ segment (0x0008)
  * Output: R8 = manufacturer ID, R9 = device ID
  */
-function buildAutoSelectProbeStub(): Buffer {
-  const code: number[] = [];
-  const emit16 = (lo: number, hi: number) => { code.push(lo, hi); };
-  const emit32 = (b0: number, b1: number, b2: number, b3: number) => { code.push(b0, b1, b2, b3); };
-
-  // R0 = 0xAAAA (AMD cmd addr 1, x16: 0x5555 * 2)
-  emit32(0xe6, 0xf0, 0xaa, 0xaa);
-  // R1 = 0x5554 (AMD cmd addr 2, x16: 0x2AAA * 2)
-  emit32(0xe6, 0xf1, 0x54, 0x55);
-  // R2 = 0x00AA (unlock data 1)
-  emit32(0xe6, 0xf2, 0xaa, 0x00);
-  // R3 = 0x0055 (unlock data 2)
-  emit32(0xe6, 0xf3, 0x55, 0x00);
-
-  // Cycle 1: write 0xAA to writeSeg:0xAAAA (MOV word)
-  emit16(0xdc, 0x0a); // EXTS R10, #1
-  emit16(0xb8, 0x20); // MOV [R0], R2
-
-  // Cycle 2: write 0x55 to writeSeg:0x5554 (MOV word)
-  emit16(0xdc, 0x0a); // EXTS R10, #1
-  emit16(0xb8, 0x31); // MOV [R1], R3
-
-  // Cycle 3: write 0x90 to writeSeg:0xAAAA (autoselect command)
-  emit32(0xe6, 0xf4, 0x90, 0x00); // MOV R4, #0x0090
-  emit16(0xdc, 0x0a); // EXTS R10, #1
-  emit16(0xb8, 0x40); // MOV [R0], R4
-
-  // Read manufacturer ID from readSeg:0x0000 (word read)
-  emit32(0xe6, 0xf5, 0x00, 0x00); // MOV R5, #0x0000
-  emit16(0xdc, 0x0b); // EXTS R11, #1 (read segment)
-  emit16(0xa8, 0x85); // MOV R8, [R5] — full 16-bit manufacturer ID
-
-  // Read device ID from readSeg:0x0002 (word addr 1 in x16 = byte offset 2)
-  emit32(0xe6, 0xf5, 0x02, 0x00); // MOV R5, #0x0002
-  emit16(0xdc, 0x0b); // EXTS R11, #1
-  emit16(0xa8, 0x95); // MOV R9, [R5] — full 16-bit device ID
-
-  // Reset to read mode: write 0xF0 to writeSeg:0xAAAA
-  emit32(0xe6, 0xf4, 0xf0, 0x00); // MOV R4, #0x00F0
-  emit16(0xdc, 0x0a); // EXTS R10, #1
-  emit16(0xb8, 0x40); // MOV [R0], R4
-
-  // RETS
-  emit16(0xdb, 0x00);
-
-  return Buffer.from(code);
+function loadProbeStub(): Buffer {
+  return flattenIntelHex(parseIntelHex(readBundledBlob('PROBE_STUB.hex').toString('utf8')));
 }
 
 /**
- * Custom C167 programmer stub — programs a block of words from RAM to flash.
+ * Load the programmer stub from bundled PROGRAMMER_STUB.hex.
+ * Source: scripts/build-stubs.ts
  *
- * Matches JMG's approach: NO DQ7 polling. Uses a fixed delay loop
- * after each word write (~300μs at 20MHz). AM29F400B max program time
- * is 200μs per datasheet, so 300μs gives generous margin.
- *
- * Key: AMD unlock/command writes ALWAYS go to base segment 0x10 (via R8),
- * while data writes go to R2 (which may be 0x10, 0x11, etc. for different
- * 64KB pages within the 512KB flash).
- *
- * Register interface (MiniMon callFunction convention, R8-R15):
- *   R8  = unused (set internally to CMD segment = 0x10)
+ * Register interface:
  *   R9  = byte count (must be even)
- *   R10 = source address LOW (RAM buffer)
- *   R11 = source address HIGH (segment, typically 0x0000 for XRAM)
- *   R12 = flash WRITE segment for DATA (0x0010 + page delta)
+ *   R10 = source offset in XRAM
+ *   R11 = source segment (0 for XRAM)
+ *   R12 = flash WRITE segment for DATA (0x0010 + pageDelta)
  *   R13 = destination offset within flash segment
- *   R14 = unused
  *   R15 = return status (always 0=OK)
  */
-function buildProgrammerStub(): { code: Buffer; entryOffset: number } {
-  const code: number[] = [];
-  const emit16 = (lo: number, hi: number) => { code.push(lo, hi); };
-  const emit32 = (b0: number, b1: number, b2: number, b3: number) => { code.push(b0, b1, b2, b3); };
-
-  // --- Setup ---
-  // R0 = 0xAAAA (AMD cmd addr 1, x16: 0x5555 * 2)
-  emit32(0xe6, 0xf0, 0xaa, 0xaa);                    // offset 0
-  // R1 = 0x5554 (AMD cmd addr 2, x16: 0x2AAA * 2)
-  emit32(0xe6, 0xf1, 0x54, 0x55);                    // offset 4
-  // R2 = flash DATA write segment (copy from R12 — may be 0x10, 0x11, etc.)
-  emit16(0xf0, 0x2c);                                 // offset 8: MOV R2, R12
-  // R8 = 0x0010 (CMD segment — always base segment for unlock/program commands)
-  emit32(0xe6, 0xf8, 0x10, 0x00);                    // offset 10: MOV R8, #0x0010
-  // R15 = 0 (success)
-  emit32(0xe6, 0xff, 0x00, 0x00);                    // offset 14
-  // CMP R9, #0
-  emit32(0x46, 0xf9, 0x00, 0x00);                    // offset 18
-  // JMPR cc_Z, done
-  emit16(0x2d, 0x00); // placeholder                  // offset 22
-
-  const loopOffset = code.length;                     // offset 24
-
-  // --- Read source word from RAM ---
-  // EXTS R11, #1 (source segment = 0 for XRAM)
-  emit16(0xdc, 0x0b);                                 // offset 24
-  // MOV R4, [R10]
-  emit16(0xa8, 0x4a);                                 // offset 26
-
-  // --- AMD unlock cycle 1: write 0x00AA → cmdSeg(R8):0xAAAA ---
-  emit32(0xe6, 0xf5, 0xaa, 0x00);                    // offset 28: MOV R5, #0x00AA
-  emit16(0xdc, 0x08);                                 // offset 32: EXTS R8, #1
-  emit16(0xb8, 0x50);                                 // offset 34: MOV [R0], R5
-
-  // --- AMD unlock cycle 2: write 0x0055 → cmdSeg(R8):0x5554 ---
-  emit32(0xe6, 0xf5, 0x55, 0x00);                    // offset 36: MOV R5, #0x0055
-  emit16(0xdc, 0x08);                                 // offset 40: EXTS R8, #1
-  emit16(0xb8, 0x51);                                 // offset 42: MOV [R1], R5
-
-  // --- AMD program command: write 0x00A0 → cmdSeg(R8):0xAAAA ---
-  emit32(0xe6, 0xf5, 0xa0, 0x00);                    // offset 44: MOV R5, #0x00A0
-  emit16(0xdc, 0x08);                                 // offset 48: EXTS R8, #1
-  emit16(0xb8, 0x50);                                 // offset 50: MOV [R0], R5
-
-  // --- Write data word to flash destination (dataSeg R2 : R13) ---
-  emit16(0xdc, 0x02);                                 // offset 52: EXTS R2, #1
-  emit16(0xb8, 0x4d);                                 // offset 54: MOV [R13], R4
-
-  // --- Busy-wait delay ~300μs at 20MHz ---
-  // 1500 iterations × (SUB 1 cycle + JMPR 1 cycle) × 100ns = 300μs
-  // AM29F400B max word program time = 200μs, so 300μs is safe
-  emit32(0xe6, 0xf6, 0xdc, 0x05);                    // offset 56: MOV R6, #1500 (0x05DC)
-  // delay_loop: SUB R6, #1
-  emit32(0x26, 0xf6, 0x01, 0x00);                    // offset 60: SUB R6, #1
-  // JMPR cc_NZ, delay_loop (target=60, from 64: rel=(60-(64+2))/2 = -3 → 0xFD)
-  emit16(0x3d, 0xfd);                                 // offset 64: JMPR cc_NZ, → offset 60
-
-  // --- Advance pointers ---
-  // ADD R10, #2 (next source word)
-  emit32(0x06, 0xfa, 0x02, 0x00);                    // offset 66: ADD R10, #2
-  // ADD R13, #2 (next dest word)
-  emit32(0x06, 0xfd, 0x02, 0x00);                    // offset 70: ADD R13, #2
-  // SUB R9, #2 (decrement byte count)
-  emit32(0x26, 0xf9, 0x02, 0x00);                    // offset 74: SUB R9, #2
-  // JMPR cc_NZ, loop
-  emit16(0x3d, 0x00); // placeholder                  // offset 78
-
-  const doneOffset = code.length;                     // offset 80
-  emit16(0xdb, 0x00);                                 // offset 80: RETS
-
-  // --- Fix up relative jumps ---
-  // offset 22: JMPR cc_Z → done (80)
-  // rel = (80 - (22+2)) / 2 = 56/2 = 28
-  code[22 + 1] = 28;
-
-  // offset 78: JMPR cc_NZ → loop (24)
-  // rel = (24 - (78+2)) / 2 = -56/2 = -28 → 0xE4
-  code[78 + 1] = 0xe4;
-
-  return { code: Buffer.from(code), entryOffset: 0 };
+function loadProgrammerStub(): { code: Buffer; entryOffset: number } {
+  const code = flattenIntelHex(parseIntelHex(readBundledBlob('PROGRAMMER_STUB.hex').toString('utf8')));
+  return { code, entryOffset: 0 };
 }
 
 /** Address where we upload the programmer stub in XRAM. */
@@ -442,10 +175,6 @@ async function configureExtFlashBusForWrite(minimon: MinimonClient): Promise<voi
   await minimon.writeWord(DP3_ADDR, dp3 | 0x0080);  // DP3.7 = 1 (output)
   const p3 = await minimon.readWord(P3_ADDR);
   await minimon.writeWord(P3_ADDR, p3 & ~0x0080);   // P3.7 = 0 (active-low enable)
-  process.stderr.write(
-    `[bus] write-enable asserted: P3.7=LOW, DP3.7=output\n` +
-    `[bus] ADDRSEL1=0x1008 BUSCON1=0x84FF (write seg 0x10, read seg 0x08)\n`,
-  );
 }
 
 export interface BootmodeSessionConfig extends BootmodeTransportConfig {
@@ -588,109 +317,15 @@ export async function writeFullFlash(
 
     const sectors = AM29F400BB_SECTORS;
 
-    // ─── DIAGNOSTIC: Bus/port pin state ─────────────────────────
-    // Check if WR# (P3.12) is configured as output. If DP3 bit12=0,
-    // the write strobe isn't being driven to the external bus.
+    // Ensure WR# (P3.12) is configured as output for flash writes
     const dp3 = await minimon.readWord(0x00ffc6); // DP3 (Port 3 Direction)
-    const p3  = await minimon.readWord(0x00ffc4); // P3 (Port 3 Data)
-    const buscon0 = await minimon.readWord(0x00ff0c); // BUSCON0
-    const syscon = await minimon.readWord(0x00ff12);  // SYSCON
-    process.stderr.write(
-      `[diag] DP3=0x${dp3.toString(16).padStart(4,'0')} P3=0x${p3.toString(16).padStart(4,'0')} ` +
-      `BUSCON0=0x${buscon0.toString(16).padStart(4,'0')} SYSCON=0x${syscon.toString(16).padStart(4,'0')}\n`,
-    );
     if (!(dp3 & 0x1000)) {
-      process.stderr.write(`[diag] WR# (P3.12) is INPUT — enabling as OUTPUT for flash writes\n`);
       await minimon.writeWord(0x00ffc6, dp3 | 0x1000); // set DP3.12 = output
-      const dp3After = await minimon.readWord(0x00ffc6);
-      process.stderr.write(`[diag] DP3 now=0x${dp3After.toString(16).padStart(4,'0')}\n`);
-    } else {
-      process.stderr.write(`[diag] WR# (P3.12) already OUTPUT ✓\n`);
     }
 
-    // ─── DIAGNOSTIC: Verify external bus writes work ─────────────
-    // Minimal stub: write a test word to RAM (seg 0), read it back;
-    // then write to flash address and read back. This isolates whether
-    // EXTS+MOV generates bus writes at all.
-    {
-      const testStub: number[] = [];
-      const e16 = (lo: number, hi: number) => { testStub.push(lo, hi); };
-      const e32 = (b0: number, b1: number, b2: number, b3: number) => { testStub.push(b0, b1, b2, b3); };
-
-      // Test 1: Write 0xBEEF to RAM address 0x00FD00 (seg 0) via stub
-      // MOV R0, #0xFD00
-      e32(0xe6, 0xf0, 0x00, 0xfd);
-      // MOV R1, #0xBEEF
-      e32(0xe6, 0xf1, 0xef, 0xbe);
-      // MOV [R0], R1          ; write to seg0:0xFD00 (internal RAM)
-      e16(0xb8, 0x10);
-      // MOV R8, [R0]          ; read back
-      e16(0xa8, 0x80);
-
-      // Test 2: Write 0xAA to flash address seg80:0x5555 via EXTS + MOVB
-      // (this is the first AMD unlock cycle in x8 mode)
-      // MOV R2, #0x0080       ; segment
-      e32(0xe6, 0xf2, 0x80, 0x00);
-      // MOV R3, #0x5555       ; x8 command address
-      e32(0xe6, 0xf3, 0x55, 0x55);
-      // MOV R4, #0x00AA       ; data (RL4 = 0xAA, byte reg 8)
-      e32(0xe6, 0xf4, 0xaa, 0x00);
-      // EXTS R2, #1           ; DC 02
-      e16(0xdc, 0x02);
-      // MOVB [R3], RL4        ; B9 83 (byte reg 8 = RL4, word ptr R3)
-      e16(0xb9, 0x83);
-      // Read back from same address (MOVB)
-      // EXTS R2, #1
-      e16(0xdc, 0x02);
-      // MOVB RL4, [R3]        ; A9 83
-      e16(0xa9, 0x83);
-      // MOV R9, R4 + mask
-      e32(0xe6, 0xf9, 0x00, 0x00); // MOV R9, #0
-      e16(0xf0, 0x94);         // MOV R9, R4
-      e32(0x66, 0xf9, 0xff, 0x00); // AND R9, #0x00FF
-
-      // Test 3: Also read what's at seg80:0x0000 (to see if flash entered any mode)
-      // MOV R5, #0x0000
-      e32(0xe6, 0xf5, 0x00, 0x00);
-      // EXTS R2, #1
-      e16(0xdc, 0x02);
-      // MOV R10, [R5]         ; read flash[0]
-      e16(0xa8, 0xa5);
-
-      // RETS
-      e16(0xdb, 0x00);
-
-      const testBuf = Buffer.from(testStub);
-      await minimon.writeBlock(ERASE_STUB_ADDR, testBuf);
-      // Clear test location first
-      await minimon.writeWord(0x00fd00, 0x0000);
-      const testRegs = await minimon.callFunction(
-        ERASE_STUB_ADDR,
-        [0, 0, 0, 0, 0, 0, 0, 0],
-        5000,
-      );
-      const ramReadback = await minimon.readWord(0x00fd00);
-      process.stderr.write(
-        `[diag] write-test stub results:\n` +
-        `  RAM write 0xBEEF→0xFD00: stub-readback=0x${testRegs[0].toString(16).padStart(4,'0')} ` +
-        `minimon-readback=0x${ramReadback.toString(16).padStart(4,'0')} ` +
-        `${ramReadback === 0xbeef ? '✓' : '✗'}\n` +
-        `  Flash MOVB write 0xAA→seg80:0x5555: readback=0x${testRegs[1].toString(16).padStart(4,'0')}\n` +
-        `  Flash[0x0000] after write: 0x${testRegs[2].toString(16).padStart(4,'0')}\n`,
-      );
-    }
-
-    // Diagnostic: read first 8 bytes of sector 0 before erase
-    const preErase = await minimon.readBlock(EXT_FLASH_ADDR, 8);
-    process.stderr.write(
-      `[diag] pre-erase flash[0..7]: ${[...preErase].map(b => b.toString(16).padStart(2,'0')).join(' ')}\n`,
-    );
-
-    // ─── DIAGNOSTIC: AMD Autoselect probe ─────────────────────
-    // Confirm writes actually reach the flash by issuing the
-    // autoselect command sequence and reading manufacturer/device ID.
-    // If this fails, writes aren't reaching the chip at all.
-    const probeStub = buildAutoSelectProbeStub();
+    // ─── AMD Autoselect probe ─────────────────────────────────────
+    // Confirm writes reach the flash chip by reading manufacturer/device ID.
+    const probeStub = loadProbeStub();
     await minimon.writeBlock(ERASE_STUB_ADDR, probeStub);
     const probeRegs = await minimon.callFunction(
       ERASE_STUB_ADDR,
@@ -698,34 +333,14 @@ export async function writeFullFlash(
       5000,
     );
     // R8=manufacturer ID (expect 0x0001 for AMD), R9=device ID (expect 0x22AB for AM29F400BB)
-    process.stderr.write(
-      `[diag] autoselect probe: manufacturer=0x${probeRegs[0].toString(16).padStart(4,'0')} ` +
-      `device=0x${probeRegs[1].toString(16).padStart(4,'0')}\n`,
-    );
     if (probeRegs[0] === 0x0001 && (probeRegs[1] === 0x22ab || probeRegs[1] === 0x22ba)) {
-      process.stderr.write(`[diag] flash chip confirmed: AMD AM29F400B ✓\n`);
+      process.stderr.write(
+        `[flash] detected AMD AM29F400B (mfr=0x${probeRegs[0].toString(16).padStart(4,'0')} dev=0x${probeRegs[1].toString(16).padStart(4,'0')})\n`,
+      );
     } else {
-      process.stderr.write(
-        `[diag] WARNING: unexpected chip IDs — writes may not be reaching flash\n`,
-      );
-      // Also try: raw MiniMon writeWord to flash (DPP-based) to compare
-      // Write 0x00AA to 0x800AAA, then read back — if flash is in x16 mode
-      // this should be ignored (flash doesn't accept random writes), but if
-      // the bus is working, at least we know.
-      const beforeWrite = await minimon.readWord(EXT_FLASH_ADDR);
-      try {
-        await minimon.writeWord(EXT_FLASH_ADDR, 0x1234);
-      } catch (e) {
-        process.stderr.write(`[diag] MiniMon writeWord to flash threw: ${e}\n`);
-      }
-      const afterWrite = await minimon.readWord(EXT_FLASH_ADDR);
-      process.stderr.write(
-        `[diag] MiniMon writeWord test: before=0x${beforeWrite.toString(16).padStart(4,'0')} ` +
-        `after=0x${afterWrite.toString(16).padStart(4,'0')} ` +
-        `${beforeWrite === afterWrite ? '(no change — write didnt reach flash or flash rejected it)' : '(CHANGED — write DID reach flash!)'}\n`,
-      );
       throw new Error(
-        'autoselect probe failed — flash writes not working. Check diag output above.',
+        `autoselect probe failed: manufacturer=0x${probeRegs[0].toString(16).padStart(4,'0')} ` +
+        `device=0x${probeRegs[1].toString(16).padStart(4,'0')} — flash writes not working`,
       );
     }
 
@@ -733,11 +348,8 @@ export async function writeFullFlash(
     // Upload erase stub — uses EXTS-based writes (segment override)
     // which bypasses MiniMon's DPP-based writeWord that doesn't work
     // for external flash on MS42 hardware.
-    const eraseStub = buildEraseStub();
+    const eraseStub = loadEraseStub();
     await minimon.writeBlock(ERASE_STUB_ADDR, eraseStub);
-    process.stderr.write(
-      `[diag] erase stub uploaded (${eraseStub.length} bytes) at 0x${ERASE_STUB_ADDR.toString(16)}\n`,
-    );
 
     onProgress?.({ stage: 'erase', message: 'erasing sectors', fraction: 0 });
     for (let i = 0; i < sectors.length; i++) {
@@ -748,9 +360,6 @@ export async function writeFullFlash(
       const sectorPageDelta = s.start >>> 16; // 0-7 for 512KB flash
       const writeSeg = FLASH_WRITE_SEG + sectorPageDelta;
       const readSeg = FLASH_READ_SEG + sectorPageDelta;
-      process.stderr.write(
-        `[diag] erasing sector ${s.index} writeSeg=0x${writeSeg.toString(16)} readSeg=0x${readSeg.toString(16)} off=0x${sectorPageOffset.toString(16)}...\n`,
-      );
       const regs = await minimon.callFunction(
         ERASE_STUB_ADDR,
         [
@@ -778,36 +387,22 @@ export async function writeFullFlash(
       });
     }
 
-    // Verify erase: read first few bytes — should be 0xFF
-    const postErase = await minimon.readBlock(EXT_FLASH_ADDR, 8);
-    process.stderr.write(
-      `[diag] post-erase flash[0..7]: ${[...postErase].map(b => b.toString(16).padStart(2,'0')).join(' ')}\n`,
-    );
-
     // ─── PROGRAM ─────────────────────────────────────────────────
     // Upload a custom programmer stub that does the AMD word-program
     // sequence at MCU speed. Data is staged into a RAM buffer in chunks,
     // then the stub is invoked to program each chunk into flash.
-    const stub = buildProgrammerStub();
+    const stub = loadProgrammerStub();
     onProgress?.({
       stage: 'driver-upload',
       message: `uploading programmer stub (${stub.code.length} bytes)`,
     });
     await minimon.writeBlock(PROGRAMMER_STUB_ADDR, stub.code);
 
-    // Verify stub upload
-    const stubVerify = await minimon.readBlock(PROGRAMMER_STUB_ADDR, 8);
-    const stubExpect = stub.code.subarray(0, 8);
-    process.stderr.write(
-      `[diag] stub upload verify: ${stubVerify.every((b, i) => b === stubExpect[i]) ? 'OK' : 'MISMATCH'}\n`,
-    );
-
     const DATA_BUF = 0x00e200; // Reuse erase stub area (known-good distinct SRAM)
     const BLOCK = 128; // bytes per programming call (must be even, max 256 before stub at 0xE300)
     let programmedBytes = 0;
     onProgress?.({ stage: 'program', message: 'programming flash', fraction: 0 });
     let off = 0;
-    let callCount = 0;
     while (off < image.length) {
       // Don't let a chunk cross a 64KB segment boundary
       const segEnd = ((off >>> 16) + 1) << 16; // next segment start
@@ -816,9 +411,6 @@ export async function writeFullFlash(
       // Skip all-0xFF blocks (already erased)
       if (slice.every((b) => b === 0xff)) {
         programmedBytes += slice.length;
-        if (off % 0x4000 === 0 || off < 0x100) {
-          process.stderr.write(`[prog] skip 0xFF @ 0x${off.toString(16).padStart(5,'0')}\n`);
-        }
         off += slice.length;
         continue;
       }
@@ -828,14 +420,6 @@ export async function writeFullFlash(
       // Flash destination: segment = FLASH_WRITE_SEG + page, offset within page
       const pageDelta = off >>> 16; // 0-7 for 512KB
       const destOff = off & 0xffff;
-      callCount++;
-      if (callCount <= 3) {
-        process.stderr.write(
-          `[prog] call #${callCount}: off=0x${off.toString(16)} len=${slice.length} ` +
-          `R10=0x${(DATA_BUF & 0xffff).toString(16)} R12=0x${(FLASH_WRITE_SEG + pageDelta).toString(16)} ` +
-          `R13=0x${destOff.toString(16)} data[0:4]=${[...slice.subarray(0,4)].map(b=>b.toString(16).padStart(2,'0')).join(' ')}\n`,
-        );
-      }
       const regs = await minimon.callFunction(
         PROGRAMMER_STUB_ADDR + stub.entryOffset,
         [
@@ -850,11 +434,6 @@ export async function writeFullFlash(
         ],
         30_000,
       );
-      if (callCount <= 3) {
-        process.stderr.write(
-          `[prog] call #${callCount} returned: R8-R15=${regs.map(r=>'0x'+r.toString(16).padStart(4,'0')).join(' ')}\n`,
-        );
-      }
       if (regs[7] !== 0) {
         throw new Error(
           `programmer stub failed at flash offset 0x${off.toString(16)}: R15=0x${regs[7].toString(16)}`,

@@ -27,6 +27,24 @@
       "role": "alternative monolithic secondary (898 bytes, built-in flash driver, custom single-byte protocol)",
       "format": "Intel HEX",
       "sha256": "b08316e73c80004c01ae4566581142e522b07a9f3544ff85dbd00f3fe29810df"
+    },
+    {
+      "name": "ERASE_STUB.hex",
+      "role": "custom C167 erase stub for AM29F400BB (DQ7 poll, single-sector)",
+      "format": "Intel HEX",
+      "sha256": "37e87f328520e27258dd0c423e20307a417c4566abf14eb8a51b4a63c936336f"
+    },
+    {
+      "name": "PROGRAMMER_STUB.hex",
+      "role": "custom C167 programmer stub for AM29F400BB (fixed delay, word-program)",
+      "format": "Intel HEX",
+      "sha256": "38e9a44983b657bbd126e5971eca119e5ebfce5935ad252e8aaae2626011f698"
+    },
+    {
+      "name": "PROBE_STUB.hex",
+      "role": "custom C167 autoselect probe stub (reads manufacturer/device ID)",
+      "format": "Intel HEX",
+      "sha256": "1f46d05a447a5d4b0eeba56bc103dddce8c326390c758a9250b950ef978d192b"
     }
   ]
 }
