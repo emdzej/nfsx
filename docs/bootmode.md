@@ -125,11 +125,12 @@ answers the power-on entry sequence.
 
 ---
 
-# Path A — MiniMon + flash driver (`nfsx bootmode`)
+# Path A — MiniMon + custom stubs (`nfsx bootmode`)
 
 The default bootmode path. Uses the public MiniMon monitor as the
-secondary loader, plus a separate per-chip flash driver uploaded
-into RAM.
+secondary loader, plus custom C167 assembly stubs for flash operations.
+The stubs are pre-assembled into Intel HEX and bundled with the package;
+source lives in `scripts/build-stubs.ts`.
 
 ## Bundled files
 
@@ -137,7 +138,9 @@ into RAM.
 |---|---|---|
 | `LOADK.hex` | 32 bytes | Primary loader (K-line variant) |
 | `MINIMONK.hex` | ~394 bytes | Secondary — MiniMon K-line kernel |
-| `A29F400B.hex` | ~200 bytes | Flash driver for AMD AM29F400B |
+| `ERASE_STUB.hex` | 120 bytes | Custom sector-erase stub (DQ7 poll) |
+| `PROGRAMMER_STUB.hex` | 82 bytes | Custom word-program stub (fixed delay) |
+| `PROBE_STUB.hex` | 58 bytes | Autoselect probe (reads chip IDs) |
 
 ## Handshake
 
@@ -156,33 +159,260 @@ primitives:
 | `0xCD` | `C_READ_WORD` | addr (LE) → word |
 | `0x84` | `C_WRITE_BLOCK` | addr (LE) + len (LE) + data |
 | `0x85` | `C_READ_BLOCK` | addr (LE) + len (LE) → block |
-| `0x9F` | `C_CALL_FUNCTION` | 8 register words (R0..R7) + function addr |
+| `0x9F` | `C_CALL_FUNCTION` | 8 register words (R8..R15) + function addr |
 | `0x33` | `C_GETCHECKSUM` | addr (LE) + len (LE) |
 
 Each command is acked with `A_ACK1 = 0xAA` after the CMD byte and
 `A_ACK2 = 0xEA` after the payload.
 
-## Flash operations via driver
+## Flash operations via custom stubs
 
-MiniMon doesn't know about flash hardware. The host uploads the
-AMD flash driver (`A29F400B.hex`) into RAM via `C_WRITE_BLOCK`,
-then calls into it with `C_CALL_FUNCTION`, passing a flash
-sub-command in a register:
+MiniMon doesn't know about flash hardware. The host uploads custom
+C167 machine code stubs into XRAM and invokes them via
+`C_CALL_FUNCTION`. This bypasses the bundled `A29F400B.hex` driver
+(which has a segment addressing bug on MS42).
 
-| FC | Action |
+### Why custom stubs?
+
+The original MiniMon `A29F400B.hex` flash driver uses segment `0x80`
+for flash writes. On MS42, the PCB has:
+- A hardware write-enable gate controlled by **P3.7** (active-low)
+- Flash mapped via ADDRSEL1/CS1 at segment `0x10` (writes)
+- Flash readable via ADDRSEL2/CS2 at segment `0x08` (reads)
+
+The JMG blob (reverse-engineered) uses these correct segments. Our
+custom stubs match the JMG approach with explicit EXTS-based segment
+override addressing.
+
+### Memory layout
+
+| Address | Content |
 |---|---|
-| `0x00` | Program flash |
-| `0x01` | Erase sector |
-| `0x06` | Read manufacturer / device ID |
-| `0x11` | Unlock flash bank |
+| `0xE200` | Erase stub (120 bytes) — also reused as DATA_BUF during programming |
+| `0xE300` | Programmer stub (82 bytes) |
+| `0xE200` | Probe stub (58 bytes) — uploaded before erase, overwritten by erase stub |
+
+### Write flow
+
+1. Configure external bus (ADDRSEL, BUSCON, SYSCON) for flash access
+2. Assert P3.7=LOW (write-enable gate)
+3. Upload + run probe stub → confirm AMD AM29F400BB chip IDs
+4. Upload erase stub → erase all 11 sectors (DQ7 poll per sector)
+5. Upload programmer stub to `0xE300`
+6. For each 128-byte chunk of the image:
+   - Upload data to `0xE200` (DATA_BUF)
+   - Call programmer stub (programs word-by-word with 300μs delay)
+7. Verify: read back programmed regions and compare
 
 ## Status
 
-**Not working.** The MiniMon path fails during sector erase on
-MS42 — DQ5 timeout / verify fail after the erase command. Root
-cause unknown. Hypotheses: segment addressing (MiniMon uses `0x80`
-vs JMG's `0x10` write / `0x08` read), bus config differences, or
-write strobe timing.
+**Working.** Full erase + program + verify confirmed on MS42 bench
+ECU (2026-06-01). Byte-identical read-back via `cmp`.
+
+---
+
+# Custom stub disassembly
+
+Source: `packages/nfsx-bootmode/scripts/build-stubs.ts`
+
+All stubs use `RETS` (`0xDB 0x00`) for return — matches MiniMon's
+`CALLS`-based invocation of user functions.
+
+## Probe stub (58 bytes, loaded at `0xE200`)
+
+Issues AMD autoselect command sequence, reads manufacturer and device
+IDs. Used as a pre-flight check before erase/program.
+
+**Input:** R10 = write segment (`0x0010`), R11 = read segment (`0x0008`)
+**Output:** R8 = manufacturer ID (`0x0001`), R9 = device ID (`0x22AB`)
+
+```asm
+; Setup AMD command addresses (x16 word mode)
+0xE200  E6F0 AAAA    MOV   R0, #0xAAAA         ; cmd addr 1 (0x5555 * 2)
+0xE204  E6F1 5455    MOV   R1, #0x5554         ; cmd addr 2 (0x2AAA * 2)
+0xE208  E6F2 AA00    MOV   R2, #0x00AA         ; unlock data 1
+0xE20C  E6F3 5500    MOV   R3, #0x0055         ; unlock data 2
+
+; AMD unlock cycle 1: write 0xAA → writeSeg:0xAAAA
+0xE210  DC0A          EXTS  R10, #1
+0xE212  B820          MOV   [R0], R2
+
+; AMD unlock cycle 2: write 0x55 → writeSeg:0x5554
+0xE214  DC0A          EXTS  R10, #1
+0xE216  B831          MOV   [R1], R3
+
+; Autoselect command: write 0x90 → writeSeg:0xAAAA
+0xE218  E6F4 9000    MOV   R4, #0x0090
+0xE21C  DC0A          EXTS  R10, #1
+0xE21E  B840          MOV   [R0], R4
+
+; Read manufacturer ID from readSeg:0x0000
+0xE220  E6F5 0000    MOV   R5, #0x0000
+0xE224  DC0B          EXTS  R11, #1
+0xE226  A885          MOV   R8, [R5]            ; mfr ID → R8
+
+; Read device ID from readSeg:0x0002
+0xE228  E6F5 0200    MOV   R5, #0x0002
+0xE22C  DC0B          EXTS  R11, #1
+0xE22E  A895          MOV   R9, [R5]            ; dev ID → R9
+
+; Reset to read mode: write 0xF0 → writeSeg:0xAAAA
+0xE230  E6F4 F000    MOV   R4, #0x00F0
+0xE234  DC0A          EXTS  R10, #1
+0xE236  B840          MOV   [R0], R4
+
+; Return
+0xE238  DB00          RETS
+```
+
+## Erase stub (120 bytes, loaded at `0xE200`)
+
+Erases one AM29F400BB sector using the 6-cycle AMD erase command.
+Polls DQ7/DQ5 for completion, then verifies first word = `0xFFFF`.
+
+**Input:** R9 = sector base offset, R10 = write segment, R11 = read segment
+**Output:** R15 = 0 (OK), 1 (DQ5 timeout), 2 (verify fail); R8 = readback on fail
+
+```asm
+; Setup constants
+0xE200  E6F0 AAAA    MOV   R0, #0xAAAA         ; cmd addr 1
+0xE204  E6F1 5455    MOV   R1, #0x5554         ; cmd addr 2
+0xE208  E6F2 AA00    MOV   R2, #0x00AA         ; unlock data 1
+0xE20C  E6F3 5500    MOV   R3, #0x0055         ; unlock data 2
+0xE210  E6FF 0000    MOV   R15, #0x0000        ; status = OK
+
+; --- 6-cycle AMD erase command ---
+; Cycle 1: 0xAA → writeSeg:0xAAAA
+0xE214  DC0A          EXTS  R10, #1
+0xE216  B820          MOV   [R0], R2
+; Cycle 2: 0x55 → writeSeg:0x5554
+0xE218  DC0A          EXTS  R10, #1
+0xE21A  B831          MOV   [R1], R3
+; Cycle 3: 0x80 → writeSeg:0xAAAA
+0xE21C  E6F4 8000    MOV   R4, #0x0080
+0xE220  DC0A          EXTS  R10, #1
+0xE222  B840          MOV   [R0], R4
+; Cycle 4: 0xAA → writeSeg:0xAAAA
+0xE224  DC0A          EXTS  R10, #1
+0xE226  B820          MOV   [R0], R2
+; Cycle 5: 0x55 → writeSeg:0x5554
+0xE228  DC0A          EXTS  R10, #1
+0xE22A  B831          MOV   [R1], R3
+; Cycle 6: 0x30 → writeSeg:sectorBase (R9)
+0xE22C  E6F4 3000    MOV   R4, #0x0030
+0xE230  DC0A          EXTS  R10, #1
+0xE232  B849          MOV   [R9], R4
+
+; --- Poll DQ7 for erase completion ---
+poll:
+0xE234  DC0B          EXTS  R11, #1             ; read segment
+0xE236  A849          MOV   R4, [R9]            ; read status
+0xE238  F054          MOV   R5, R4
+0xE23A  66F5 8000    AND   R5, #0x0080         ; isolate DQ7
+0xE23E  3D12          JMPR  cc_NZ, erase_done  ; DQ7=1 → done
+
+; Check DQ5 (device timeout indicator)
+0xE240  F054          MOV   R5, R4
+0xE242  66F5 2000    AND   R5, #0x0020
+0xE246  2DF6          JMPR  cc_Z, poll          ; DQ5=0 → keep polling
+
+; DQ5 set — re-read DQ7 once more
+0xE248  DC0B          EXTS  R11, #1
+0xE24A  A849          MOV   R4, [R9]
+0xE24C  66F4 8000    AND   R4, #0x0080
+0xE250  3D09          JMPR  cc_NZ, erase_done  ; actually OK
+
+; Genuine timeout
+0xE252  E6FF 0100    MOV   R15, #0x0001        ; status = timeout
+0xE256  E6F4 F000    MOV   R4, #0x00F0         ; reset command
+0xE25A  E6F5 0000    MOV   R5, #0x0000
+0xE25E  DC0A          EXTS  R10, #1
+0xE260  B845          MOV   [R5], R4            ; reset flash
+0xE262  DB00          RETS
+
+; --- Verify: first word should be 0xFFFF ---
+erase_done:
+0xE264  DC0B          EXTS  R11, #1
+0xE266  A849          MOV   R4, [R9]
+0xE268  46F4 FFFF    CMP   R4, #0xFFFF
+0xE26C  2D04          JMPR  cc_Z, success
+
+; Verify failed
+0xE26E  F084          MOV   R8, R4              ; readback for diag
+0xE270  E6FF 0200    MOV   R15, #0x0002        ; status = verify fail
+0xE274  DB00          RETS
+
+success:
+0xE276  DB00          RETS
+```
+
+## Programmer stub (82 bytes, loaded at `0xE300`)
+
+Programs a block of words from XRAM to flash using AMD single-word
+program sequence. Uses a fixed 300μs delay per word instead of DQ7
+polling — matches the JMG approach (which relies on serial receive
+time as implicit delay).
+
+**Input:** R9 = byte count, R10 = source offset, R11 = source segment (0),
+R12 = flash write segment (`0x10` + pageDelta), R13 = dest offset
+**Output:** R15 = 0 (always succeeds)
+
+Key design decision: AMD unlock/program **commands** always go to
+the base segment `0x10` (set internally as R8). The actual data
+**write** goes to R2 (copied from R12), which may be `0x10`, `0x11`,
+etc. for different 64KB pages of the 512KB flash.
+
+```asm
+; Setup
+0xE300  E6F0 AAAA    MOV   R0, #0xAAAA         ; cmd addr 1
+0xE304  E6F1 5455    MOV   R1, #0x5554         ; cmd addr 2
+0xE308  F02C          MOV   R2, R12             ; data write segment (from caller)
+0xE30A  E6F8 1000    MOV   R8, #0x0010         ; cmd segment (always base)
+0xE30E  E6FF 0000    MOV   R15, #0x0000        ; status = OK
+0xE312  46F9 0000    CMP   R9, #0x0000         ; byte count == 0?
+0xE316  2D1C          JMPR  cc_Z, done          ; nothing to do
+
+; --- Word program loop ---
+loop:
+; Read source word from RAM
+0xE318  DC0B          EXTS  R11, #1             ; source segment
+0xE31A  A84A          MOV   R4, [R10]           ; R4 = data word
+
+; AMD unlock cycle 1: 0xAA → cmdSeg:0xAAAA
+0xE31C  E6F5 AA00    MOV   R5, #0x00AA
+0xE320  DC08          EXTS  R8, #1              ; cmd segment 0x10
+0xE322  B850          MOV   [R0], R5
+
+; AMD unlock cycle 2: 0x55 → cmdSeg:0x5554
+0xE324  E6F5 5500    MOV   R5, #0x0055
+0xE328  DC08          EXTS  R8, #1
+0xE32A  B851          MOV   [R1], R5
+
+; AMD program command: 0xA0 → cmdSeg:0xAAAA
+0xE32C  E6F5 A000    MOV   R5, #0x00A0
+0xE330  DC08          EXTS  R8, #1
+0xE332  B850          MOV   [R0], R5
+
+; Write data word to flash (dataSeg:destOffset)
+0xE334  DC02          EXTS  R2, #1              ; data write segment
+0xE336  B84D          MOV   [R13], R4           ; flash ← data
+
+; Busy-wait ~300μs (1500 iterations at 20MHz)
+; AM29F400B max word program time = 200μs
+0xE338  E6F6 DC05    MOV   R6, #1500           ; 0x05DC
+delay:
+0xE33C  26F6 0100    SUB   R6, #1
+0xE340  3DFD          JMPR  cc_NZ, delay
+
+; Advance pointers
+0xE342  06FA 0200    ADD   R10, #2             ; next source word
+0xE346  06FD 0200    ADD   R13, #2             ; next dest word
+0xE34A  26F9 0200    SUB   R9, #2              ; decrement byte count
+0xE34E  3DE4          JMPR  cc_NZ, loop
+
+done:
+0xE350  DB00          RETS
+```
 
 ---
 
@@ -594,17 +824,18 @@ byte to host.
 
 # Comparison
 
-| | MiniMon (Path A) | JMG blob (Path B, `--alt`) |
+| | MiniMon + custom stubs (Path A) | JMG blob (Path B, `--alt`) |
 |---|---|---|
 | Secondary size | ~394 bytes | 898 bytes |
-| Flash driver | Separate upload (`A29F400B.hex`) | Built-in |
+| Flash driver | Custom stubs uploaded at runtime | Built-in |
 | LOADK ack | `0x01` | `0xC5` |
 | LOADK end addr | `0xFBE9` | `0xFDE1` |
 | Secondary ack | `0x03` | `0xC5` |
 | Command style | `[CMD][payload] → ACK1/ACK2` | Single byte, context-dependent ack |
-| Flash erase | Via `C_CALL_FUNCTION` + driver | Native `0xB4` |
-| Flash program | Via `C_CALL_FUNCTION` + driver | Native `0xB0`, 128-byte flow control |
-| Flash read | Via `C_READ_BLOCK` | Native `0xA7`, page-granular |
+| Flash erase | Per-sector via erase stub (DQ7 poll) | Full-chip only (`0xB4`) |
+| Flash program | 128-byte chunks via programmer stub | Native `0xB0`, 128-byte flow control |
+| Flash read | Via `C_READ_BLOCK` (256 bytes/call) | Native `0xA7`, page-granular |
 | SPI/EEPROM | Not supported | `0xA8`/`0xA9` (MS43 only) |
-| Erase granularity | Per-sector (driver) | Full-chip only |
-| Status | **Broken** — erase fails | **Working** — verified on MS42 |
+| Erase granularity | Per-sector (11 sectors) | Full-chip only |
+| Program method | Fixed 300μs delay per word | Serial RX as implicit delay |
+| Status | **Working** — verified on MS42 | **Working** — verified on MS42 |
