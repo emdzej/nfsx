@@ -5,13 +5,20 @@ programming toolchain, in the same family as
 [`ncsx`](https://github.com/emdzej/ncsx) (NCS Expert / coding) and
 [`inpax`](https://github.com/emdzej/inpax) (INPA / diagnostics).
 
-> **Status**: pre-release at version `0.1.0`. The full IPO-driven
-> flash pipeline is wired and validated against a bench BMW GS20
-> (HWNR 7544721) via K+DCAN — dry-run + mock end-to-end paths are
-> clean. A real-bench write has not yet been attempted.
-> **`nfsx flash --write` can brick an ECU.** Read
+> **Status**: pre-release `0.1.0`. Three flash paths are implemented
+> and bench-verified:
+>
+> - **IPO-driven** (`nfsx flash`) — validated against GS20 bench ECU
+>   (HWNR 7544721) via K+DCAN. Real flash succeeded.
+> - **Direct DS2** (`nfsx directmode`) — validated against GS20 bench
+>   ECU. Real flash + readback verify succeeded.
+> - **Bootmode** (`nfsx bootmode`) — validated against MS42 bench ECU
+>   via C167 BSL. Full chip erase + 512 KB write + readback verify
+>   succeeded (both MiniMon and JMG blob paths).
+>
+> **All write commands can brick an ECU.** Read
 > [`docs/first-flash-runbook.md`](docs/first-flash-runbook.md) before
-> attempting one.
+> attempting a write.
 
 ---
 
@@ -257,32 +264,65 @@ flash), the diff should be empty.
 
 ## Command reference
 
+### SP-Daten lookups (offline)
+
 | Command | Purpose |
 |---|---|
 | `nfsx configure` | Interactive editor for `~/.config/nfsx/config.json` (SP-Daten path) |
 | `nfsx plan --hwnr X` | SP-Daten lookup: HWNR → SG_TYP → IPO + SGBD + ZB-row flash files |
 | `nfsx browse` | Full-screen ink TUI for HWNR exploration |
+
+### Live ECU (requires ediabasx transport)
+
+| Command | Purpose |
+|---|---|
 | `nfsx run <ipo> --job <name>` | Execute one IPO job (e.g. `HW_REFERENZ`) against a live ECU |
-| `nfsx check --hwnr X` | Quick live-ECU sanity probe (HW_REFERENZ + SG_IDENT + SG_AIF + ZIF_BACKUP, no file write) |
+| `nfsx check --hwnr X` | Quick sanity probe: HW_REFERENZ + SG_IDENT + SG_AIF + ZIF_BACKUP |
 | `nfsx backup --hwnr X` | Audit snapshot of ECU identity + `ZIF_BACKUP` to JSON |
-| `nfsx flash --hwnr X` | **WinKFP / IPO-driven** flash pipeline; dry-run by default, `--write` to commit |
+| `nfsx flash --hwnr X [--write]` | **WinKFP / IPO-driven** flash pipeline; dry-run by default |
 | `nfsx verify --hwnr X [--against backup.json]` | Re-read identity; optionally diff against a saved backup |
-| `nfsx checksum -f file.bin [--rewrite]` | Verify or recompute MS42/MS43 firmware CRC-16/CCITT checksums (hardware-independent) |
-| `nfsx directmode probe/read/write -d /dev/cu.X` | Raw DS2 flashing — IDENT → SEED/KEY → erase → write → verify. Full + calibration-only modes for MS42 / MS43 / GS20. |
-| `nfsx bootmode probe/read/write -d /dev/cu.X` | **C167 BSL** bootmode flashing for bench-pulled MS42 / MS43 / ME 7.2. Uploads MiniMon, bypasses BMW firmware, writes full 512 KB. |
-| `nfsx bootmode verify-bundle` | SHA-256 verify the bundled MiniMon binaries |
 
-`flash` / `backup` / `verify` take `--hwnr` and derive everything
-else from SP-Daten (target IPO, SGBD, SWT IPO, per-SG working
-directory, firmware `.0PA`). Per-field overrides (`--ipo`,
+### Standalone tools (no ediabasx needed)
+
+| Command | Purpose |
+|---|---|
+| `nfsx checksum -f file.bin [--rewrite]` | Verify or recompute MS42/MS43 firmware checksums (CRC-16 + add-32) |
+
+### Direct DS2 flashing (raw K-line)
+
+| Command | Purpose |
+|---|---|
+| `nfsx directmode probe` | IDENT + ECU type detection over K-line |
+| `nfsx directmode read -o out.bin -m full\|calibration` | Dump flash regions to a file |
+| `nfsx directmode write -i in.bin -m full\|calibration` | Flash a BIN via DS2: SEED/KEY → erase → write → verify |
+
+Options: `--variant MS42|MS43|GS20`, `--write-baud 38400`,
+`--calculate-checksum`, `--skip-verify`, `--nonce 1..23`.
+
+### Bootmode flashing (C167 BSL, bench-only)
+
+| Command | Purpose |
+|---|---|
+| `nfsx bootmode probe -d /dev/cu.X` | BSL handshake + flash chip ID check |
+| `nfsx bootmode read -d /dev/cu.X -o out.bin` | Read full 512 KB flash |
+| `nfsx bootmode write -d /dev/cu.X -i in.bin` | Erase + program + verify full 512 KB |
+| `nfsx bootmode verify-bundle` | SHA-256 verify bundled loader binaries |
+
+Options: `--baud 19200`, `--alt` (JMG blob path instead of MiniMon),
+`--calculate-checksum`, `--skip-verify`.
+
+### Common options
+
+`flash` / `backup` / `verify` / `check` take `--hwnr` and derive
+everything else from SP-Daten. Per-field overrides (`--ipo`,
 `--swt`, `--sgbd`, `--firmware`, `--working-dir`) skip the auto-
-resolve for that field — useful for non-standard layouts or
-power-user flows.
+resolve for that field.
 
-All commands accept `--ediabas-config <path>` / `--interface <name>` /
-`--serial-port <path>` / `--serial-baud <rate>` / `--gateway <host:port>`
-overrides on top of the ediabasx config, plus `--mock-file <path>`
-to bypass EDIABAS entirely (rehearsal / unit-test path).
+All live-ECU commands accept `--ediabas-config <path>` /
+`--interface <name>` / `--serial-port <path>` /
+`--serial-baud <rate>` / `--gateway <host:port>` overrides on
+top of the ediabasx config, plus `--mock-file <path>` to bypass
+EDIABAS entirely (rehearsal / unit-test path).
 
 ---
 
@@ -290,9 +330,11 @@ to bypass EDIABAS entirely (rehearsal / unit-test path).
 
 | Doc | Content |
 |---|---|
-| [`docs/first-flash-runbook.md`](docs/first-flash-runbook.md) | Pre-flight checklist + firmware-decision matrix + failure modes. **Read before `nfsx flash --write`.** |
+| [`docs/first-flash-runbook.md`](docs/first-flash-runbook.md) | Pre-flight checklist + firmware-decision matrix + failure modes. **Read before any write command.** |
 | [`docs/architecture.md`](docs/architecture.md) | Ghidra-verified lookup chain, slot table, `coapiKf*` map, `GD20Prog` walkthrough, `SG_PROGRAMMIEREN` flow, `.0PA` host-side model |
 | [`docs/reverse-engineering.md`](docs/reverse-engineering.md) | What NFS is (vs. NCS Expert / INPA), original-binary layout, building-blocks-reuse table, resolved + open RE questions |
+| [`docs/raw-ds2-flashing.md`](docs/raw-ds2-flashing.md) | DS2 wire protocol spec — framing, SEED/KEY auth, erase/write/verify commands, per-ECU region tables, MS4x checksums |
+| [`docs/bootmode.md`](docs/bootmode.md) | C167 BSL bootmode — entry sequence, MiniMon path, JMG blob path, annotated disassembly of the JMG secondary |
 
 ## Packages
 
@@ -302,7 +344,7 @@ to bypass EDIABAS entirely (rehearsal / unit-test path).
 | `@emdzej/nfsx-flash` | 5-stage IPO-driven `FlashSession` orchestrator (BMW WinKFP path) |
 | `@emdzej/nfsx-flash-data` | `.0PA` / `.0DA` parser, S37 parser, memory-region builder, CRC32, MS42/MS43 firmware CRC-16/CCITT verify+rewrite |
 | `@emdzej/nfsx-directmode` | Raw DS2 flashing for MS42 / MS43 / GS20 — IDENT → SEED/KEY → erase → write → verify, full + calibration modes |
-| `@emdzej/nfsx-bootmode` | C167 silicon BSL bootmode flashing for bench-pulled MS42 / MS43 / ME 7.2 — bundles MiniMon (Perschl / Infineon) + AMD 29F400B driver |
+| `@emdzej/nfsx-bootmode` | C167 silicon BSL bootmode flashing for bench-pulled MS42 / MS43 / ME 7.2 — MiniMon + custom stubs path and JMG blob path (monolithic secondary with built-in flash driver) |
 | `@emdzej/nfsx-runtime` | NFS-specific CABI slot overrides on the inpax VM (file-I/O, BinBuf, ApiJobData, firmware-source iterator) |
 | `@emdzej/nfsx-resolver` | SP-Daten lookup chain (HWNR → SG_TYP → IPO + SGBD + ZB rows) |
 | `@emdzej/nfsx-data-files` | Per-format parsers for the SP-Daten text files (HWNR.DA2 / KFCONF10.DA2 / npv.dat / prgifsel.dat / SGIDC.AS2 / kmm_SIT.txt / `<SG>.DAT`) |
@@ -319,12 +361,13 @@ The three flash paths cover different operating modes:
   DS2 protocol directly against the ECU's normal diagnostic session
   (no SGBD / IPO), with per-ECU region tables. Use this for tuner
   BINs or when you need calibration-only flashes without the
-  SP-Daten pipeline.
-- **`nfsx bootmode`** (C167 BSL, via `nfsx-bootmode`) — what
-  JMGarageFlasher / C167BootTool do. Bypasses BMW firmware entirely
-  via the C167 mask-ROM bootstrap loader; uploads MiniMon into RAM
-  and drives the AMD 29F400B flash chip directly. Bench-pull only;
-  recovers bricked ECUs since it doesn't depend on existing firmware.
+  SP-Daten pipeline. See [`docs/raw-ds2-flashing.md`](docs/raw-ds2-flashing.md).
+- **`nfsx bootmode`** (C167 BSL, via `nfsx-bootmode`) — bypasses BMW
+  firmware entirely via the C167 mask-ROM bootstrap loader. Two paths:
+  MiniMon + custom stubs (default), or `--alt` JMG blob (monolithic
+  secondary with built-in flash driver). Bench-pull only; recovers
+  bricked ECUs since it doesn't depend on existing firmware.
+  See [`docs/bootmode.md`](docs/bootmode.md).
 
 Built on top of [`@emdzej/inpax`](https://github.com/emdzej/inpax)
 (IPO bytecode VM), [`@emdzej/ediabasx`](https://github.com/emdzej/ediabasx)
