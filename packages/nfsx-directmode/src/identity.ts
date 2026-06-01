@@ -2,8 +2,6 @@
  * Decoder for the MS4x DS2 IDENT payload (cmd 0x00 — 42 ASCII bytes of
  * hardware/software identification).
  */
-import { Buffer } from 'node:buffer';
-
 export interface IdentFields {
   /** Bosch/Siemens supplier hardware part number (7 chars). */
   hwNumber: string;
@@ -27,12 +25,18 @@ export interface IdentFields {
   raw: string;
 }
 
-function asciiPrintable(buf: Buffer): string {
-  return buf.toString('ascii').replace(/[^\x20-\x7e]/g, '.');
+function toAscii(buf: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
+  return s;
 }
 
-export function decodeIdent(identPayload: Buffer): IdentFields {
-  const ascii = identPayload.toString('ascii');
+function asciiPrintable(buf: Uint8Array): string {
+  return toAscii(buf).replace(/[^\x20-\x7e]/g, '.');
+}
+
+export function decodeIdent(identPayload: Uint8Array): IdentFields {
+  const ascii = toAscii(identPayload);
   const slice = (start: number, len: number) =>
     ascii.slice(start, start + len).replace(/\0+$/, '');
   return {

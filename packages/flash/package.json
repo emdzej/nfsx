@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-flash",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Flash-programming orchestrator for nfsx. Wraps nfsx-runtime + nfsx-fsc + nfsx-flash-data with the 7-stage pipeline (RESOLVE → PRECHECK → AUTHENTICATE → SESSION → TRANSFER → AIF_WRITE → POSTCHECK), dry-run default, per-stage confirmation gates, and a strategy pattern for ECU-specific seed→key auth.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -12,13 +12,13 @@
  * Settings: 9600 8N1 (DS2 default for K+DCAN cables), DTR-toggled
  * direction control, adapter-echo consumption.
  */
-import { Buffer } from 'node:buffer';
 import {
   Ds2Session,
   sendFastInit,
   type Ds2SessionOptions,
 } from '@emdzej/ediabasx-interface-serial';
 import { NodeSerialTransport } from '@emdzej/ediabasx-interface-serial/node';
+import type { DirectModeTransport } from './transport-interface.js';
 
 export interface DirectModeTransportConfig {
   /** Serial device path, e.g. `/dev/cu.usbserial-A50285BI`. */
@@ -61,7 +61,7 @@ export interface DirectModeTransportConfig {
   sendSetDtr?: boolean;
 }
 
-export class DirectModeTransport {
+export class NodeDirectModeTransport implements DirectModeTransport {
   private transport: NodeSerialTransport;
   private session: Ds2Session;
   private opened = false;
@@ -190,14 +190,10 @@ export class DirectModeTransport {
    * XOR, the session appends it) and return the full received frame.
    * Triggers `wake()` on the first call.
    */
-  async transact(request: Buffer): Promise<Buffer> {
+  async transact(request: Uint8Array): Promise<Uint8Array> {
     if (!this.opened) throw new Error('transport not open');
     if (!this.woken) await this.wake();
-    const response = await this.session.sendRequest(
-      this.transport,
-      new Uint8Array(request),
-    );
-    return Buffer.from(response);
+    return this.session.sendRequest(this.transport, request);
   }
 
   /**
@@ -258,17 +254,3 @@ export class DirectModeTransport {
   }
 }
 
-/** Build a request payload (no XOR — Ds2Session adds it). */
-export function buildRequestPayload(addr: number, payload: Buffer): Buffer {
-  const total = payload.length + 3;
-  if (total > 0xff) {
-    throw new Error(
-      `DS2 frame too large: payload ${payload.length} bytes → LEN ${total} exceeds 0xFF`,
-    );
-  }
-  const buf = Buffer.alloc(total - 1);
-  buf[0] = addr & 0xff;
-  buf[1] = total;
-  payload.copy(buf, 2);
-  return buf;
-}

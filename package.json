@@ -1,7 +1,7 @@
 {
   "name": "nfsx",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "packageManager": "pnpm@10.33.1",
   "scripts": {
     "build": "turbo run build",
@@ -9,7 +9,8 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "ci": "turbo run build lint typecheck test",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "web": "pnpm --filter @emdzej/nfsx-web dev"
   },
   "devDependencies": {
     "@types/node": "^22.13.1",

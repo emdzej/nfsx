@@ -12,7 +12,6 @@
  * it; for bench-only out-of-range writes use the bootmode path in
  * `@emdzej/nfsx-bootmode`.
  */
-import { Buffer } from 'node:buffer';
 
 export type EcuVariant = 'MS42' | 'MS43' | 'GS20';
 export type FlashMode = 'full' | 'calibration';
@@ -251,8 +250,9 @@ export const ALL_PROFILES: ReadonlyArray<EcuProfile> = [
  *
  * Returns the matched profile, or null if none of the signatures fired.
  */
-export function identifyEcu(identPayload: Buffer): EcuProfile | null {
-  const ascii = identPayload.toString('ascii');
+export function identifyEcu(identPayload: Uint8Array): EcuProfile | null {
+  let ascii = '';
+  for (let i = 0; i < identPayload.length; i++) ascii += String.fromCharCode(identPayload[i]);
   for (const profile of ALL_PROFILES) {
     for (const sig of profile.identSignatures) {
       if (ascii.includes(sig)) return profile;

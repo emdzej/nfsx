@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NFSX — BMW ECU flashing in the browser</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#1c69d4" />
+    <meta
+      name="description"
+      content="Flash BMW ECU firmware from your browser — IPO-driven, direct DS2, and C167 bootmode paths."
+    />
+    <script>
+      (function () {
+        try {
+          if (
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches
+          ) {
+            document.documentElement.classList.add("dark");
+          }
+        } catch (_) {
+          /* ignore */
+        }
+      })();
+    </script>
+  </head>
+  <body class="h-full bg-base font-mono text-foreground">
+    <div id="app" class="h-full"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

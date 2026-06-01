@@ -41,3 +41,22 @@ export {
   type ChecksumRange as Ms4xChecksumRange,
   type VerifyChecksumsOptions as Ms4xVerifyChecksumsOptions,
 } from './ms4x-checksum.js';
+
+export {
+  encodeVin,
+  decodeVin,
+  readVin,
+  writeVin,
+  readIsn,
+  readEcuNumber,
+  readSoftwareVersion,
+  readImmoStatus,
+  virginize,
+  readUif,
+  getLayout,
+  resolveLayout,
+  TuneError,
+  type FirmwareLayout,
+  type UifRow,
+  type ImmoStatus,
+} from './ms4x-tune.js';

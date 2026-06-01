@@ -69,7 +69,6 @@ export {
 } from './ecu-tables.js';
 
 export {
-  DirectModeTransport,
+  type DirectModeTransport,
   buildRequestPayload,
-  type DirectModeTransportConfig,
-} from './transport.js';
+} from './transport-interface.js';

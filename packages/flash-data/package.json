@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-flash-data",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Parsers + integrity checks for the firmware payloads winkfpt feeds to ECUs. Motorola S-records (S0/S1/S2/S3/S5/S7/S8/S9), memory-map coalescing, CRC32 verification.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

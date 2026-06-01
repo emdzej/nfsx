@@ -20,13 +20,13 @@ import {
   type InterfaceOverrides,
 } from '@emdzej/ediabasx-host-config';
 import {
-  DirectModeTransport,
   probe,
   readFlash,
   writeFlash,
   type DirectModeProgress,
   type FlashMode,
 } from '@emdzej/nfsx-directmode';
+import { NodeDirectModeTransport } from '@emdzej/nfsx-directmode/node';
 import {
   verifyMs4xChecksums,
   rewriteMs4xChecksums,
@@ -76,7 +76,7 @@ function makeProgressPrinter(json: boolean): (p: DirectModeProgress) => void {
 }
 
 async function openDs2Transport(opts: DirectModeBaseOptions): Promise<{
-  iface: DirectModeTransport;
+  iface: NodeDirectModeTransport;
   summary: string;
 }> {
   const fileConfig = loadEdiabasxConfig(opts.ediabasConfig);
@@ -100,14 +100,14 @@ async function openDs2Transport(opts: DirectModeBaseOptions): Promise<{
   }
   const baudRate =
     typeof selection.options.baudRate === 'number' ? selection.options.baudRate : 9600;
-  const transport = new DirectModeTransport({ port, baudRate });
+  const transport = new NodeDirectModeTransport({ port, baudRate });
   await transport.open();
   return { iface: transport, summary: summariseSelection(selection) };
 }
 
 export async function runDirectmodeProbe(opts: DirectModeBaseOptions): Promise<number> {
   const onProgress = makeProgressPrinter(opts.json);
-  let iface: DirectModeTransport | null = null;
+  let iface: NodeDirectModeTransport | null = null;
   try {
     const opened = await openDs2Transport(opts);
     iface = opened.iface;
@@ -141,7 +141,7 @@ export async function runDirectmodeProbe(opts: DirectModeBaseOptions): Promise<n
 
 export async function runDirectmodeRead(opts: DirectModeReadOpts): Promise<number> {
   const onProgress = makeProgressPrinter(opts.json);
-  let iface: DirectModeTransport | null = null;
+  let iface: NodeDirectModeTransport | null = null;
   try {
     const opened = await openDs2Transport(opts);
     iface = opened.iface;
@@ -209,7 +209,7 @@ export async function runDirectmodeWrite(opts: DirectModeWriteOpts): Promise<num
   }
 
   const onProgress = makeProgressPrinter(opts.json);
-  let iface: DirectModeTransport | null = null;
+  let iface: NodeDirectModeTransport | null = null;
   try {
     const opened = await openDs2Transport(opts);
     iface = opened.iface;

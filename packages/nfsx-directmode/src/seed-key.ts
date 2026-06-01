@@ -26,9 +26,7 @@
  *      by payload length / shape, not by opcode.
  *   5. ECU returns status `0xA0` (accept) or an error.
  */
-import { Buffer } from 'node:buffer';
-
-export const SEED_KEY_PREFIX = Buffer.from([0x42, 0x4d, 0x57]); // "BMW"
+export const SEED_KEY_PREFIX = new Uint8Array([0x42, 0x4d, 0x57]); // "BMW"
 export const SEED_REQUEST_CMD = 0x90;
 /**
  * Key submit uses the same opcode as the seed request (verified in
@@ -55,11 +53,15 @@ export class SeedKeyError extends Error {
  *
  * Payload: `0x90 0x42 0x4D 0x57 <nonce>` (5 bytes).
  */
-export function buildSeedRequestPayload(nonce: number): Buffer {
+export function buildSeedRequestPayload(nonce: number): Uint8Array {
   if (nonce < 1 || nonce > 23 || !Number.isInteger(nonce)) {
     throw new SeedKeyError(`nonce must be an integer in 1..23 (got ${nonce})`);
   }
-  return Buffer.concat([Buffer.from([SEED_REQUEST_CMD]), SEED_KEY_PREFIX, Buffer.from([nonce])]);
+  const out = new Uint8Array(5);
+  out[0] = SEED_REQUEST_CMD;
+  out.set(SEED_KEY_PREFIX, 1);
+  out[4] = nonce;
+  return out;
 }
 
 /**
@@ -82,7 +84,7 @@ export function buildSeedRequestPayload(nonce: number): Buffer {
  * frame[1] (the modulus) and the bytes at frame[18..21] and
  * frame[41..44] — those are the variant-specific entropy sources.
  */
-export function deriveKey(frame: Buffer, nonce: number): Buffer {
+export function deriveKey(frame: Uint8Array, nonce: number): Uint8Array {
   if (frame.length < 45) {
     throw new SeedKeyError(
       `frame too short: ${frame.length} bytes (need ≥ 45 to read frame[41..44])`,
@@ -95,7 +97,7 @@ export function deriveKey(frame: Buffer, nonce: number): Buffer {
   if (modulus === 0) {
     throw new SeedKeyError('frame[1] (LEN / modulus) is 0 — invalid frame');
   }
-  const key = Buffer.alloc(4);
+  const key = new Uint8Array(4);
   for (let i = 0; i < 4; i++) {
     const idx = (nonce + i) % modulus;
     key[i] = (frame[idx] + frame[18 + i] + frame[41 + i]) & 0xff;
@@ -108,9 +110,12 @@ export function deriveKey(frame: Buffer, nonce: number): Buffer {
  * Note the leading byte is `0x90`, the same as the seed-request cmd —
  * the ECU disambiguates by frame length / contents.
  */
-export function buildKeySubmitPayload(key: Buffer): Buffer {
+export function buildKeySubmitPayload(key: Uint8Array): Uint8Array {
   if (key.length !== 4) {
     throw new SeedKeyError(`key must be exactly 4 bytes (got ${key.length})`);
   }
-  return Buffer.concat([Buffer.from([KEY_SUBMIT_CMD]), key]);
+  const out = new Uint8Array(5);
+  out[0] = KEY_SUBMIT_CMD;
+  out.set(key, 1);
+  return out;
 }

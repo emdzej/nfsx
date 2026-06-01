@@ -5,7 +5,7 @@ programming toolchain, in the same family as
 [`ncsx`](https://github.com/emdzej/ncsx) (NCS Expert / coding) and
 [`inpax`](https://github.com/emdzej/inpax) (INPA / diagnostics).
 
-> **Status**: pre-release `0.1.0`. Three flash paths are implemented
+> **Status**: pre-release `0.2.0`. Three flash paths are implemented
 > and bench-verified:
 >
 > - **IPO-driven** (`nfsx flash`) — validated against GS20 bench ECU
@@ -287,6 +287,8 @@ flash), the diff should be empty.
 | Command | Purpose |
 |---|---|
 | `nfsx checksum -f file.bin [--rewrite]` | Verify or recompute MS42/MS43 firmware checksums (CRC-16 + add-32) |
+| `nfsx tune read -f file.bin --feature <name>` | Read a field from a firmware BIN (vin, immo, isn, ecu-number, software-version, uif) |
+| `nfsx tune apply -f file.bin --feature <name>` | Modify a field in a firmware BIN (vin, virginize) |
 
 ### Direct DS2 flashing (raw K-line)
 
@@ -310,6 +312,52 @@ Options: `--variant MS42|MS43|GS20`, `--write-baud 38400`,
 
 Options: `--baud 19200`, `--alt` (JMG blob path instead of MiniMon),
 `--calculate-checksum`, `--skip-verify`.
+
+### Firmware tune (offline BIN editing)
+
+Read or modify MS42/MS43 firmware fields without an ECU connection.
+Variant auto-detects from the BIN header; `--variant ms42|ms43`
+overrides.
+
+```bash
+# Read VIN from a firmware dump
+nfsx tune read -f dump.bin --feature vin
+
+# Read all 14 UIF rows (VIN, date, software, service, assembly)
+nfsx tune read -f dump.bin --feature uif
+
+# Check immobilizer state (virgin vs paired, ISN value)
+nfsx tune read -f dump.bin --feature immo
+
+# Change VIN (stamps all 14 UIF rows)
+nfsx tune apply -f dump.bin --feature vin --value WBAPH5C55BA123456
+
+# Virginize — clear ISN + EWS pairing data (0xFF fill)
+nfsx tune apply -f dump.bin --feature virginize
+
+# Write to a different file instead of overwriting
+nfsx tune apply -f dump.bin --feature vin --value WBAXX... -o modified.bin
+```
+
+| Read feature | What it shows |
+|---|---|
+| `vin` | Decoded 17-char VIN from UIF row 0 |
+| `immo` | Virgin/paired status + ISN hex |
+| `isn` | Raw 6-byte ISN |
+| `ecu-number` | ECU hardware number (e.g. `5WK90027`) |
+| `software-version` | Software version string |
+| `uif` | Full 14-row UIF table (VIN, date, software, service, assembly per row) |
+
+| Apply feature | What it does |
+|---|---|
+| `vin` | Encode + write a 17-char VIN to all 14 UIF rows (requires `--value`) |
+| `virginize` | Fill the immobilizer data region with `0xFF` — clears ISN + EWS pairing so the ECU can re-pair via INPA |
+
+Checksums (CRC-16 + add-32) are **recomputed automatically** after
+every apply operation. Pass `--skip-checksum` to disable.
+
+VIN encoding uses BMW's packed 6-bit representation (17 ASCII chars
+to 13 bytes). `--json` supported for machine-readable output.
 
 ### Common options
 
@@ -342,7 +390,7 @@ EDIABAS entirely (rehearsal / unit-test path).
 |---|---|
 | `@emdzej/nfsx-cli` | Operator CLI (the `nfsx` command above) |
 | `@emdzej/nfsx-flash` | 5-stage IPO-driven `FlashSession` orchestrator (BMW WinKFP path) |
-| `@emdzej/nfsx-flash-data` | `.0PA` / `.0DA` parser, S37 parser, memory-region builder, CRC32, MS42/MS43 firmware CRC-16/CCITT verify+rewrite |
+| `@emdzej/nfsx-flash-data` | `.0PA` / `.0DA` parser, S37 parser, memory-region builder, CRC32, MS42/MS43 firmware CRC-16/CCITT verify+rewrite, VIN codec, UIF/ISN/immo field access, virginize |
 | `@emdzej/nfsx-directmode` | Raw DS2 flashing for MS42 / MS43 / GS20 — IDENT → SEED/KEY → erase → write → verify, full + calibration modes |
 | `@emdzej/nfsx-bootmode` | C167 silicon BSL bootmode flashing for bench-pulled MS42 / MS43 / ME 7.2 — MiniMon + custom stubs path and JMG blob path (monolithic secondary with built-in flash driver) |
 | `@emdzej/nfsx-runtime` | NFS-specific CABI slot overrides on the inpax VM (file-I/O, BinBuf, ApiJobData, firmware-source iterator) |
@@ -373,3 +421,37 @@ Built on top of [`@emdzej/inpax`](https://github.com/emdzej/inpax)
 (IPO bytecode VM), [`@emdzej/ediabasx`](https://github.com/emdzej/ediabasx)
 (wire transport), and [`@emdzej/ncsx`](https://github.com/emdzej/ncsx)
 (CABI provider scaffold).
+
+## Related projects
+
+- [`ediabasx`](https://github.com/emdzej/ediabasx) — EDIABAS / BEST/2 interpreter and wire transports (Web Serial, J2534, gateway).
+- [`inpax`](https://github.com/emdzej/inpax) — INPA / IPO bytecode interpreter with screen and menu UI providers.
+- [`ncsx`](https://github.com/emdzej/ncsx) — NCS Expert in your browser — coding, FA, chassis catalog.
+- [`tisx`](https://github.com/emdzej/tisx) — TIS graphics decoder.
+- [`wdsx`](https://github.com/emdzej/wdsx) — Wiring Diagram System.
+
+## Right to Repair
+
+The [Right to Repair](https://repair.eu) movement advocates for consumers' ability to fix the products they own — from electronics to vehicles — without being locked out by manufacturers through proprietary tools, paywalled documentation, or artificial restrictions.
+
+**I build these tools because I believe repair is a fundamental right, not a privilege.**
+
+Too often, service manuals, diagnostic software, and technical documentation are kept behind closed doors — unavailable to individuals even when they're willing to pay. This wasn't always the case. Products once shipped with schematics and repair guides as standard. The increasing complexity of modern technology doesn't change the fact that capable people exist who can — and should be allowed to — use that information.
+
+These projects exist to preserve access to technical knowledge and ensure that owners aren't left at the mercy of vendors who may discontinue support, charge prohibitive fees, or simply refuse service.
+
+## Support
+
+If you find this project useful, consider [buying me a coffee](https://buymeacoffee.com/emdzej) or [sponsoring on GitHub](https://github.com/sponsors/emdzej) or if it's your thing: via PayPal
+
+[![Donate with PayPal](https://www.paypalobjects.com/en_US/PL/i/btn/btn_donateCC_LG.gif)](https://www.paypal.com/donate/?business=TDBR3A97PLQRQ&no_recurring=0&item_name=%28emdzej%29&currency_code=PLN)
+
+## License
+
+[PolyForm Noncommercial 1.0.0](./LICENSE) — free for noncommercial use (personal projects, research, education, hobby diagnostics on your own car). Commercial use requires a separate licence — open an issue if you need one.
+
+This repository contains no BMW proprietary data. All DATEN files, SGBDs, and IPOs the tool consumes must come from a legally-acquired BMW Standard Tools install on the user's own machine.
+
+## Disclaimer
+
+This project is for educational and research purposes only. It is not affiliated with BMW AG.

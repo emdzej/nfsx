@@ -12,7 +12,6 @@
  * Algorithm: CRC-16/CCITT, polynomial 0x1021 processed bit-reversed
  * (equivalent to working with the reversed constant 0xA001).
  */
-import { Buffer } from 'node:buffer';
 
 export type EcuVariant = 'MS42' | 'MS43';
 
@@ -55,20 +54,20 @@ export const EXPECTED_FILE_LENGTH = 0x80000;
 
 // ── primitives ──────────────────────────────────────────────────────
 
-function readU16LE(buf: Buffer, off: number): number {
+function readU16LE(buf: Uint8Array, off: number): number {
   return buf[off] | (buf[off + 1] << 8);
 }
 
-function writeU16LE(buf: Buffer, val: number, off: number): void {
+function writeU16LE(buf: Uint8Array, val: number, off: number): void {
   buf[off] = val & 0xff;
   buf[off + 1] = (val >> 8) & 0xff;
 }
 
-function readU32LE(buf: Buffer, off: number): number {
+function readU32LE(buf: Uint8Array, off: number): number {
   return (buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24)) >>> 0;
 }
 
-function writeU32LE(buf: Buffer, val: number, off: number): void {
+function writeU32LE(buf: Uint8Array, val: number, off: number): void {
   buf[off] = val & 0xff;
   buf[off + 1] = (val >> 8) & 0xff;
   buf[off + 2] = (val >> 16) & 0xff;
@@ -78,7 +77,7 @@ function writeU32LE(buf: Buffer, val: number, off: number): void {
 /**
  * Read a 24-bit BMW-style address: u16 LE at off + u8 at off+2 shifted left 16.
  */
-function readAddr24(buf: Buffer, off: number): number {
+function readAddr24(buf: Uint8Array, off: number): number {
   return readU16LE(buf, off) | (buf[off + 2] << 16);
 }
 
@@ -86,7 +85,7 @@ function readAddr24(buf: Buffer, off: number): number {
  * CRC-16/CCITT, polynomial 0x1021, bit-reversed processing (matches MS4x
  * Flasher's table-based implementation). No final XOR.
  */
-export function crc16Ccitt(buf: Buffer, start: number, end: number, seed: number): number {
+export function crc16Ccitt(buf: Uint8Array, start: number, end: number, seed: number): number {
   const POLY = 0xa001; // bit-reversed 0x1021
   let crc = seed & 0xffff;
   for (let i = start; i <= end; i++) {
@@ -104,7 +103,7 @@ export function crc16Ccitt(buf: Buffer, start: number, end: number, seed: number
  * 32-bit addition checksum: sum of 16-bit LE words in the range, modulo 2^32.
  * MS43 uses this for the "monitor" / `_mon` parameter integrity.
  */
-export function add32(buf: Buffer, start: number, end: number): number {
+export function add32(buf: Uint8Array, start: number, end: number): number {
   let sum = 0;
   for (let i = start; i <= end - 1; i += 2) {
     sum = (sum + readU16LE(buf, i)) >>> 0;
@@ -131,7 +130,7 @@ export function add32(buf: Buffer, start: number, end: number): number {
  * is checked as a stronger MS42 confirmation but is not required for
  * detection.
  */
-export function detectVariant(buf: Buffer): EcuVariant | null {
+export function detectVariant(buf: Uint8Array): EcuVariant | null {
   if (buf.length !== EXPECTED_FILE_LENGTH) return null;
 
   const ms42Marker = readU16LE(buf, 0x4fee0) !== 0xffff;
@@ -210,7 +209,7 @@ const CALIBRATION_DEF: HeaderDrivenCrc16 = {
 
 // ── compute helpers ─────────────────────────────────────────────────
 
-function computeBoot(buf: Buffer): {
+function computeBoot(buf: Uint8Array): {
   stored: number;
   computed: number;
   ranges: ChecksumRange[];
@@ -229,7 +228,7 @@ function computeBoot(buf: Buffer): {
 }
 
 function computeHeaderDriven(
-  buf: Buffer,
+  buf: Uint8Array,
   def: HeaderDrivenCrc16,
 ): {
   resultOffset: number;
@@ -313,7 +312,7 @@ function translateMs43HighByte(hi: number): number {
 }
 
 /** Read a (lo, hi)-pair u32 with MS43 high-byte translation applied. */
-function readMs43Addr(buf: Buffer, off: number): number {
+function readMs43Addr(buf: Uint8Array, off: number): number {
   const lo = readU16LE(buf, off);
   const hiRaw = readU16LE(buf, off + 2);
   const hi = translateMs43HighByte(hiRaw);
@@ -361,7 +360,7 @@ const MS43_CALIBRATION_DEF: Ms43InlineCrcDef = {
 };
 
 function computeMs43InlineCrc(
-  buf: Buffer,
+  buf: Uint8Array,
   def: Ms43InlineCrcDef,
 ): {
   stored: number;
@@ -447,7 +446,7 @@ const MS43_CALIBRATION_ADD32: Ms43Add32Def = {
 };
 
 function computeMs43Add32(
-  buf: Buffer,
+  buf: Uint8Array,
   def: Ms43Add32Def,
 ): {
   stored: number;
@@ -479,7 +478,7 @@ function computeMs43Add32(
   return { stored, computed: sum >>> 0, ranges };
 }
 
-function verifyMs43Checksums(buf: Buffer): ChecksumReport {
+function verifyMs43Checksums(buf: Uint8Array): ChecksumReport {
   const results: ChecksumResult[] = [];
 
   // Boot: same metadata + algorithm as MS42 (shared fixed offsets).
@@ -620,14 +619,14 @@ const MS43_CAL_BLOCK_ECU_OFFSET = 0x70000;
  * which IS in the cal block.
  */
 function synthesizeFullFromCal(
-  calBuf: Buffer,
+  calBuf: Uint8Array,
   variant: EcuVariant,
   ms42SeedAddress: number,
-): Buffer {
-  const out = Buffer.alloc(EXPECTED_FILE_LENGTH, 0xff);
+): Uint8Array {
+  const out = new Uint8Array(EXPECTED_FILE_LENGTH).fill(0xff);
   const ecuOffset =
     variant === 'MS42' ? MS42_CAL_BLOCK_ECU_OFFSET : MS43_CAL_BLOCK_ECU_OFFSET;
-  calBuf.copy(out, ecuOffset);
+  out.set(calBuf, ecuOffset);
   if (variant === 'MS42') {
     // Header pointer at 0x502F2 (24-bit LE): result address.
     out[0x502f2] = MS42_CAL_RESULT_ECU_OFFSET & 0xff;
@@ -652,7 +651,7 @@ function detectCalVariantFromSize(length: number): EcuVariant | null {
  * source bytes don't exist in a calibration-only dump.
  */
 function verifyCalibrationOnly(
-  fullBuf: Buffer,
+  fullBuf: Uint8Array,
   variant: EcuVariant,
   origFileLength: number,
 ): ChecksumReport {
@@ -714,7 +713,7 @@ function verifyCalibrationOnly(
 }
 
 export function verifyChecksums(
-  buf: Buffer,
+  buf: Uint8Array,
   options: VerifyChecksumsOptions = {},
 ): ChecksumReport {
   // Cal-only short buffers: synthesize a full BIN with cal data placed
@@ -832,7 +831,7 @@ export function verifyChecksums(
  * lock in a stale addition-checksum value.
  */
 export function rewriteChecksums(
-  buf: Buffer,
+  buf: Uint8Array,
   options: VerifyChecksumsOptions = {},
 ): ChecksumReport {
   // Cal-only short buffers: synthesize a full BIN, recompute calibration
@@ -861,7 +860,7 @@ export function rewriteChecksums(
       const cal = computeMs43InlineCrc(fullBuf, MS43_CALIBRATION_DEF);
       writeU16LE(fullBuf, cal.computed, MS43_CALIBRATION_DEF.resultOffset);
     }
-    fullBuf.copy(buf, 0, calEcuOffset, calEcuOffset + buf.length);
+    buf.set(fullBuf.subarray(calEcuOffset, calEcuOffset + buf.length));
     return verifyChecksums(buf, options);
   }
 

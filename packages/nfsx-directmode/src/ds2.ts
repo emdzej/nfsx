@@ -19,16 +19,14 @@
  * Half-duplex K-line: every TX byte echoes back. The transport must
  * consume the echo before reading the response.
  */
-import { Buffer } from 'node:buffer';
-
 export interface Ds2Frame {
   addr: number;
   /** Command bytes only — without ADDR, LEN, or XOR. */
-  data: Buffer;
+  data: Uint8Array;
 }
 
 /** XOR all bytes in `buf` from offset 0 through `length-1`. */
-export function calcXor(buf: Buffer, length: number = buf.length): number {
+export function calcXor(buf: Uint8Array, length: number = buf.length): number {
   let x = 0;
   for (let i = 0; i < length; i++) x ^= buf[i];
   return x & 0xff;
@@ -39,7 +37,7 @@ export function calcXor(buf: Buffer, length: number = buf.length): number {
  * the command payload. The payload is the bytes after LEN and before
  * XOR — i.e. CMD + any data bytes.
  */
-export function encodeFrame(addr: number, payload: Buffer): Buffer {
+export function encodeFrame(addr: number, payload: Uint8Array): Uint8Array {
   // Total frame = ADDR + LEN + payload + XOR = payload.length + 3
   const total = payload.length + 3;
   if (total > 0xff) {
@@ -47,10 +45,10 @@ export function encodeFrame(addr: number, payload: Buffer): Buffer {
       `DS2 frame too large: payload ${payload.length} bytes → LEN ${total} exceeds 0xFF`,
     );
   }
-  const buf = Buffer.alloc(total);
+  const buf = new Uint8Array(total);
   buf[0] = addr & 0xff;
   buf[1] = total;
-  payload.copy(buf, 2);
+  buf.set(payload, 2);
   buf[total - 1] = calcXor(buf, total - 1);
   return buf;
 }
@@ -62,7 +60,7 @@ export function encodeFrame(addr: number, payload: Buffer): Buffer {
  * Throws on short frames, bad XOR, or LEN that disagrees with the
  * available bytes.
  */
-export function decodeFrame(buf: Buffer): { frame: Ds2Frame; consumed: number } {
+export function decodeFrame(buf: Uint8Array): { frame: Ds2Frame; consumed: number } {
   if (buf.length < 4) {
     throw new Ds2FrameError(`frame too short: ${buf.length} bytes`);
   }
@@ -85,7 +83,7 @@ export function decodeFrame(buf: Buffer): { frame: Ds2Frame; consumed: number } 
     );
   }
   return {
-    frame: { addr, data: Buffer.from(payload) },
+    frame: { addr, data: payload.slice() },
     consumed: total,
   };
 }

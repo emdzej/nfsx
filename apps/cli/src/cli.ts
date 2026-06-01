@@ -36,6 +36,11 @@ import {
   runDirectmodeRead,
   runDirectmodeWrite,
 } from './directmode.js';
+import {
+  runTuneRead,
+  runTuneApply,
+  type TuneFeature,
+} from './tune.js';
 import { DEFAULT_CONFIG_PATH } from './config.js';
 
 const program = new Command();
@@ -43,7 +48,7 @@ const program = new Command();
 program
   .name('nfsx')
   .description('BMW NFS / WinKFP reconstruction CLI — SP-Daten lookups, IPO dispatch, flash orchestration.')
-  .version('0.1.0');
+  .version('0.2.0');
 
 // ── configure ───────────────────────────────────────────────────────
 program
@@ -395,6 +400,40 @@ directmode
     if (code !== 0) process.exit(code);
   });
 
+// ── tune (firmware BIN field read/apply) ────────────────────────────
+const tune = program
+  .command('tune')
+  .description(
+    'Read or modify MS42/MS43 firmware BIN fields (VIN, immobilizer, UIF). All operations are offline — no ECU connection needed.',
+  );
+
+tune
+  .command('read')
+  .description('Read a field from a firmware BIN.')
+  .requiredOption('-f, --file <path>', 'path to the 512 KB firmware BIN')
+  .requiredOption('--feature <name>', 'field to read (vin | immo | isn | ecu-number | software-version | uif)', parseTuneReadFeature)
+  .option('--variant <name>', 'force variant (auto | ms42 | ms43)', parseTuneVariant)
+  .option('--json', 'machine-readable JSON output', false)
+  .action((opts: { file: string; feature: TuneFeature; variant?: 'MS42' | 'MS43'; json: boolean }) => {
+    const code = runTuneRead(opts);
+    if (code !== 0) process.exit(code);
+  });
+
+tune
+  .command('apply')
+  .description('Modify a field in a firmware BIN. Checksums are recomputed automatically unless --skip-checksum is passed.')
+  .requiredOption('-f, --file <path>', 'path to the 512 KB firmware BIN')
+  .requiredOption('--feature <name>', 'operation to apply (vin | virginize)', parseTuneApplyFeature)
+  .option('--value <val>', 'value to write (required for vin)')
+  .option('--variant <name>', 'force variant (auto | ms42 | ms43)', parseTuneVariant)
+  .option('-o, --output <path>', 'write modified BIN here instead of overwriting input')
+  .option('--skip-checksum', 'do not recompute checksums after modification', false)
+  .option('--json', 'machine-readable JSON output', false)
+  .action((opts: { file: string; feature: 'vin' | 'virginize'; value?: string; variant?: 'MS42' | 'MS43'; output?: string; skipChecksum: boolean; json: boolean }) => {
+    const code = runTuneApply(opts);
+    if (code !== 0) process.exit(code);
+  });
+
 // ── browse (ink TUI) ────────────────────────────────────────────────
 program
   .command('browse')
@@ -458,6 +497,27 @@ function parseFlashMode(value: string): 'full' | 'calibration' {
   const v = value.trim().toLowerCase();
   if (v === 'full' || v === 'calibration') return v;
   throw new InvalidArgumentError(`"${value}" is not a valid flash mode (full | calibration).`);
+}
+
+function parseTuneReadFeature(value: string): TuneFeature {
+  const v = value.trim().toLowerCase();
+  const valid: TuneFeature[] = ['vin', 'immo', 'isn', 'ecu-number', 'software-version', 'uif'];
+  if (valid.includes(v as TuneFeature)) return v as TuneFeature;
+  throw new InvalidArgumentError(`"${value}" is not a valid read feature (${valid.join(' | ')}).`);
+}
+
+function parseTuneApplyFeature(value: string): 'vin' | 'virginize' {
+  const v = value.trim().toLowerCase();
+  if (v === 'vin' || v === 'virginize') return v;
+  throw new InvalidArgumentError(`"${value}" is not a valid apply feature (vin | virginize).`);
+}
+
+function parseTuneVariant(value: string): 'MS42' | 'MS43' | undefined {
+  const v = value.trim().toLowerCase();
+  if (v === 'auto') return undefined;
+  if (v === 'ms42') return 'MS42';
+  if (v === 'ms43') return 'MS43';
+  throw new InvalidArgumentError(`"${value}" is not a valid variant (auto | ms42 | ms43).`);
 }
 
 function parseChecksumVariant(value: string): 'auto' | 'MS42' | 'MS43' {

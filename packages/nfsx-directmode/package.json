@@ -1,9 +1,19 @@
 {
   "name": "@emdzej/nfsx-directmode",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Direct DS2 flashing for BMW MS42/MS43/GS20 ECUs via K-line, without going through the BMW IPO/SGBD path. IDENT, SEED/KEY, erase, write, verify — at 9600 8E1.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node-transport.d.ts",
+      "default": "./dist/node-transport.js"
+    }
+  },
   "type": "module",
   "files": [
     "dist"

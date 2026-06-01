@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.2.0 — Firmware Tune, Browser Directmode, Buffer-free Directmode
+
+Offline firmware BIN editing (VIN, immobilizer, UIF), browser-safe directmode package, and a functional DirectmodeView in the web app.
+
+### @emdzej/nfsx-flash-data
+- BMW packed VIN codec: `encodeVin` (17 ASCII chars → 13 bytes) / `decodeVin` (13 bytes → 17 chars)
+- Per-variant firmware layout tables (MS42 / MS43): UIF base, ISN offset, immo-clear range, ECU number, software version — addresses extracted from community TunerPro XDF patchlists
+- `readVin` / `writeVin` — read from UIF row 0; write stamps all 14 rows
+- `readImmoStatus` — virgin/paired detection + ISN hex
+- `virginize` — 0xFF-fill the ISN + EWS pairing region (MS42: 66 B at 0x3EDE, MS43: 76 B at 0x3ED4)
+- `readIsn`, `readEcuNumber`, `readSoftwareVersion`, `readUif` — field-level BIN access
+- `resolveLayout` — auto-detect variant + return the matching layout table
+
+### @emdzej/nfsx-directmode
+- **Buffer → Uint8Array migration** across all source files — the package is now browser-safe (no `node:buffer` dependency)
+- **Transport interface extraction**: `DirectModeTransport` interface + `buildRequestPayload` pure function in `transport-interface.ts`; Node-specific `NodeDirectModeTransport` moved to `node-transport.ts`
+- **Subpath exports**: `"."` for browser-safe code, `"./node"` for `NodeDirectModeTransport`
+- Tests migrated to Uint8Array inputs
+
+### @emdzej/nfsx-cli
+- `nfsx tune read -f <bin> --feature <name>` — read VIN, immo status, ISN, ECU number, software version, or full UIF table from a firmware BIN
+- `nfsx tune apply -f <bin> --feature vin --value <VIN>` — encode + write VIN to all 14 UIF rows
+- `nfsx tune apply -f <bin> --feature virginize` — clear immobilizer data for EWS re-pairing
+- `--variant ms42|ms43` override; auto-detect by default
+- `-o <path>` writes to a separate file instead of overwriting input
+- Automatic checksum recompute (CRC-16 + add-32) after every apply; `--skip-checksum` to disable
+- `--json` machine-readable output for all tune operations
+
+### @emdzej/nfsx-web
+- **DirectmodeView**: functional K-line connect/disconnect, probe (IDENT fields table), read (full/cal + baud selector + save-as .bin), write (file picker + mode + baud + verify toggle), progress bar
+- `WebDirectModeTransport` wrapping `WebSerialTransport` + `Ds2Session` + `sendFastInit` from ediabasx
+- Reactive session state via Svelte 5 `$state` runes
+
+### Docs
+- README: tune command reference with usage examples, related projects, Right to Repair, Support (sponsorship), License, Disclaimer
+
 ## 0.1.0 — Initial Release
 
 BMW NFS ECU flashing toolchain: three verified flash paths (IPO-driven, direct DS2, C167 bootmode), structured CLI, and a browser-based UI.

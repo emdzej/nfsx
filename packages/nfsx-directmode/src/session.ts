@@ -16,8 +16,8 @@
  * handles the K-line wire layer (parity, fast-init, DTR direction
  * control, adapter echo, FTDI latency, XOR checksumming).
  */
-import { Buffer } from 'node:buffer';
-import type { DirectModeTransport } from "./transport.js";
+import type { DirectModeTransport } from "./transport-interface.js";
+import { buildRequestPayload } from './transport-interface.js';
 import {
   decodeFrame,
   DS2_CMD_IDENT,
@@ -31,7 +31,6 @@ import {
   DS2_STATUS_PENDING,
 } from './ds2.js';
 import { decodeIdent, type IdentFields } from './identity.js';
-import { buildRequestPayload } from './transport.js';
 import {
   buildSeedRequestPayload,
   buildKeySubmitPayload,
@@ -87,9 +86,9 @@ export class DirectModeError extends Error {
 async function sendAndReceiveRaw(
   iface: DirectModeTransport,
   addr: number,
-  payload: Buffer,
+  payload: Uint8Array,
   options: { maxAttempts?: number } = {},
-): Promise<Buffer> {
+): Promise<Uint8Array> {
   const request = buildRequestPayload(addr, payload);
   const maxAttempts = options.maxAttempts ?? 8;
   let lastErr: Error | null = null;
@@ -121,8 +120,8 @@ async function sendAndReceiveRaw(
 async function sendAndReceive(
   iface: DirectModeTransport,
   addr: number,
-  payload: Buffer,
-): Promise<Buffer> {
+  payload: Uint8Array,
+): Promise<Uint8Array> {
   const request = buildRequestPayload(addr, payload);
   // Retry transient frame errors (timeout, echo mismatch, short tail).
   // These appear roughly every ~1000 frames on a 9600-baud K-line and
@@ -148,7 +147,7 @@ async function sendAndReceive(
         );
       }
       const { frame } = decodeFrame(full);
-      return frame.data;
+      return new Uint8Array(frame.data);
     } catch (err) {
       lastErr = err as Error;
       // Don't retry on a clearly-fatal error pattern
@@ -162,9 +161,9 @@ async function sendAndReceive(
 async function sendAndAwaitOk(
   iface: DirectModeTransport,
   addr: number,
-  payload: Buffer,
+  payload: Uint8Array,
   options: { totalTimeoutMs?: number; pollDelayMs?: number } = {},
-): Promise<Buffer> {
+): Promise<Uint8Array> {
   const totalTimeout = options.totalTimeoutMs ?? 30_000;
   const pollDelay = options.pollDelayMs ?? 10;
   const deadline = Date.now() + totalTimeout;
@@ -197,9 +196,9 @@ async function sendAndAwaitOk(
 export async function runIdent(
   iface: DirectModeTransport,
   addr: number,
-): Promise<{ identPayload: Buffer }> {
-  const resp = await sendAndAwaitOk(iface, addr, Buffer.from([DS2_CMD_IDENT]));
-  const identPayload = resp.subarray(1); // strip status byte
+): Promise<{ identPayload: Uint8Array }> {
+  const resp = await sendAndAwaitOk(iface, addr, new Uint8Array([DS2_CMD_IDENT]));
+  const identPayload = resp.subarray(1);
   return { identPayload };
 }
 
@@ -219,7 +218,7 @@ export async function runDispatchIdent(
   addr: number,
 ): Promise<{ identKey: string; idAscii: string; profile: EcuProfile | null }> {
   // Step 1: cmd 0x0D — expect at least 60-byte response frame.
-  const ext = await sendAndAwaitOk(iface, addr, Buffer.from([DS2_CMD_HW_REF]));
+  const ext = await sendAndAwaitOk(iface, addr, new Uint8Array([DS2_CMD_HW_REF]));
   // `ext` is frame.data = [STATUS, D0..Dn]. Absolute frame offsets
   // [57..59] map to ext[55..57] (frame offset N = ext[N - 2] because
   // frame.data starts at frame offset 2 / STATUS).
@@ -241,7 +240,7 @@ export async function runDispatchIdent(
   const idResp = await sendAndAwaitOk(
     iface,
     addr,
-    Buffer.from([DS2_CMD_MEMORY_READ, 0x00, addrHi, addrMid, addrLo, 8]),
+    new Uint8Array([DS2_CMD_MEMORY_READ, 0x00, addrHi, addrMid, addrLo, 8]),
   );
   // idResp = [STATUS, 8 ASCII bytes]. Expect 9 bytes total.
   if (idResp.length < 9) {
@@ -250,7 +249,9 @@ export async function runDispatchIdent(
       'precheck',
     );
   }
-  const idAscii = idResp.subarray(1, 9).toString('ascii');
+  const idBytes = idResp.subarray(1, 9);
+  let idAscii = '';
+  for (let i = 0; i < idBytes.length; i++) idAscii += String.fromCharCode(idBytes[i]);
   const identKey = idAscii.slice(0, 6);
   const profile = findByIdentKey(identKey);
   return { identKey, idAscii, profile };
@@ -262,12 +263,12 @@ export async function runDispatchIdent(
  *
  * Per `docs/raw-ds2-flashing.md` §1.3 — verified against a real MS42.
  */
-const BAUD_SWITCH_PAYLOADS: Record<number, Buffer> = {
-  9600:   Buffer.from([0x91, 0x00, 0x25, 0x80, 0x01]),
-  19200:  Buffer.from([0x91, 0x00, 0x4b, 0x00, 0x01]),
-  38400:  Buffer.from([0x91, 0x00, 0x96, 0x00, 0x01]),
-  62500:  Buffer.from([0x91, 0x00, 0xf4, 0x24, 0x01]),
-  125000: Buffer.from([0x91, 0x01, 0xe8, 0x48, 0x01]),
+const BAUD_SWITCH_PAYLOADS: Record<number, Uint8Array> = {
+  9600:   new Uint8Array([0x91, 0x00, 0x25, 0x80, 0x01]),
+  19200:  new Uint8Array([0x91, 0x00, 0x4b, 0x00, 0x01]),
+  38400:  new Uint8Array([0x91, 0x00, 0x96, 0x00, 0x01]),
+  62500:  new Uint8Array([0x91, 0x00, 0xf4, 0x24, 0x01]),
+  125000: new Uint8Array([0x91, 0x01, 0xe8, 0x48, 0x01]),
 };
 
 /**
@@ -348,14 +349,8 @@ async function runAuth(
 
 // ── ERASE / WRITE / READ ────────────────────────────────────────────
 
-function buildEraseRequest(sectorStart: number): Buffer {
-  // Verified against upstream tooling:
-  //   payload = [0x07, 0x06, A_HI, A_MID, A_LO, 0x00]
-  // The ECU erases one flash SECTOR identified by its start address;
-  // there is no "end" parameter (the chip itself defines sector size).
-  // Earlier versions of this function sent an 8-byte address-pair which
-  // the ECU rejected with status 0xB0.
-  return Buffer.from([
+function buildEraseRequest(sectorStart: number): Uint8Array {
+  return new Uint8Array([
     DS2_CMD_PROG_PREFIX,
     DS2_PROG_ERASE,
     (sectorStart >> 16) & 0xff,
@@ -365,13 +360,8 @@ function buildEraseRequest(sectorStart: number): Buffer {
   ]);
 }
 
-function buildPollRequest(addr: number): Buffer {
-  // Verified against upstream tooling:
-  //   payload = [0x07, 0x0F, A_HI, A_MID, A_LO, 0x00]
-  // Cmd 0x07 0x0F polls the programming-state machine. Used after
-  // erase + write to wait for the operation to complete and (in strict
-  // mode) check the result byte at frame[8].
-  return Buffer.from([
+function buildPollRequest(addr: number): Uint8Array {
+  return new Uint8Array([
     DS2_CMD_PROG_PREFIX,
     DS2_PROG_VERIFY,
     (addr >> 16) & 0xff,
@@ -397,7 +387,7 @@ const OP_RESULT_ERRORS: Record<number, string> = {
   15: 'op result 0x0F (verify / CRC mismatch)',
 };
 
-function checkOpResult(frame: Buffer, stage: 'erase' | 'write' | 'verify'): void {
+function checkOpResult(frame: Uint8Array, stage: 'erase' | 'write' | 'verify'): void {
   if (frame.length < 9) {
     throw new DirectModeError(
       `${stage} response too short for result byte: ${frame.length} bytes`,
@@ -446,29 +436,23 @@ async function runPoll(
   }
 }
 
-function buildWriteRequest(addr24: number, data: Buffer): Buffer {
-  // Per docs §3.4: payload = 07 02 A_HI A_MID A_LO SIZE <DATA…>
+function buildWriteRequest(addr24: number, data: Uint8Array): Uint8Array {
   if (data.length > 0xff) {
     throw new Error(`write block too large: ${data.length} bytes (max 0xFF)`);
   }
-  const head = Buffer.from([
-    DS2_CMD_PROG_PREFIX,
-    DS2_PROG_WRITE,
-    (addr24 >> 16) & 0xff,
-    (addr24 >> 8) & 0xff,
-    addr24 & 0xff,
-    data.length,
-  ]);
-  return Buffer.concat([head, data]);
+  const out = new Uint8Array(6 + data.length);
+  out[0] = DS2_CMD_PROG_PREFIX;
+  out[1] = DS2_PROG_WRITE;
+  out[2] = (addr24 >> 16) & 0xff;
+  out[3] = (addr24 >> 8) & 0xff;
+  out[4] = addr24 & 0xff;
+  out[5] = data.length;
+  out.set(data, 6);
+  return out;
 }
 
-function buildReadRequest(addr: number, size: number): Buffer {
-  // MS42 wants a 4-byte address with a leading 0x00 segment selector.
-  // 3-byte addressing only reaches the low 32 KB; high flash needs the
-  // explicit segment byte. Verified empirically against a real MS42 —
-  // `12 09 06 00 04 80 00 10` returns flash data, `12 08 06 04 80 00 10`
-  // returns status 0xB0.
-  return Buffer.from([
+function buildReadRequest(addr: number, size: number): Uint8Array {
+  return new Uint8Array([
     DS2_CMD_MEMORY_READ,
     (addr >> 24) & 0xff,
     (addr >> 16) & 0xff,
@@ -510,7 +494,7 @@ async function writeRegion(
   iface: DirectModeTransport,
   profile: EcuProfile,
   region: FlashRegion,
-  image: Buffer,
+  image: Uint8Array,
   onChunk?: (sent: number, total: number) => void,
 ): Promise<{ bytesWritten: number; bytesSkipped: number }> {
   const length = region.end - region.start + 1;
@@ -567,9 +551,9 @@ async function readRegion(
   profile: EcuProfile,
   region: FlashRegion,
   onChunk?: (read: number, total: number) => void,
-): Promise<Buffer> {
+): Promise<Uint8Array> {
   const length = region.end - region.start + 1;
-  const out = Buffer.alloc(length);
+  const out = new Uint8Array(length);
   let pos = 0;
   while (pos < length) {
     const chunkSize = Math.min(profile.readBlockSize, length - pos);
@@ -579,7 +563,6 @@ async function readRegion(
       buildReadRequest(region.start + pos, chunkSize),
       { totalTimeoutMs: 10_000 },
     );
-    // resp = [STATUS, <chunkSize bytes>]
     const data = resp.subarray(1);
     if (data.length !== chunkSize) {
       throw new DirectModeError(
@@ -587,7 +570,7 @@ async function readRegion(
         'read',
       );
     }
-    data.copy(out, pos);
+    out.set(data, pos);
     pos += chunkSize;
     onChunk?.(pos, length);
   }
@@ -599,7 +582,7 @@ async function readRegion(
 interface PreparedSession {
   iface: DirectModeTransport;
   profile: EcuProfile;
-  identPayload: Buffer;
+  identPayload: Uint8Array;
 }
 
 async function ident(
@@ -612,7 +595,7 @@ async function ident(
     : [0x12, 0x32];
 
   let profile: EcuProfile | null = null;
-  let identPayload: Buffer | null = null;
+  let identPayload: Uint8Array | null = null;
   let detectedKey: string | null = null;
   let lastErr: Error | null = null;
 
@@ -709,7 +692,7 @@ export interface DirectModeWriteResult {
 }
 
 export async function writeFlash(
-  image: Buffer,
+  image: Uint8Array,
   cfg: DirectModeSessionConfig,
   opts: DirectModeWriteOptions,
   onProgress?: DirectModeProgressFn,
@@ -730,11 +713,12 @@ export async function writeFlash(
       // walkers (which index by `region.binOffset`) keep working
       // unchanged. The expansion is local — the caller's buffer is
       // never mutated.
-      const expanded = Buffer.alloc(profile.binSize, 0xff);
+      const expanded = new Uint8Array(profile.binSize);
+      expanded.fill(0xff);
       let cursor = 0;
       for (const r of readRegions) {
         const len = r.end - r.start + 1;
-        image.copy(expanded, r.binOffset, cursor, cursor + len);
+        expanded.set(image.subarray(cursor, cursor + len), r.binOffset);
         cursor += len;
       }
       image = expanded;
@@ -842,7 +826,7 @@ export async function writeFlash(
       // respond in milliseconds and benefit from fast failure on
       // transient errors).
       await iface.setSessionTimeout(60_000);
-      let eFrame: Buffer;
+      let eFrame: Uint8Array;
       try {
         eFrame = await sendAndReceiveRaw(
           iface,
@@ -984,7 +968,7 @@ export async function readFlash(
   cfg: DirectModeSessionConfig,
   opts: DirectModeReadOptions,
   onProgress?: DirectModeProgressFn,
-): Promise<{ variant: string; image: Buffer }> {
+): Promise<{ variant: string; image: Uint8Array }> {
   const { iface, profile } = await ident(cfg, onProgress);
   const targetBaud = opts.readBaud ?? 38400;
   if (targetBaud !== 9600) {
@@ -998,7 +982,8 @@ export async function readFlash(
   // For CALIBRATION we emit a tight buffer of just the region data
   // (matches upstream tooling's 32 KB output for partial dumps).
   const tight = opts.mode === 'calibration';
-  const out = tight ? Buffer.alloc(total, 0xff) : Buffer.alloc(profile.binSize, 0xff);
+  const out = new Uint8Array(tight ? total : profile.binSize);
+  out.fill(0xff);
   let done = 0;
   let tightCursor = 0;
   onProgress?.({ stage: 'read', message: 'reading', fraction: 0 });
@@ -1011,10 +996,10 @@ export async function readFlash(
       });
     });
     if (tight) {
-      data.copy(out, tightCursor);
+      out.set(data, tightCursor);
       tightCursor += data.length;
     } else {
-      data.copy(out, r.binOffset);
+      out.set(data, r.binOffset);
     }
     done += data.length;
   }
