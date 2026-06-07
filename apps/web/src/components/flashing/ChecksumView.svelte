@@ -37,7 +37,12 @@
       }
 
       const variant = detectVariant(buf);
-      const report = verifyMs4xChecksums(buf, { variant });
+      /* `detectVariant` returns `EcuVariant | null`;
+         `verifyMs4xChecksums` typed its override as
+         `EcuVariant | undefined`. Normalize to undefined so the
+         signatures line up — null means "auto-detect again
+         inside" same as omitting the override. */
+      const report = verifyMs4xChecksums(buf, { variant: variant ?? undefined });
 
       app.checksumState.variant = variant;
       app.checksumState.report = report;

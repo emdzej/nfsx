@@ -27,6 +27,11 @@ import { isAbsolute, resolve, sep } from 'node:path';
 import type { ExecutionContext, VM } from '@emdzej/inpax-interpreter';
 import { StackEntryFlags, ValueType, type StackEntry, type Value } from '@emdzej/inpax-core';
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
+import type {
+  IEdiabas,
+  EdiabasJobResponse,
+  EdiabasResultEntry,
+} from '@emdzej/ediabasx-core';
 import {
   NCSEXPER_CABI_SLOTS,
   type CabiParam,
@@ -266,11 +271,6 @@ function makeOverride(
         // Try real binary path via getEdiabas() duck-type.
         const ed = getEdiabasInstance(ediabas);
         if (ed && bytes.length > 0) {
-          // Match EdiabasXProvider.resolveSgbdFile: BMW SGBDs are .prg
-          // (or .grp). Bare names like "10GD20" hit the filesystem as
-          // ENOENT — `provider.job()` does this resolution internally
-          // but our direct `ed.loadSgbd()` bypasses it.
-          const sgbdFile = /\.(prg|grp)$/i.test(ecu) ? ecu : `${ecu}.prg`;
           const maxAttempts = maxBinaryRetries + 1;
           // Retry loop — see BuildSystemFunctionsOptions.maxBinaryRetries
           // for rationale. BMW flash dispatches are idempotent: a
@@ -278,14 +278,17 @@ function makeOverride(
           // any change, so re-dispatching the same record is safe.
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-              await ed.loadSgbd(sgbdFile);
-              const sets = await ed.executeJob(job, { params: [bytes] });
-              state.lastJobSets = sets.map((set) => {
-                const m = new Map<string, unknown>();
-                for (const r of set) m.set(r.name, r.value);
-                return m;
-              });
-              const status = pickResultText(state.lastJobSets, 'JOB_STATUS', '');
+              /* IEdiabas.job (ediabasx 0.7.1+) accepts a Uint8Array
+                 directly — lands in the SGBD's `pary` / `parb` /
+                 `parw` channel exactly like the old
+                 `executeJob(name, {params:[bytes]})` path did. The
+                 wrapper handles SGBD load + path resolution +
+                 INITIALISIERUNG / IDENT bootstrap internally, so the
+                 manual `loadSgbd(sgbdFile)` detour from the pre-0.7.1
+                 era is gone. */
+              const response = await ed.job(ecu, job, bytes);
+              state.lastJobSets = materializeDataSets(response);
+              const status = readJobStatusFromResponse(response);
               state.lastJob = { ecu, job, para: `binbuf[${bytes.length}]`, status, ok: true };
               if (retryableStatuses.has(status) && attempt < maxAttempts) {
                 // Transient failure surfaced by the SGBD — log + retry.
@@ -1155,27 +1158,69 @@ function safeResultInt(ediabas: IEdiabasProvider, name: string, set: number): nu
 }
 
 /**
- * Duck-typed Ediabas-instance escape hatch. `EdiabasXProvider`
- * exposes `getEdiabas(): Ediabas | null`; other providers (mock,
- * Inp1Adapter, etc.) don't. Returns the underlying instance on hit,
- * `undefined` on miss. Typed loosely on purpose — we can't import
- * `@emdzej/ediabasx-ediabas` from nfsx-runtime without adding a
- * dependency that contaminates browser builds.
+ * Duck-typed IEdiabas escape hatch. `EdiabasXProvider` exposes
+ * `getEdiabas(): IEdiabas | null` (since inpax 0.11.x); other
+ * providers (mock, Inp1Adapter, etc.) don't.
+ *
+ * Returns the underlying IEdiabas on hit, `undefined` on miss.
+ * Used by `CDHapiJobData` to push raw binary params (the
+ * `apiJobData` channel — `pary` / `parb` / `parw` reads in the
+ * SGBD) which IEdiabas.job accepts directly since ediabasx 0.7.1.
+ * Pre-0.7.1 we had to detour via `Ediabas.executeJob`'s
+ * `params: [Uint8Array]` shape; that bypassed the provider and
+ * needed manual loadSgbd. The IEdiabas.job widening eliminates
+ * both detours.
  */
-interface EdiabasInstance {
-  loadSgbd(filename: string): Promise<void>;
-  executeJob(
-    jobName: string,
-    options?: { params?: (string | Uint8Array)[]; timeout?: number },
-  ): Promise<Array<Array<{ name: string; value: unknown }>>>;
-}
-
-function getEdiabasInstance(provider: IEdiabasProvider): EdiabasInstance | undefined {
+function getEdiabasInstance(provider: IEdiabasProvider): IEdiabas | undefined {
   const getter = (provider as unknown as { getEdiabas?: () => unknown }).getEdiabas;
   if (typeof getter !== 'function') return undefined;
   const ed = getter.call(provider);
-  if (!ed || typeof (ed as { executeJob?: unknown }).executeJob !== 'function') return undefined;
-  return ed as EdiabasInstance;
+  if (!ed || typeof (ed as { job?: unknown }).job !== 'function') return undefined;
+  return ed as IEdiabas;
+}
+
+/**
+ * Convert an IEdiabas response into the legacy data-set-only
+ * `Map<name, value>[]` shape `state.lastJobSets` carries (cabi-
+ * provider's apiResult* readers consume this with 1-based set
+ * indexing where set 0 = first data set). Slices off `sets[0]`
+ * which is the system set (VARIANTE / OBJECT / JOBNAME / JOB_STATUS),
+ * read separately for JOB_STATUS via {@link readJobStatusFromResponse}.
+ *
+ * Binary entries come over the wire as `number[]` (JSON-portable
+ * for client mode) but downstream readers do `instanceof Uint8Array`
+ * checks — hoist them back here so consumers don't have to know.
+ */
+function materializeDataSets(
+  response: EdiabasJobResponse,
+): Array<Map<string, unknown>> {
+  const sets = response.sets.length > 0 ? response.sets.slice(1) : [];
+  return sets.map((set) => {
+    const m = new Map<string, unknown>();
+    for (const name of Object.keys(set)) {
+      const entry = set[name] as EdiabasResultEntry;
+      let value: unknown = entry.value;
+      if (entry.type === 'binary' && Array.isArray(value)) {
+        value = Uint8Array.from(value as number[]);
+      }
+      m.set(name, value);
+    }
+    return m;
+  });
+}
+
+/**
+ * Read `JOB_STATUS` off the IEdiabas system set. The inner
+ * `Ediabas` class materialises it there via `buildSystemSet` after
+ * every job, regardless of whether the SGBD's bytecode also wrote
+ * it into a data set.
+ */
+function readJobStatusFromResponse(response: EdiabasJobResponse): string {
+  const sysSet = response.sets[0];
+  if (!sysSet) return '';
+  const entry = sysSet['JOB_STATUS'];
+  if (!entry) return '';
+  return typeof entry.value === 'string' ? entry.value : String(entry.value);
 }
 
 /**

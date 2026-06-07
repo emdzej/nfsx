@@ -36,7 +36,13 @@
   async function handleRead() {
     const image = await readEcuFlash(readMode, readBaud);
     if (!image) return;
-    const blob = new Blob([image], { type: "application/octet-stream" });
+    /* TS 5.7 tightened the BlobPart shape — `Uint8Array<ArrayBufferLike>`
+       (the modern Uint8Array return type) no longer assigns to the
+       narrower ArrayBufferView<ArrayBuffer>. Copy the underlying
+       buffer slice into a plain ArrayBuffer for the Blob ctor. */
+    const ab = new ArrayBuffer(image.byteLength);
+    new Uint8Array(ab).set(image);
+    const blob = new Blob([ab], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

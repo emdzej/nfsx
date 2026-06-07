@@ -5,7 +5,12 @@
     saveConfig,
     type LogLevel,
   } from "../../lib/config";
-  import { InterfaceConfigPanel } from "@emdzej/ediabasx-web-ui";
+  import {
+    InterfaceConfigPanel,
+    ModeConfigPanel,
+    ServerConfigPanel,
+    ConnectConfigPanel,
+  } from "@emdzej/ediabasx-web-ui";
   import { app } from "../../lib/state.svelte";
   import { applyLoggerConfig } from "../../lib/logger-wiring";
   import { LOG_CATEGORIES as INPAX_LOG_CATEGORIES } from "@emdzej/inpax-interpreter";
@@ -105,7 +110,17 @@
 
       <section class="flex-1 space-y-4 overflow-y-auto px-4 py-4 text-sm text-foreground">
         {#if activeTab === "connection"}
-          <InterfaceConfigPanel bind:config={app.config} />
+          <!-- Mode toggle — embedded (local cable) vs client
+               (remote ediabasx-server over WebSocket or Bimmerz
+               Connect relay). Branches the fieldsets below. -->
+          <ModeConfigPanel bind:config={app.config} />
+
+          {#if app.config.mode === "client"}
+            <ConnectConfigPanel bind:config={app.config} />
+            <ServerConfigPanel bind:config={app.config} />
+          {:else}
+            <InterfaceConfigPanel bind:config={app.config} />
+          {/if}
         {:else if activeTab === "developer"}
           <fieldset class="space-y-2 rounded border border-divider bg-base p-3">
             <legend class="px-1 text-xs font-semibold uppercase tracking-wider text-faint">

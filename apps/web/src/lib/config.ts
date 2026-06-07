@@ -2,6 +2,16 @@ export type InterfaceType = "webserial" | "j2534" | "gateway";
 export type SerialProtocol = "uart" | "kwp" | "isotp" | "tp20";
 export type SerialInitMode = "fast" | "five-baud";
 
+/**
+ * Top-level mode — embedded (local cable) vs client (remote
+ * ediabasx-server, direct WebSocket or via Bimmerz Connect relay).
+ * Mirrors inpax-web / ncsx-web naming so the shared
+ * `@emdzej/ediabasx-web-ui` config panels bind directly.
+ */
+export type ConnectionMode = "embedded" | "client";
+/** Client-mode method — direct WebSocket vs Bimmerz Connect relay. */
+export type ClientConnectionMethod = "direct" | "connect";
+
 export type LogLevel =
   | "trace"
   | "debug"
@@ -27,6 +37,16 @@ export interface WebLoggerConfig {
 }
 
 export interface WebConfig {
+  /** Top-level mode — embedded vs client. Defaults to `embedded`. */
+  mode: ConnectionMode;
+  /** Client-mode submode. */
+  connectionMethod?: ClientConnectionMethod;
+  /** Direct-WebSocket URL to an `ediabasx-server`. */
+  serverUrl?: string;
+  /** Bimmerz Connect relay URL — credential pasted at Connect time, not persisted. */
+  connectRelayUrl?: string;
+
+  /** Embedded mode: which local interface drives the cable. */
   interface: InterfaceType;
   serial?: {
     baudRate?: number;
@@ -49,6 +69,10 @@ export interface WebConfig {
 const STORAGE_KEY = "nfsx.web.config.v1";
 
 const DEFAULT_CONFIG: WebConfig = {
+  mode: "embedded",
+  connectionMethod: "direct",
+  serverUrl: "ws://localhost:6802",
+  connectRelayUrl: "wss://connect.bimmerz.app",
   interface: "webserial",
   serial: {
     baudRate: 115200,
@@ -80,9 +104,19 @@ export function loadConfig(): WebConfig {
       parsed.interface === "gateway"
         ? parsed.interface
         : DEFAULT_CONFIG.interface;
+    const mode: ConnectionMode =
+      parsed.mode === "embedded" || parsed.mode === "client"
+        ? parsed.mode
+        : DEFAULT_CONFIG.mode;
+    const connectionMethod: ClientConnectionMethod =
+      parsed.connectionMethod === "direct" || parsed.connectionMethod === "connect"
+        ? parsed.connectionMethod
+        : DEFAULT_CONFIG.connectionMethod!;
     return {
       ...structuredClone(DEFAULT_CONFIG),
       ...parsed,
+      mode,
+      connectionMethod,
       interface: iface,
       serial: { ...DEFAULT_CONFIG.serial, ...parsed.serial },
       gateway: { ...DEFAULT_CONFIG.gateway, ...parsed.gateway },

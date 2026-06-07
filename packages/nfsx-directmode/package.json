@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@emdzej/nfsx-flash-data": "workspace:*",
-    "@emdzej/ediabasx-interface-serial": "^0.5.1"
+    "@emdzej/ediabasx-interface-serial": "^0.7.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.1",

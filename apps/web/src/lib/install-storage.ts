@@ -112,3 +112,22 @@ export async function requestHandlePermission(
 export function isFileSystemAccessSupported(): boolean {
   return typeof window !== "undefined" && "showDirectoryPicker" in window;
 }
+
+/* ── Remote install URL ──────────────────────────────────────────── */
+
+const REMOTE_URL_KEY = "nfsx.web.install.remoteUrl";
+
+export function saveRemoteInstallUrl(url: string): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(REMOTE_URL_KEY, url);
+}
+
+export function loadRemoteInstallUrl(): string | null {
+  if (typeof localStorage === "undefined") return null;
+  return localStorage.getItem(REMOTE_URL_KEY);
+}
+
+export function clearRemoteInstallUrl(): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.removeItem(REMOTE_URL_KEY);
+}

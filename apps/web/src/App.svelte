@@ -1,10 +1,12 @@
 <script lang="ts">
   import { app } from "./lib/state.svelte";
+  import { loadRemoteInstallUrl } from "./lib/install-storage";
 
   import ErrorBanner from "./components/shared/ErrorBanner.svelte";
   import ConnectButton from "./components/shared/ConnectButton.svelte";
   import SettingsDialog from "./components/shared/SettingsDialog.svelte";
   import AboutDialog from "./components/shared/AboutDialog.svelte";
+  import ConnectSessionDialog from "./components/shared/ConnectSessionDialog.svelte";
 
   import InstallPicker from "./components/oem/InstallPicker.svelte";
   import BrowseView from "./components/oem/BrowseView.svelte";
@@ -31,6 +33,76 @@
     app.oemView = app.install ? "browse" : "picker";
     app.error = null;
   }
+
+  /**
+   * Top-bar install-source pill. Shown across both OEM and Flashing
+   * scopes — useful even in Flashing because the cabi/flash IPO
+   * runtime relies on `app.install.ediabasEcu` for SGBD loads.
+   * Reads from reactive `app.installSource` so mid-session source
+   * switches refresh without a reload (matches inpax-web /
+   * ncsx-web pattern).
+   */
+  const installPill = $derived.by((): { label: string; tooltip: string } => {
+    if (!app.install) {
+      return { label: "no install", tooltip: "No install loaded" };
+    }
+    const source = app.installSource;
+    const rootName = app.install.root.name || "(unnamed root)";
+    if (source?.source === "remote") {
+      const url = loadRemoteInstallUrl();
+      return {
+        label: "remote",
+        tooltip: `Remote VFS · ${url ?? rootName}`,
+      };
+    }
+    if (source?.source === "bundled") {
+      return {
+        label: "bundled",
+        tooltip: `OPFS bundle · ${rootName} · ${source.fileCount} files · imported ${source.importedAt}`,
+      };
+    }
+    if (source?.source === "fs-access") {
+      return {
+        label: "local",
+        tooltip: `Local folder · ${rootName}`,
+      };
+    }
+    return { label: "?", tooltip: `Unknown install source · ${rootName}` };
+  });
+
+  /**
+   * Connection-mode pill. Sits next to the Connect button so the
+   * user sees at a glance which path the cable goes through.
+   */
+  const modePill = $derived.by((): { label: string; tooltip: string } => {
+    const cfg = app.config;
+    if (cfg.mode === "client") {
+      if (cfg.connectionMethod === "connect") {
+        return {
+          label: "bimmerz connect",
+          tooltip: `Client · Bimmerz Connect relay · ${cfg.connectRelayUrl ?? "wss://connect.bimmerz.app"}`,
+        };
+      }
+      return {
+        label: "ws server",
+        tooltip: `Client · direct WebSocket · ${cfg.serverUrl ?? "(URL not set)"}`,
+      };
+    }
+    if (cfg.interface === "webserial") {
+      const baud = cfg.serial?.baudRate ?? 9600;
+      return { label: "web serial", tooltip: `Embedded · Web Serial @ ${baud}` };
+    }
+    if (cfg.interface === "j2534") {
+      return { label: "j2534", tooltip: "Embedded · J2534 (Tactrix OpenPort 2.0)" };
+    }
+    if (cfg.interface === "gateway") {
+      return {
+        label: "gateway",
+        tooltip: `Embedded · Remote gateway · ${cfg.gateway?.url ?? "(URL not set)"}`,
+      };
+    }
+    return { label: cfg.interface, tooltip: `Embedded · ${cfg.interface}` };
+  });
 </script>
 
 <div class="flex h-full flex-col bg-base text-foreground">
@@ -90,6 +162,47 @@
     </div>
 
     <span class="flex-1"></span>
+    <!-- Right cluster: data-location pill, mode pill, Settings,
+         Connect button. Pills are borderless + faded — metadata,
+         not chrome. -->
+    <span
+      class="flex items-center gap-1.5 text-xs text-faint"
+      title={installPill.tooltip}
+    >
+      <svg
+        viewBox="0 0 16 16"
+        width="13"
+        height="13"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.4a1.5 1.5 0 0 1 1.06.44L8 4.5h4.5A1.5 1.5 0 0 1 14 6v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12V4.5z"/>
+      </svg>
+      {installPill.label}
+    </span>
+    <span
+      class="flex items-center gap-1.5 text-xs text-faint"
+      title={modePill.tooltip}
+    >
+      <svg
+        viewBox="0 0 16 16"
+        width="13"
+        height="13"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M5 2v3.5M9 2v3.5M3.5 5.5h7v3a3.5 3.5 0 0 1-3.5 3.5h0a3.5 3.5 0 0 1-3.5-3.5v-3zM7 12v2"/>
+      </svg>
+      {modePill.label}
+    </span>
     <button
       class="rounded border border-divider bg-surface px-2 py-0.5 text-xs text-muted transition hover:border-accent hover:bg-elevated"
       onclick={() => (app.showSettings = true)}
@@ -142,5 +255,6 @@
 
   <ErrorBanner />
   <SettingsDialog />
+  <ConnectSessionDialog />
   <AboutDialog />
 </div>

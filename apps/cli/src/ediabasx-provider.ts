@@ -20,8 +20,9 @@
 
 import { join } from 'node:path';
 import { EdiabasXProvider } from '@emdzej/inpax-ediabasx-provider';
-import { Ediabas } from '@emdzej/ediabasx-ediabas';
+import { EmbeddedEdiabas } from '@emdzej/ediabasx-client';
 import { createInterface } from '@emdzej/ediabasx-interfaces';
+import { SimulationInterface } from '@emdzej/ediabasx-interface-base';
 import { resolveSpDaten } from './config.js';
 import {
   loadConfig as loadEdiabasxConfig,
@@ -69,15 +70,17 @@ export async function buildEdiabasProvider(
 
   // Real-vs-simulation is decided by `selection.interface` — that's
   // ediabasx's responsibility, not ours. See [[feedback-ediabasx-responsibility]].
+  // ediabasx 0.7.0 retired the `simulation: true` shorthand; pass a
+  // `SimulationInterface` instance instead (one source of truth, no
+  // parallel boolean).
   const useSimulation = selection.interface === 'simulation';
-  const transport = useSimulation
-    ? undefined
+  const iface = useSimulation
+    ? new SimulationInterface()
     : createInterface(selection.interface, selection.options);
 
-  const ediabas = new Ediabas({
-    ecuPath,
-    transport,
-    simulation: useSimulation,
+  const ediabas = new EmbeddedEdiabas({
+    sgbdPath: ecuPath,
+    interface: iface,
   });
 
   const provider = new EdiabasXProvider({ instance: ediabas, autoConnect: !useSimulation });
@@ -85,7 +88,7 @@ export async function buildEdiabasProvider(
   // Neither nfsx-runtime nor FlashSession calls `provider.init()` on
   // its own (both accept an already-initialised IEdiabasProvider).
   // With `autoConnect: true`, EdiabasXProvider's init() opens the
-  // underlying transport and runs `ediabas.connect()`.
+  // underlying transport and runs `ediabas.init()`.
   await provider.init();
 
   return {

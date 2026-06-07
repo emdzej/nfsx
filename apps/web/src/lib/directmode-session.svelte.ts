@@ -63,12 +63,16 @@ class WebDirectModeTransport implements DirectModeTransport {
   }
 
   async open(): Promise<void> {
-    await this.serial.open({
+    /* ediabasx 0.7.x split open() from configure() — open() now
+       takes only an optional port string (or none), and
+       baudRate/dataBits/parity/stopBits land via `configure()`. */
+    await this.serial.configure({
       baudRate: 9600,
       dataBits: 8,
       parity: "even",
       stopBits: 1,
     });
+    await this.serial.open();
   }
 
   async close(): Promise<void> {
@@ -98,12 +102,13 @@ class WebDirectModeTransport implements DirectModeTransport {
     this.sessionOpts = { ...this.sessionOpts, baudRate: newBaud };
     this.session = new Ds2Session(this.sessionOpts);
     await this.serial.close();
-    await this.serial.open({
+    await this.serial.configure({
       baudRate: newBaud,
       dataBits: 8,
       parity: "even",
       stopBits: 1,
     });
+    await this.serial.open();
   }
 
   async setSessionTimeout(timeoutMs: number): Promise<void> {
