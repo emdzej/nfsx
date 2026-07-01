@@ -16,12 +16,10 @@
  *     DD = data bytes (LL count)
  *     CC = two's-complement checksum of all bytes excluding the colon and itself
  */
-import { Buffer } from 'node:buffer';
-
 export interface IntelHexBlock {
   /** Linear byte address (extended-segment/linear addressing applied). */
   address: number;
-  data: Buffer;
+  data: Uint8Array;
 }
 
 export interface IntelHexResult {
@@ -109,7 +107,7 @@ export function parseIntelHex(text: string): IntelHexResult {
     switch (type) {
       case 0x00: {
         const linearAddr = (extLinear << 16) | ((extSegment * 16) + addr);
-        blocks.push({ address: linearAddr, data: Buffer.from(data) });
+        blocks.push({ address: linearAddr, data });
         totalBytes += count;
         break;
       }
@@ -159,13 +157,13 @@ export function parseIntelHex(text: string): IntelHexResult {
  * buffer. Useful when the blocks are all consecutive (as in the MiniMon
  * loaders). Throws if there is a gap or overlap.
  */
-export function flattenIntelHex(result: IntelHexResult): Buffer {
-  if (result.blocks.length === 0) return Buffer.alloc(0);
+export function flattenIntelHex(result: IntelHexResult): Uint8Array {
+  if (result.blocks.length === 0) return new Uint8Array(0);
   const sorted = [...result.blocks].sort((a, b) => a.address - b.address);
   const baseAddr = sorted[0].address;
   const lastBlock = sorted[sorted.length - 1];
   const totalLen = lastBlock.address + lastBlock.data.length - baseAddr;
-  const out = Buffer.alloc(totalLen, 0xff);
+  const out = new Uint8Array(totalLen).fill(0xff);
   let cursor = baseAddr;
   for (const b of sorted) {
     if (b.address < cursor) {
@@ -174,7 +172,7 @@ export function flattenIntelHex(result: IntelHexResult): Buffer {
         0,
       );
     }
-    b.data.copy(out, b.address - baseAddr);
+    out.set(b.data, b.address - baseAddr);
     cursor = b.address + b.data.length;
   }
   return out;

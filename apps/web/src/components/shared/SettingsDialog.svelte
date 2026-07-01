@@ -11,6 +11,16 @@
     ServerConfigPanel,
     ConnectConfigPanel,
   } from "@emdzej/ediabasx-web-ui";
+  import {
+    clearInstallHandle,
+    saveInstallHandle,
+    clearRemoteInstallUrl,
+    loadRemoteInstallUrl,
+    isFileSystemAccessSupported,
+  } from "../../lib/install-storage";
+  import { clearInstallSource, setInstallSource } from "../../lib/bundled-install";
+  import { FsaDirectory } from "@emdzej/bimmerz-vfs";
+  import { discoverInstall } from "../../lib/install-discovery";
   import { app } from "../../lib/state.svelte";
   import { applyLoggerConfig } from "../../lib/logger-wiring";
   import { LOG_CATEGORIES as INPAX_LOG_CATEGORIES } from "@emdzej/inpax-interpreter";
@@ -54,10 +64,52 @@
     app.config = resetConfig();
   }
 
-  type Tab = "connection" | "developer";
+  const fsaSupported = isFileSystemAccessSupported();
+  const savedRemoteUrl = $derived(loadRemoteInstallUrl());
+
+  /**
+   * Reset every piece of app state that assumes an install is
+   * mounted. Keeps the checksum tab (which is install-independent)
+   * intact so the user doesn't lose an in-progress checksum session
+   * just because they changed folders.
+   */
+  function clearDerivedInstallState(): void {
+    app.install = null;
+    app.installSource = null;
+    app.oemView = "picker";
+  }
+
+  async function forgetInstall(): Promise<void> {
+    await clearInstallHandle();
+    clearRemoteInstallUrl();
+    clearInstallSource();
+    clearDerivedInstallState();
+    app.showSettings = false;
+  }
+
+  async function changeInstall(): Promise<void> {
+    try {
+      const handle = await window.showDirectoryPicker({ mode: "read" });
+      const install = await discoverInstall(new FsaDirectory(handle));
+      app.install = install;
+      await saveInstallHandle(handle);
+      // Picking a new folder supersedes any prior remote-URL pin.
+      clearRemoteInstallUrl();
+      setInstallSource({ source: "fs-access" });
+      app.installSource = { source: "fs-access" };
+      app.oemView = "browse";
+      app.showSettings = false;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      app.error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  type Tab = "connection" | "data" | "developer";
   let activeTab = $state<Tab>("connection");
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "connection", label: "Connection" },
+    { id: "data", label: "Data" },
     { id: "developer", label: "Developer" },
   ];
 </script>
@@ -121,6 +173,80 @@
           {:else}
             <InterfaceConfigPanel bind:config={app.config} />
           {/if}
+        {:else if activeTab === "data"}
+          <!-- Install root — surfaces the picked BMW Standard Tools
+               folder (or remote URL) and lets the user swap it or
+               forget the saved handle. The picker on first launch
+               handles first-time setup; this tab covers "install
+               moved" and "wrong folder picked" without dropping
+               back to the picker. -->
+          <div>
+            <span class="mb-1 block text-xs font-semibold uppercase tracking-wider text-faint">
+              Install
+            </span>
+            <div class="flex items-center justify-between gap-2 rounded border border-divider bg-base px-3 py-2">
+              <span class="min-w-0 truncate text-sm">
+                {#if app.install}
+                  <span class="font-mono text-foreground">{app.install.root.name}</span>
+                  <span class="ml-2 text-xs text-faint">
+                    · {app.installSource?.source ?? "local"}
+                  </span>
+                {:else if savedRemoteUrl}
+                  <span class="italic text-faint">
+                    Remote URL saved — <code class="font-mono">{savedRemoteUrl}</code>
+                  </span>
+                {:else}
+                  <span class="italic text-faint">(no install picked)</span>
+                {/if}
+              </span>
+              <div class="flex shrink-0 items-center gap-3">
+                {#if fsaSupported}
+                  <button
+                    class="rounded border border-rule px-2 py-0.5 text-xs text-muted hover:bg-elevated hover:text-foreground"
+                    onclick={changeInstall}
+                    title="Pick a different install folder (replaces the saved one)"
+                  >
+                    Change folder…
+                  </button>
+                {/if}
+                <button
+                  class="text-xs text-faint underline-offset-2 hover:text-muted hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                  onclick={forgetInstall}
+                  disabled={!app.install && !savedRemoteUrl}
+                  title="Drop the remembered install and return to the picker"
+                >
+                  Forget
+                </button>
+              </div>
+            </div>
+            {#if app.install}
+              <ul class="mt-2 space-y-0.5 text-xs text-faint">
+                <li>
+                  <code class="font-mono">EDIABAS/Ecu</code>:
+                  {#if app.install.ediabasEcu}
+                    <span class="text-muted">present</span>
+                  {:else}
+                    <span class="text-amber-700 dark:text-amber-400">missing — EDIABAS-driven flash paths won't resolve SGBDs</span>
+                  {/if}
+                </li>
+                <li>
+                  <code class="font-mono">EC-APPS/NFS/DATA</code>:
+                  {#if app.install.spDaten}
+                    <span class="text-muted">present</span>
+                  {:else}
+                    <span class="text-amber-700 dark:text-amber-400">missing — `nfsx flash` and `nfsx plan` need SP-Daten</span>
+                  {/if}
+                </li>
+              </ul>
+            {/if}
+            {#if !fsaSupported}
+              <p class="mt-2 text-xs text-faint">
+                Chromium-only. Use Chrome / Edge / Opera to pick a local
+                folder — or mount a remote URL from the install picker.
+              </p>
+            {/if}
+          </div>
+
         {:else if activeTab === "developer"}
           <fieldset class="space-y-2 rounded border border-divider bg-base p-3">
             <legend class="px-1 text-xs font-semibold uppercase tracking-wider text-faint">
@@ -184,7 +310,7 @@
           Reset to defaults
         </button>
         <button
-          class="rounded bg-accent px-3 py-1 text-sm font-medium text-zinc-950 hover:bg-accent-muted"
+          class="rounded bg-accent px-3 py-1 text-sm font-medium text-white hover:bg-accent-muted"
           onclick={close}
         >
           Done

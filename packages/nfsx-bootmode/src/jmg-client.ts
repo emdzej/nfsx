@@ -23,8 +23,7 @@
  * DQ7 from segment 0x08. 512 KB = 32 pages of 16 KB each
  * (pages 0x00–0x1F).
  */
-import { Buffer } from 'node:buffer';
-import type { BootmodeTransport } from './transport.js';
+import type { BootmodeTransport } from './transport-interface.js';
 
 export const JMG_ACK = 0xc5;
 
@@ -51,14 +50,14 @@ export class JmgClient {
   constructor(private readonly transport: BootmodeTransport) {}
 
   private async sendCmd(cmd: number): Promise<void> {
-    await this.transport.write(Buffer.from([cmd]));
+    await this.transport.write(new Uint8Array([cmd]));
   }
 
   private async expectAck(stage: string, timeoutMs = 5000): Promise<void> {
     const resp = await this.transport.read(1, timeoutMs);
     if (resp[0] !== JMG_ACK) {
       throw new JmgClientError(
-        `expected ack 0x${JMG_ACK.toString(16)}, got 0x${resp[0].toString(16)}`,
+        `expected ack 0x${JMG_ACK.toString(16)}, got 0x${resp[0]!.toString(16)}`,
         stage,
       );
     }
@@ -83,26 +82,26 @@ export class JmgClient {
   }
 
   /**
-   * Read one 16 KB page (0x00–0x1F). Returns a 16384-byte Buffer.
+   * Read one 16 KB page (0x00–0x1F). Returns a 16384-byte Uint8Array.
    * The blob sends 8192 little-endian words.
    */
-  async readPage(page: number): Promise<Buffer> {
+  async readPage(page: number): Promise<Uint8Array> {
     if (page < 0 || page >= JMG_TOTAL_PAGES) {
       throw new JmgClientError(`page ${page} out of range 0..${JMG_TOTAL_PAGES - 1}`, 'read');
     }
     await this.sendCmd(CMD_READ);
     // No initial ack — blob goes straight to waiting for the page byte.
-    await this.transport.write(Buffer.from([page]));
+    await this.transport.write(new Uint8Array([page]));
     const data = await this.transport.read(JMG_PAGE_SIZE, 30_000);
     return data;
   }
 
   /**
-   * Program one 16 KB page (0x00–0x1F) from a 16384-byte Buffer.
+   * Program one 16 KB page (0x00–0x1F) from a 16384-byte Uint8Array.
    * The blob expects 8192 × (lo, hi) pairs and sends 0xC5 every
    * 128 bytes as flow control.
    */
-  async programPage(page: number, data: Buffer): Promise<void> {
+  async programPage(page: number, data: Uint8Array): Promise<void> {
     if (page < 0 || page >= JMG_TOTAL_PAGES) {
       throw new JmgClientError(`page ${page} out of range 0..${JMG_TOTAL_PAGES - 1}`, 'program');
     }
@@ -114,7 +113,7 @@ export class JmgClient {
     }
     await this.sendCmd(CMD_PROGRAM);
     // No initial ack — blob goes straight to waiting for the page byte.
-    await this.transport.write(Buffer.from([page]));
+    await this.transport.write(new Uint8Array([page]));
 
     // Send 16384 bytes in 128-byte bursts, waiting for 0xC5 ack after each.
     const BURST = 128;

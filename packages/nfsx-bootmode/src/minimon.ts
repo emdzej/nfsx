@@ -14,8 +14,8 @@
  * — MiniMon parses the extra byte as the start of the length field
  * and the state machine diverges.
  */
-import { Buffer } from 'node:buffer';
-import type { BootmodeTransport } from './transport.js';
+import type { BootmodeTransport } from './transport-interface.js';
+import { concatU8, le16, le24 } from './bytes.js';
 
 export const A_ACK1 = 0xaa;
 export const A_ACK2 = 0xea;
@@ -40,18 +40,10 @@ export class MinimonError extends Error {
   }
 }
 
-/** 24-bit little-endian address (MiniMon protocol — NOT 32-bit). */
-function leAddr(addr: number): Buffer {
-  return Buffer.from([
-    addr & 0xff,
-    (addr >> 8) & 0xff,
-    (addr >> 16) & 0xff,
-  ]);
-}
-
-function leWord(w: number): Buffer {
-  return Buffer.from([w & 0xff, (w >> 8) & 0xff]);
-}
+// 24-bit / 16-bit little-endian encoders live in `bytes.ts` as
+// `le24` / `le16`. Local aliases keep this file's call sites tight.
+const leAddr = le24;
+const leWord = le16;
 
 async function expectByte(
   transport: BootmodeTransport,
@@ -91,46 +83,46 @@ export class MinimonClient {
    * "MiniMon, are you alive?" probe that primes the comms state.
    */
   async testComm(): Promise<void> {
-    await this.transport.write(Buffer.from([C_TEST_COMM]));
+    await this.transport.write(new Uint8Array([C_TEST_COMM]));
     await expectByte(this.transport, A_ACK1, 'testComm', 'A_ACK1', this.ackTimeoutMs);
     await expectByte(this.transport, A_ACK2, 'testComm', 'A_ACK2', this.ackTimeoutMs);
   }
 
   /** Read one 16-bit word from `addr`. */
   async readWord(addr: number): Promise<number> {
-    await this.transport.write(Buffer.from([C_READ_WORD]));
+    await this.transport.write(new Uint8Array([C_READ_WORD]));
     await expectByte(this.transport, A_ACK1, 'readWord', 'A_ACK1', this.ackTimeoutMs);
     await this.transport.write(leAddr(addr));
     const data = await this.transport.read(2, this.readTimeoutMs);
     await expectByte(this.transport, A_ACK2, 'readWord', 'A_ACK2', this.ackTimeoutMs);
-    return data[0] | (data[1] << 8);
+    return data[0]! | (data[1]! << 8);
   }
 
   /** Write one 16-bit word to `addr`. */
   async writeWord(addr: number, value: number): Promise<void> {
-    await this.transport.write(Buffer.from([C_WRITE_WORD]));
+    await this.transport.write(new Uint8Array([C_WRITE_WORD]));
     await expectByte(this.transport, A_ACK1, 'writeWord', 'A_ACK1', this.ackTimeoutMs);
-    await this.transport.write(Buffer.concat([leAddr(addr), leWord(value)]));
+    await this.transport.write(concatU8([leAddr(addr), leWord(value)]));
     await expectByte(this.transport, A_ACK2, 'writeWord', 'A_ACK2', this.ackTimeoutMs);
   }
 
   /** Read `length` bytes from `addr`. */
-  async readBlock(addr: number, length: number): Promise<Buffer> {
-    if (length === 0) return Buffer.alloc(0);
-    await this.transport.write(Buffer.from([C_READ_BLOCK]));
+  async readBlock(addr: number, length: number): Promise<Uint8Array> {
+    if (length === 0) return new Uint8Array(0);
+    await this.transport.write(new Uint8Array([C_READ_BLOCK]));
     await expectByte(this.transport, A_ACK1, 'readBlock', 'A_ACK1', this.ackTimeoutMs);
-    await this.transport.write(Buffer.concat([leAddr(addr), leWord(length)]));
+    await this.transport.write(concatU8([leAddr(addr), leWord(length)]));
     const data = await this.transport.read(length, Math.max(this.readTimeoutMs, length * 2));
     await expectByte(this.transport, A_ACK2, 'readBlock', 'A_ACK2', this.ackTimeoutMs);
     return data;
   }
 
   /** Write `data` to `addr`. */
-  async writeBlock(addr: number, data: Buffer): Promise<void> {
+  async writeBlock(addr: number, data: Uint8Array): Promise<void> {
     if (data.length === 0) return;
-    await this.transport.write(Buffer.from([C_WRITE_BLOCK]));
+    await this.transport.write(new Uint8Array([C_WRITE_BLOCK]));
     await expectByte(this.transport, A_ACK1, 'writeBlock', 'A_ACK1', this.ackTimeoutMs);
-    await this.transport.write(Buffer.concat([leAddr(addr), leWord(data.length), data]));
+    await this.transport.write(concatU8([leAddr(addr), leWord(data.length), data]));
     await expectByte(this.transport, A_ACK2, 'writeBlock', 'A_ACK2', this.ackTimeoutMs);
   }
 
@@ -147,25 +139,25 @@ export class MinimonClient {
     if (registers.length !== 8) {
       throw new MinimonError(`callFunction requires exactly 8 register words`, 'callFunction');
     }
-    await this.transport.write(Buffer.from([C_CALL_FUNCTION]));
+    await this.transport.write(new Uint8Array([C_CALL_FUNCTION]));
     await expectByte(this.transport, A_ACK1, 'callFunction', 'A_ACK1', this.ackTimeoutMs);
-    const regBytes = Buffer.concat(registers.map((r) => leWord(r)));
-    await this.transport.write(Buffer.concat([leAddr(address), regBytes]));
+    const regBytes = concatU8(registers.map((r) => leWord(r)));
+    await this.transport.write(concatU8([leAddr(address), regBytes]));
     // Wait for completion, then read returned regs + ACK2.
     const out = await this.transport.read(16, timeoutMs);
     await expectByte(this.transport, A_ACK2, 'callFunction', 'A_ACK2', timeoutMs);
     const result: number[] = [];
-    for (let i = 0; i < 8; i++) result.push(out[i * 2] | (out[i * 2 + 1] << 8));
+    for (let i = 0; i < 8; i++) result.push(out[i * 2]! | (out[i * 2 + 1]! << 8));
     return result;
   }
 
   /** Ask the loader to compute a checksum (Minimon-internal) over a region. */
   async getChecksum(addr: number, length: number): Promise<number> {
-    await this.transport.write(Buffer.from([C_GETCHECKSUM]));
+    await this.transport.write(new Uint8Array([C_GETCHECKSUM]));
     await expectByte(this.transport, A_ACK1, 'getChecksum', 'A_ACK1', this.ackTimeoutMs);
-    await this.transport.write(Buffer.concat([leAddr(addr), leWord(length)]));
+    await this.transport.write(concatU8([leAddr(addr), leWord(length)]));
     const data = await this.transport.read(2, Math.max(this.readTimeoutMs, length * 2));
     await expectByte(this.transport, A_ACK2, 'getChecksum', 'A_ACK2', this.ackTimeoutMs);
-    return data[0] | (data[1] << 8);
+    return data[0]! | (data[1]! << 8);
   }
 }

@@ -104,7 +104,7 @@
 
       <footer class="flex items-center justify-end border-t border-divider bg-elevated/50 px-4 py-2">
         <button
-          class="rounded bg-accent px-3 py-1 text-sm font-medium text-zinc-950 hover:bg-accent-muted"
+          class="rounded bg-accent px-3 py-1 text-sm font-medium text-white hover:bg-accent-muted"
           onclick={close}
         >
           Done

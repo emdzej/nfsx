@@ -1,9 +1,13 @@
 /**
  * @emdzej/nfsx-bootmode — bootmode (C167 BSL) flashing for BMW MS42/MS43.
  *
- * High-level API: `readFullFlash`, `writeFullFlash`, `probeBootmode`.
- * Low-level pieces (`MinimonClient`, `performHandshake`,
- * `NodeBootmodeTransport`) are also exported for advanced use.
+ * Browser-safe surface. High-level API: `readFullFlash`, `writeFullFlash`,
+ * `probeBootmode`. The caller passes in an already-opened `BootmodeTransport`
+ * plus a `BundleLoader` supplying the MiniMon / stub blobs.
+ *
+ * For the Node convenience — `NodeBootmodeTransport` + FS-backed bundle
+ * loader (`createNodeBundleLoader`) — import from
+ * `@emdzej/nfsx-bootmode/node`.
  */
 export {
   readFullFlash,
@@ -41,11 +45,10 @@ export {
 } from './minimon.js';
 
 export {
-  NodeBootmodeTransport,
   MockBootmodeTransport,
   type BootmodeTransport,
   type BootmodeTransportConfig,
-} from './transport.js';
+} from './transport-interface.js';
 
 export {
   parseIntelHex,
@@ -56,15 +59,13 @@ export {
 } from './intel-hex.js';
 
 export {
-  verifyBundleIntegrity,
   assertBundleIntegrity,
-  loadBundleManifest,
-  readBundledBlob,
+  type BundleLoader,
   type BundleBlob,
   type BundleManifest,
   type BlobIntegrity,
   type IntegrityReport,
-} from './manifest.js';
+} from './bundle-loader.js';
 
 export {
   JmgClient,
@@ -77,3 +78,9 @@ export {
   JMG_PAGE_SIZE,
   JMG_TOTAL_PAGES,
 } from './jmg-client.js';
+
+export {
+  concatU8,
+  le16,
+  le24,
+} from './bytes.js';

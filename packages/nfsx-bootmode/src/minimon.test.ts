@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { Buffer } from 'node:buffer';
-import { MockBootmodeTransport } from './transport.js';
+import { MockBootmodeTransport } from './transport-interface.js';
 import { MinimonClient, A_ACK1, A_ACK2, C_READ_WORD, C_WRITE_BLOCK } from './minimon.js';
 
 describe('MinimonClient framing (mock transport)', () => {
@@ -33,7 +32,7 @@ describe('MinimonClient framing (mock transport)', () => {
 
   it('writeBlock streams the data after the header', async () => {
     mock.enqueueResponse([A_ACK1, A_ACK2]);
-    const data = Buffer.from([0x11, 0x22, 0x33, 0x44]);
+    const data = new Uint8Array([0x11, 0x22, 0x33, 0x44]);
     await client.writeBlock(0xfa0000, data);
     expect(mock.writtenBytes).toEqual([
       C_WRITE_BLOCK,

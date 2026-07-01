@@ -67,7 +67,7 @@
 
   <div class="mt-4">
     <button
-      class="rounded bg-accent px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-accent-muted"
+      class="rounded bg-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-accent-muted"
       onclick={pickFile}
     >
       Pick .bin file

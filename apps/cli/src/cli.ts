@@ -54,7 +54,7 @@ const program = new Command();
 program
   .name('nfsx')
   .description('BMW NFS / WinKFP reconstruction CLI — SP-Daten lookups, IPO dispatch, flash orchestration.')
-  .version('0.2.0');
+  .version('0.3.0');
 
 // ── configure ───────────────────────────────────────────────────────
 program
@@ -235,8 +235,8 @@ bootmode
   .command('verify-bundle')
   .description('SHA-256 verify the bundled MiniMon blobs (LOADK / MINIMONK / A29F400B).')
   .option('--json', 'machine-readable output', false)
-  .action((opts: { json: boolean }) => {
-    const code = runBootmodeVerifyBundle(opts);
+  .action(async (opts: { json: boolean }) => {
+    const code = await runBootmodeVerifyBundle(opts);
     if (code !== 0) process.exit(code);
   });
 

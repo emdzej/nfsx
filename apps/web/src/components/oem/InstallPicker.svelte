@@ -7,8 +7,9 @@
    * ZIP-import flow.
    */
   import { onMount } from "svelte";
-  import { app, type NfsxInstall } from "../../lib/state.svelte";
-  import { FsaDirectory, HttpDirectory, drillPath, type VirtualDirectory } from "@emdzej/bimmerz-vfs";
+  import { app } from "../../lib/state.svelte";
+  import { FsaDirectory, HttpDirectory, type VirtualDirectory } from "@emdzej/bimmerz-vfs";
+  import { discoverInstall } from "../../lib/install-discovery";
   import {
     isFileSystemAccessSupported,
     loadInstallHandle,
@@ -70,22 +71,6 @@
     }
     savedHandle = handle;
   });
-
-  /**
-   * Discover the install layout under `root`. nfsx needs only two
-   * subdirs: `EDIABAS/Ecu` (SGBDs for the flash IPO's
-   * apiJob/apiJobData dispatches) and `EC-APPS/NFS/DATA` (SP-Daten
-   * files for the per-ECU `.0PA`/`.0DA` records the IPO reads via
-   * `fileopen` syscalls). Both are optional — directmode flash
-   * works without either, but the EDIABAS path needs Ecu/.
-   */
-  async function discoverInstall(root: VirtualDirectory): Promise<NfsxInstall> {
-    const [ediabasEcu, spDaten] = await Promise.all([
-      drillPath(root, "EDIABAS", "Ecu"),
-      drillPath(root, "EC-APPS", "NFS", "DATA"),
-    ]);
-    return { root, ediabasEcu, spDaten };
-  }
 
   async function mountInstall(root: VirtualDirectory): Promise<void> {
     const install = await discoverInstall(root);
@@ -198,7 +183,7 @@
   {:else if savedHandle && !savedRemoteUrl}
     <div class="flex flex-col items-center gap-3">
       <button
-        class="rounded bg-accent px-6 py-3 font-medium text-zinc-950 transition hover:bg-accent-muted"
+        class="rounded bg-accent px-6 py-3 font-medium text-white transition hover:bg-accent-muted"
         onclick={continueLast}
       >
         Continue with {savedHandle.name}
@@ -265,7 +250,7 @@
             onkeydown={(e) => e.key === 'Enter' && submitRemote()}
           />
           <button
-            class="rounded bg-accent px-4 py-1.5 text-sm font-medium text-zinc-950 hover:bg-accent-muted disabled:cursor-not-allowed disabled:opacity-50"
+            class="rounded bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-accent-muted disabled:cursor-not-allowed disabled:opacity-50"
             disabled={!remoteUrl.trim()}
             onclick={submitRemote}
           >

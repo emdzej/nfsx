@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';

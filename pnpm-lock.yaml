@@ -165,6 +165,9 @@ importers:
       '@emdzej/j2534-webserial':
         specifier: ^0.3.0
         version: 0.3.0
+      '@emdzej/nfsx-bootmode':
+        specifier: workspace:*
+        version: link:../../packages/nfsx-bootmode
       '@emdzej/nfsx-data-files':
         specifier: workspace:*
         version: link:../../packages/data-files

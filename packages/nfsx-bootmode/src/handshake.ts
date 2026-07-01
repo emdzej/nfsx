@@ -20,8 +20,7 @@
  * After step 7 the ECU runs MiniMon and speaks the command protocol in
  * `minimon.ts`.
  */
-import { Buffer } from 'node:buffer';
-import type { BootmodeTransport } from './transport.js';
+import type { BootmodeTransport } from './transport-interface.js';
 
 export const MINIMON_LOADER_STARTED = 0x01;
 export const MINIMON_APPLICATION_STARTED = 0x03;
@@ -30,9 +29,9 @@ export interface HandshakeOptions {
   /** Expected BSL identification byte (per-MCU). 0xC5 for C167CR (MS42/MS43). */
   expectedIdByte: number;
   /** Primary loader bytes (must be exactly 32). */
-  primaryLoader: Buffer;
+  primaryLoader: Uint8Array;
   /** Secondary loader bytes (typically Minimon, ~394 bytes for the K-line variant). */
-  secondaryLoader: Buffer;
+  secondaryLoader: Uint8Array;
   /** Acknowledge byte expected after the primary takes over. Default 0x01. */
   primaryAck?: number;
   /** Acknowledge byte expected after the secondary takes over. Default 0x03. */
@@ -72,7 +71,7 @@ export async function performHandshake(
   // Step 1-2: send auto-baud calibration byte. Transport consumes the
   // K-line echo of the 0x00 itself.
   transport.flushInput();
-  await transport.write(Buffer.from([0x00]));
+  await transport.write(new Uint8Array([0x00]));
 
   // Step 3: BSL identification byte.
   let idByte: number;
@@ -128,7 +127,7 @@ export async function performHandshake(
 
 async function uploadEchoed(
   transport: BootmodeTransport,
-  data: Buffer,
+  data: Uint8Array,
   stage: 'primary' | 'secondary',
   interByteDelayMs: number,
   _byteTimeoutMs: number,

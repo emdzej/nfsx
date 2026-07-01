@@ -91,7 +91,7 @@
           Cancel
         </button>
         <button
-          class="rounded bg-accent px-3 py-1 text-sm font-medium text-zinc-950 hover:bg-accent-muted disabled:cursor-not-allowed disabled:opacity-50"
+          class="rounded bg-accent px-3 py-1 text-sm font-medium text-white hover:bg-accent-muted disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!sessionToken.trim()}
           onclick={submit}
         >

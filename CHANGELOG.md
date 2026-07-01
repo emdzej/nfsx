@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.3.0 — MS45 Flashing, Browser Bootmode
+
+Fourth flash path (BMW MS45.0 / MS45.1 DMEs over the EDIABAS `D_Motor` SGBD), plus a functional bootmode flow in the web app. Bootmode package is now browser-safe end to end.
+
+### @emdzej/nfsx-ms45 (new)
+
+Clean-room reimplementation of terraphantm/MS45-Flasher for BMW MS45.0 (E46, DS2) and MS45.1 (E60/E65, BMW-FAST) DMEs. Credit: hassmaschine (DME disassembly), terraphantm (published RSA constants + reference flasher), bimmerlabs.
+
+- Offline BIN helpers: CRC-32/MPEG-2 checksum verify/rewrite (parameter blob @ 0x100, dual program checksums @ 0x60000/0x60340), RSA-512 firmware signing verify/rewrite (parameter @ 0x174, program @ 0x60074) spanning external + MPC flash
+- Security-access payload builder (level-3, RSA-512 + MD5 over `userID || serial || seed`)
+- `Ms45Session` — probe / read / write choreography over the `IEdiabas.job(...)` primitive; handles the DS2 baud raise (MS45.0 → 115200) vs. BMW-FAST native path, `normaler_datenverkehr` traffic gating, `FLASH_SIGNATUR_PRUEFEN` post-write check
+- Region tables, segment-header parsers (BE u32), address ↔ file-offset math for external @ 0xFFF00000 and MPC @ 0x0
+- `MockIEdiabas` for downstream testing
+- 121 tests across regions, checksum, signature, auth, ident, session-control, auth-flow, read-memory, erase, flash-block, verify, and full session orchestration (including end-to-end sign+CRC round-trip on the reassembled wire payload)
+
+### @emdzej/nfsx-cli
+
+- `nfsx ms45 probe` — DME identity: variant (MS45.0/MS45.1), VIN, HW/SW ref, diag protocol
+- `nfsx ms45 read -m tune|full` — dump the 116 KB tune blob, or the 1 MB external flash + 448 KB MPC flash (`_MPC` suffix)
+- `nfsx ms45 write -m tune|full` — erase + CRC-32/MPEG-2 recompute + RSA-512 sign + write + verify; `--skip-checksum`, `--skip-sign`, `--skip-verify`, `--yes` (skip confirmation)
+- `nfsx ms45 checksum` — offline CRC-32 + RSA-sig verify, `--rewrite` for in-place recompute (or `-o` output), `--json`
+- ECU-dir resolution: `--ecu-dir` → ediabasx `sgbdPath` → `<sp-daten>/ecu` fallback
+- Bootmode CLI updated for the new package API — constructs `NodeBootmodeTransport` + `createNodeBundleLoader()` and passes them to session functions
+
+### @emdzej/nfsx-bootmode (breaking)
+
+- **`Buffer` → `Uint8Array`** across every source file — the package is now browser-safe (no `node:buffer` dependency in the shared code path)
+- **Injectable transport + bundle loader**: `probeBootmode`, `readFullFlash`, `writeFullFlash`, `readFullFlashJmg`, `writeFullFlashJmg` now take `{ transport, bundle, ... }`. The caller constructs the transport, calls `open()`, and closes when done — the session functions no longer own the wire lifecycle
+- New `BundleLoader` interface: async `getManifest()` / `getBlob(name)` / `verifyIntegrity()`. Implementations pick their preferred hash primitive (Node `crypto.createHash` or Web Crypto)
+- New `bytes.ts` helpers (`concatU8`, `le16`, `le24`)
+- Package split: browser-safe surface at `.` (interface + session + protocol helpers + `MockBootmodeTransport`), Node convenience at `./node` (`NodeBootmodeTransport`, `createNodeBundleLoader`, sync FS helpers), bundled blobs at `./bundled/*`
+
+### @emdzej/nfsx-web
+
+- **Functional BootmodeView**: Connect K-line (baud selector), Verify bundle (Web Crypto SHA-256 report with per-blob pass/fail), Probe (BSL handshake + testComm), Read (dumps full 512 KB `.bin`), Write (file picker + `--skip-verify` + `--calculate-checksum` MS4x CRC-16 recompute), progress bar, error banner, integrity report table
+- `WebBootmodeTransport` — Web Serial-backed `BootmodeTransport` with its own background reader loop for sync `flushInput()` support (8N1, echo-verify)
+- `createWebBundleLoader()` — Vite `?url` imports of the 7 hex blobs (LOADK / MINIMONK / JMG_LOADK / JMG_BLOB / ERASE_STUB / PROGRAMMER_STUB / PROBE_STUB); small blobs are inlined as base64 data URLs, no extra network round trips
+- `bootmode-session.svelte.ts` — Svelte 5 `$state` module mirroring `directmode-session.svelte.ts` shape
+
+### Docs
+
+- `docs/ms45-flashing.md` — full MS45 protocol reference: memory model (dual flash spaces), SGBD job choreography, RSA-512 level-3 security access, CRC-32/MPEG-2 checksums, firmware signing layout, command reference, credits
+- README updated with MS45 as the fourth flash path + package table entry + docs link
+
+### Web UX polish
+
+- Primary-button contrast fix — swapped `text-zinc-950` (near-black on BMW-blue accent, ~1.6:1 on hover) to `text-white` across 7 button/tab call sites
+- `Settings › Data` tab — install summary (root name + source pill + `EDIABAS/Ecu` and `EC-APPS/NFS/DATA` presence), Change folder / Forget actions, mirroring the ncsx pattern. Discovery deduped into a shared `install-discovery.ts` used by both `InstallPicker` and `SettingsDialog`
+- Top-bar right cluster (install-pill / mode-pill / Settings / Connect) is now OEM-scope-only — hidden in Flashing where the sub-views (directmode / bootmode / checksum) manage their own K-line lifecycles independently of the shared ediabasx client
+
 ## 0.2.0 — Firmware Tune, Browser Directmode, Buffer-free Directmode
 
 Offline firmware BIN editing (VIN, immobilizer, UIF), browser-safe directmode package, and a functional DirectmodeView in the web app.

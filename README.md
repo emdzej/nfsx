@@ -5,7 +5,7 @@ programming toolchain, in the same family as
 [`ncsx`](https://github.com/emdzej/ncsx) (NCS Expert / coding) and
 [`inpax`](https://github.com/emdzej/inpax) (INPA / diagnostics).
 
-> **Status**: pre-release `0.2.0`. Four flash paths are implemented:
+> **Status**: pre-release `0.3.0`. Four flash paths are implemented:
 >
 > - **IPO-driven** (`nfsx flash`) — bench-verified against GS20 (HWNR
 >   7544721) via K+DCAN. Real flash succeeded.

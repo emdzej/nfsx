@@ -20,11 +20,18 @@ import {
   readFullFlashJmg,
   writeFullFlashJmg,
   probeBootmode,
-  verifyBundleIntegrity,
   describeBundle,
   C167CR_BSL_ID,
   type BootmodeProgress,
+  type BootmodeSessionConfig,
+  type BootmodeTransport,
+  type BundleLoader,
 } from '@emdzej/nfsx-bootmode';
+import {
+  NodeBootmodeTransport,
+  createNodeBundleLoader,
+  verifyBundleIntegrity,
+} from '@emdzej/nfsx-bootmode/node';
 import {
   verifyMs4xChecksums,
   rewriteMs4xChecksums,
@@ -65,19 +72,42 @@ function makeProgressPrinter(json: boolean): (p: BootmodeProgress) => void {
   };
 }
 
+interface OpenedBootmode {
+  transport: BootmodeTransport;
+  bundle: BundleLoader;
+  cfg: BootmodeSessionConfig;
+  cleanup: () => Promise<void>;
+}
+
+async function openBootmode(opts: BootmodeBaseOptions): Promise<OpenedBootmode> {
+  const transport = new NodeBootmodeTransport({
+    device: opts.device,
+    baud: opts.baud,
+    defaultTimeoutMs: 5000,
+  });
+  await transport.open();
+  const bundle = createNodeBundleLoader();
+  return {
+    transport,
+    bundle,
+    cfg: {
+      transport,
+      bundle,
+      expectedBslId: opts.bslId,
+      loaderInterByteDelayMs: opts.loaderInterByteDelayMs,
+    },
+    cleanup: async () => {
+      await transport.close();
+    },
+  };
+}
+
 export async function runBootmodeProbe(opts: BootmodeBaseOptions): Promise<number> {
   const onProgress = makeProgressPrinter(opts.json);
+  let opened: OpenedBootmode | undefined;
   try {
-    const id = await probeBootmode(
-      {
-        device: opts.device,
-        baud: opts.baud,
-        defaultTimeoutMs: 2000,
-        expectedBslId: opts.bslId,
-        loaderInterByteDelayMs: opts.loaderInterByteDelayMs,
-      },
-      onProgress,
-    );
+    opened = await openBootmode(opts);
+    const id = await probeBootmode(opened.cfg, onProgress);
     if (opts.json) {
       process.stdout.write(JSON.stringify(id) + '\n');
     } else {
@@ -87,22 +117,19 @@ export async function runBootmodeProbe(opts: BootmodeBaseOptions): Promise<numbe
   } catch (err) {
     process.stderr.write(chalk.red(`error: ${(err as Error).message}\n`));
     return 1;
+  } finally {
+    if (opened) await opened.cleanup().catch(() => {});
   }
 }
 
 export async function runBootmodeRead(opts: BootmodeReadOptions): Promise<number> {
   const onProgress = makeProgressPrinter(opts.json);
+  let opened: OpenedBootmode | undefined;
   try {
-    const cfg = {
-      device: opts.device,
-      baud: opts.baud,
-      defaultTimeoutMs: 5000,
-      expectedBslId: opts.bslId,
-      loaderInterByteDelayMs: opts.loaderInterByteDelayMs,
-    };
+    opened = await openBootmode(opts);
     const image = opts.alt
-      ? await readFullFlashJmg(cfg, onProgress)
-      : await readFullFlash(cfg, onProgress);
+      ? await readFullFlashJmg(opened.cfg, onProgress)
+      : await readFullFlash(opened.cfg, onProgress);
     writeFileSync(resolve(opts.output), image);
     if (opts.json) {
       process.stdout.write(JSON.stringify({ written: opts.output, bytes: image.length }) + '\n');
@@ -113,13 +140,16 @@ export async function runBootmodeRead(opts: BootmodeReadOptions): Promise<number
   } catch (err) {
     process.stderr.write(chalk.red(`error: ${(err as Error).message}\n`));
     return 1;
+  } finally {
+    if (opened) await opened.cleanup().catch(() => {});
   }
 }
 
 export async function runBootmodeWrite(opts: BootmodeWriteOptions): Promise<number> {
-  let image: Buffer;
+  let image: Uint8Array;
   try {
-    image = readFileSync(resolve(opts.input));
+    const buf = readFileSync(resolve(opts.input));
+    image = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   } catch (err) {
     process.stderr.write(chalk.red(`error reading input: ${(err as Error).message}\n`));
     return 2;
@@ -154,18 +184,13 @@ export async function runBootmodeWrite(opts: BootmodeWriteOptions): Promise<numb
   }
 
   const onProgress = makeProgressPrinter(opts.json);
+  let opened: OpenedBootmode | undefined;
   try {
-    const cfg = {
-      device: opts.device,
-      baud: opts.baud,
-      defaultTimeoutMs: 5000,
-      expectedBslId: opts.bslId,
-      loaderInterByteDelayMs: opts.loaderInterByteDelayMs,
-    };
+    opened = await openBootmode(opts);
     const flashOpts = { skipVerify: opts.skipVerify };
     const result = opts.alt
-      ? await writeFullFlashJmg(image, cfg, flashOpts, onProgress)
-      : await writeFullFlash(image, cfg, flashOpts, onProgress);
+      ? await writeFullFlashJmg(image, opened.cfg, flashOpts, onProgress)
+      : await writeFullFlash(image, opened.cfg, flashOpts, onProgress);
     if (opts.json) {
       process.stdout.write(JSON.stringify({ verified: result.verified }) + '\n');
     } else {
@@ -176,16 +201,18 @@ export async function runBootmodeWrite(opts: BootmodeWriteOptions): Promise<numb
   } catch (err) {
     process.stderr.write(chalk.red(`error: ${(err as Error).message}\n`));
     return 1;
+  } finally {
+    if (opened) await opened.cleanup().catch(() => {});
   }
 }
 
-export function runBootmodeVerifyBundle(opts: { json: boolean }): number {
+export async function runBootmodeVerifyBundle(opts: { json: boolean }): Promise<number> {
   const report = verifyBundleIntegrity();
   if (opts.json) {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
     return report.allValid ? 0 : 1;
   }
-  const bundle = describeBundle();
+  const bundle = await describeBundle(createNodeBundleLoader());
   process.stdout.write(chalk.bold(`Source:  ${bundle.source}\n`));
   process.stdout.write(chalk.bold(`License: ${bundle.license}\n`));
   process.stdout.write('\n');

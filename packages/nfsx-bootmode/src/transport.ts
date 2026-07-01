@@ -1,45 +1,23 @@
 /**
- * Serial transport for bootmode flashing.
+ * Node.js `BootmodeTransport` implementation over `serialport`.
  *
- * Bootmode uses 8N1 (vs DS2's 8E1) at a user-chosen baud rate. The C167
- * BSL auto-bauds off the first 0x00 byte, so any rate the cable supports
- * is fine. After the handshake, byte-by-byte echo verification is the
- * caller's responsibility — this layer just delivers raw bytes.
+ * Kept in its own file so the browser code path (which imports
+ * `transport-interface.ts` directly) never pulls in `node:buffer` or
+ * `serialport`. Vite won't try to bundle those dependencies for the
+ * browser build — they only reach the bundler via the Node subpath
+ * entry (`@emdzej/nfsx-bootmode/node`).
  */
 import { Buffer } from 'node:buffer';
 import { SerialPort } from 'serialport';
-
-export interface BootmodeTransportConfig {
-  device: string;
-  baud: number;
-  /** Default read-timeout per request, in milliseconds. */
-  defaultTimeoutMs: number;
-  /**
-   * If true, every `write()` automatically reads back the same number
-   * of bytes and verifies them as echo. Required for raw K-line cables
-   * (FTDI K+DCAN) whose transceiver loops every TX byte back to RX.
-   * Default: true.
-   */
-  hasAdapterEcho?: boolean;
-  /** Per-byte echo read timeout (ms). Default: 250. */
-  echoTimeoutMs?: number;
-}
-
-export interface BootmodeTransport {
-  open(): Promise<void>;
-  close(): Promise<void>;
-  /** Write all bytes; resolves after the OS has accepted them. */
-  write(data: Buffer): Promise<void>;
-  /** Wait until exactly `count` bytes have arrived, or timeout. */
-  read(count: number, timeoutMs?: number): Promise<Buffer>;
-  /** Drop any unread bytes from the input buffer. */
-  flushInput(): void;
-}
+import type {
+  BootmodeTransport,
+  BootmodeTransportConfig,
+} from './transport-interface.js';
 
 interface PendingRead {
   count: number;
   collected: number[];
-  resolve: (b: Buffer) => void;
+  resolve: (b: Uint8Array) => void;
   reject: (e: Error) => void;
   timer: NodeJS.Timeout;
 }
@@ -53,6 +31,9 @@ export class NodeBootmodeTransport implements BootmodeTransport {
   private readonly echoTimeoutMs: number;
 
   constructor(config: BootmodeTransportConfig) {
+    if (!config.device) {
+      throw new Error('NodeBootmodeTransport requires `device` in config');
+    }
     this.config = config;
     this.hasAdapterEcho = config.hasAdapterEcho ?? true;
     this.echoTimeoutMs = config.echoTimeoutMs ?? 250;
@@ -62,7 +43,7 @@ export class NodeBootmodeTransport implements BootmodeTransport {
     return new Promise((resolve, reject) => {
       const port = new SerialPort(
         {
-          path: this.config.device,
+          path: this.config.device!,
           baudRate: this.config.baud,
           dataBits: 8,
           parity: 'none',
@@ -77,7 +58,7 @@ export class NodeBootmodeTransport implements BootmodeTransport {
         },
       );
       port.on('data', (chunk: Buffer) => {
-        for (let i = 0; i < chunk.length; i++) this.buffer.push(chunk[i]);
+        for (let i = 0; i < chunk.length; i++) this.buffer.push(chunk[i]!);
         this.serviceRead();
       });
       port.on('error', (err) => {
@@ -103,12 +84,15 @@ export class NodeBootmodeTransport implements BootmodeTransport {
     });
   }
 
-  async write(data: Buffer): Promise<void> {
+  async write(data: Uint8Array): Promise<void> {
     if (!this.port || !this.port.isOpen) {
       throw new Error('transport not open');
     }
+    // `Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength)` wraps the
+    // same memory — no copy — and satisfies serialport's Buffer arg.
+    const nodeBuf = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     await new Promise<void>((resolve, reject) => {
-      this.port!.write(data, (err) => {
+      this.port!.write(nodeBuf, (err) => {
         if (err) return reject(err);
         this.port!.drain((drainErr) => {
           if (drainErr) reject(drainErr);
@@ -124,10 +108,10 @@ export class NodeBootmodeTransport implements BootmodeTransport {
       for (let i = 0; i < data.length; i++) {
         if (echo[i] !== data[i]) {
           throw new Error(
-            `echo mismatch at byte ${i}/${data.length}: TX=0x${data[i]
+            `echo mismatch at byte ${i}/${data.length}: TX=0x${data[i]!
               .toString(16)
               .padStart(2, '0')
-              .toUpperCase()}, echo=0x${echo[i]
+              .toUpperCase()}, echo=0x${echo[i]!
               .toString(16)
               .padStart(2, '0')
               .toUpperCase()}`,
@@ -137,13 +121,13 @@ export class NodeBootmodeTransport implements BootmodeTransport {
     }
   }
 
-  read(count: number, timeoutMs?: number): Promise<Buffer> {
-    if (count <= 0) return Promise.resolve(Buffer.alloc(0));
+  read(count: number, timeoutMs?: number): Promise<Uint8Array> {
+    if (count <= 0) return Promise.resolve(new Uint8Array(0));
     if (this.pending) {
       return Promise.reject(new Error('read already in flight'));
     }
     const effectiveTimeout = timeoutMs ?? this.config.defaultTimeoutMs;
-    return new Promise<Buffer>((resolve, reject) => {
+    return new Promise<Uint8Array>((resolve, reject) => {
       const pending: PendingRead = {
         count,
         collected: [],
@@ -178,47 +162,7 @@ export class NodeBootmodeTransport implements BootmodeTransport {
     if (p.collected.length >= p.count) {
       this.pending = null;
       clearTimeout(p.timer);
-      p.resolve(Buffer.from(p.collected));
+      p.resolve(new Uint8Array(p.collected));
     }
-  }
-}
-
-/**
- * In-memory transport for tests. Pre-load `setExpected` with the bytes the
- * fake ECU will respond, then drive your higher-level protocol code as
- * usual. `writtenBytes` records everything the host sent.
- */
-export class MockBootmodeTransport implements BootmodeTransport {
-  public writtenBytes: number[] = [];
-  private pendingResponse: number[] = [];
-  private open_ = false;
-
-  async open(): Promise<void> {
-    this.open_ = true;
-  }
-  async close(): Promise<void> {
-    this.open_ = false;
-  }
-  async write(data: Buffer): Promise<void> {
-    if (!this.open_) throw new Error('mock transport not open');
-    for (let i = 0; i < data.length; i++) this.writtenBytes.push(data[i]);
-  }
-  async read(count: number): Promise<Buffer> {
-    if (!this.open_) throw new Error('mock transport not open');
-    if (this.pendingResponse.length < count) {
-      throw new Error(
-        `mock transport underflow: wanted ${count}, only ${this.pendingResponse.length} queued`,
-      );
-    }
-    const out = this.pendingResponse.splice(0, count);
-    return Buffer.from(out);
-  }
-  flushInput(): void {
-    this.pendingResponse = [];
-  }
-  /** Enqueue bytes the next read() calls will return. */
-  enqueueResponse(bytes: number[] | Buffer): void {
-    const arr = Buffer.isBuffer(bytes) ? [...bytes] : bytes;
-    this.pendingResponse.push(...arr);
   }
 }

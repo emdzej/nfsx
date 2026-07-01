@@ -151,7 +151,7 @@
           aria-selected={app.scope === tab.id}
           class="rounded px-3 py-0.5 text-xs font-medium transition"
           class:bg-accent={app.scope === tab.id}
-          class:text-zinc-950={app.scope === tab.id}
+          class:text-white={app.scope === tab.id}
           class:text-muted={app.scope !== tab.id}
           class:hover:text-foreground={app.scope !== tab.id}
           onclick={() => (app.scope = tab.id)}
@@ -163,54 +163,58 @@
 
     <span class="flex-1"></span>
     <!-- Right cluster: data-location pill, mode pill, Settings,
-         Connect button. Pills are borderless + faded — metadata,
-         not chrome. -->
-    <span
-      class="flex items-center gap-1.5 text-xs text-faint"
-      title={installPill.tooltip}
-    >
-      <svg
-        viewBox="0 0 16 16"
-        width="13"
-        height="13"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
+         Connect button. All OEM-scope only — the Flashing scope's
+         subviews (directmode / bootmode / checksum) manage their own
+         wire connections and don't use the shared ediabasx client
+         or a mounted SP-Daten install. -->
+    {#if app.scope === "oem"}
+      <span
+        class="flex items-center gap-1.5 text-xs text-faint"
+        title={installPill.tooltip}
       >
-        <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.4a1.5 1.5 0 0 1 1.06.44L8 4.5h4.5A1.5 1.5 0 0 1 14 6v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12V4.5z"/>
-      </svg>
-      {installPill.label}
-    </span>
-    <span
-      class="flex items-center gap-1.5 text-xs text-faint"
-      title={modePill.tooltip}
-    >
-      <svg
-        viewBox="0 0 16 16"
-        width="13"
-        height="13"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
+        <svg
+          viewBox="0 0 16 16"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.4a1.5 1.5 0 0 1 1.06.44L8 4.5h4.5A1.5 1.5 0 0 1 14 6v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12V4.5z"/>
+        </svg>
+        {installPill.label}
+      </span>
+      <span
+        class="flex items-center gap-1.5 text-xs text-faint"
+        title={modePill.tooltip}
       >
-        <path d="M5 2v3.5M9 2v3.5M3.5 5.5h7v3a3.5 3.5 0 0 1-3.5 3.5h0a3.5 3.5 0 0 1-3.5-3.5v-3zM7 12v2"/>
-      </svg>
-      {modePill.label}
-    </span>
-    <button
-      class="rounded border border-divider bg-surface px-2 py-0.5 text-xs text-muted transition hover:border-accent hover:bg-elevated"
-      onclick={() => (app.showSettings = true)}
-      title="Configure interface, serial parameters, gateway URL"
-    >
-      Settings
-    </button>
-    <ConnectButton />
+        <svg
+          viewBox="0 0 16 16"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M5 2v3.5M9 2v3.5M3.5 5.5h7v3a3.5 3.5 0 0 1-3.5 3.5h0a3.5 3.5 0 0 1-3.5-3.5v-3zM7 12v2"/>
+        </svg>
+        {modePill.label}
+      </span>
+      <button
+        class="rounded border border-divider bg-surface px-2 py-0.5 text-xs text-muted transition hover:border-accent hover:bg-elevated"
+        onclick={() => (app.showSettings = true)}
+        title="Configure interface, serial parameters, gateway URL"
+      >
+        Settings
+      </button>
+      <ConnectButton />
+    {/if}
   </header>
 
   <main class="flex-1 overflow-y-auto">

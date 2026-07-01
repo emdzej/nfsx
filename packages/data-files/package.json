@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-data-files",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Plaintext parsers for BMW NFS / WinKFP data files: kmm_*.txt (planner inputs), HWNR.DA2 (part-number → SG lookup), KFCONF10.DA2 (per-SG flash config), SGIDC.AS2 / SGIDD.AS2 (auth material), npv.dat (ZB upgrade table), prgifsel.dat (transport selector). All file formats are line-oriented plaintext — no binary container, no compression. Specs in ../../docs/architecture.md §9.2.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
