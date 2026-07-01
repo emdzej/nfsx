@@ -33,7 +33,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
-import { startNfsRuntime } from '@emdzej/nfsx-runtime';
+import { startNfsRuntimeFromPath } from '@emdzej/nfsx-runtime/node';
 import type { EcuTarget } from './types.js';
 
 export interface BackupReport {
@@ -121,8 +121,7 @@ export async function runBackup(
 ): Promise<BackupReport> {
   const jobs = opts.jobs ?? DEFAULT_BACKUP_JOBS;
 
-  const handle = await startNfsRuntime({
-    ipoPath: ecu.ipoPath,
+  const handle = await startNfsRuntimeFromPath(ecu.ipoPath, {
     sgbd: ecu.sgbd,
     ediabas,
     cabdPars: { HWNR_IS_NEW: '0', ...(opts.cabdPars ?? {}) },

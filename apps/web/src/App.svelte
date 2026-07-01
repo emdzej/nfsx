@@ -11,6 +11,7 @@
   import InstallPicker from "./components/oem/InstallPicker.svelte";
   import BrowseView from "./components/oem/BrowseView.svelte";
   import PlanView from "./components/oem/PlanView.svelte";
+  import CheckView from "./components/oem/CheckView.svelte";
 
   import ChecksumView from "./components/flashing/ChecksumView.svelte";
   import TuneView from "./components/flashing/TuneView.svelte";
@@ -227,6 +228,8 @@
         <BrowseView />
       {:else if app.oemView === "plan"}
         <PlanView />
+      {:else if app.oemView === "check"}
+        <CheckView />
       {/if}
     {:else}
       <!-- Flashing sub-tabs -->

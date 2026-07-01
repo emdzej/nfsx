@@ -15,8 +15,8 @@
  * one ncsx exposes, but the runtime shape stays the same.
  */
 
-import { readFileSync } from 'node:fs';
 import { parseIpo } from '@emdzej/inpax-parser';
+import type { FileBackend } from './file-backend.js';
 import { VM } from '@emdzej/inpax-interpreter';
 import { StackEntryFlags, ValueType, type FunctionBlock } from '@emdzej/inpax-core';
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
@@ -70,8 +70,29 @@ export interface NfsRuntimeHandle {
 }
 
 export interface StartNfsRuntimeOptions {
-  /** Path to the IPO file to load. */
+  /**
+   * Path of the IPO file — used as informational metadata (returned
+   * on the handle for logging / error messages). When `ipoBytes` is
+   * omitted the caller must be a Node consumer using the `./node`
+   * convenience wrapper (`startNfsRuntimeFromPath`); the core here
+   * only reads `ipoBytes` so browsers don't need `node:fs`.
+   */
   ipoPath: string;
+  /**
+   * Pre-loaded IPO bytes. Required for the browser-safe main entry.
+   * Node consumers who already have a path can use
+   * `startNfsRuntimeFromPath(path, options)` from
+   * `@emdzej/nfsx-runtime/node` — it reads the file and delegates
+   * here.
+   */
+  ipoBytes: Uint8Array;
+  /**
+   * File-I/O backend for the IPO's fileopen / fileread / filewrite
+   * / fileclose slots. Node consumers pass `nodeFileBackend()`
+   * (imported from `@emdzej/nfsx-runtime/node`); browsers omit —
+   * identity flow doesn't fileopen. Only the flash path does.
+   */
+  fileBackend?: FileBackend;
   /**
    * Optional pre-seed of cabd-pars before any dispatch. Useful for
    * setting APPLIKATION (chassis code) and other host-state the IPO
@@ -128,9 +149,9 @@ export interface StartNfsRuntimeOptions {
 export async function startNfsRuntime(
   options: StartNfsRuntimeOptions,
 ): Promise<NfsRuntimeHandle> {
-  // 1. Read + parse the IPO.
-  const bytes = readFileSync(options.ipoPath);
-  const ipo = parseIpo(bytes);
+  // 1. Parse the IPO from caller-supplied bytes. Node consumers
+  //    with a path use the `./node` subpath's convenience wrapper.
+  const ipo = parseIpo(options.ipoBytes);
 
   // 2. CABI state. Pre-seed cabd-pars / system-data if asked.
   const state = new CabiState();
@@ -149,6 +170,7 @@ export async function startNfsRuntime(
     defaultSgbd: options.sgbd,
     workingDir: options.workingDir,
     firmwareSource: options.firmwareSource,
+    fileBackend: options.fileBackend,
     maxBinaryRetries: options.maxBinaryRetries,
     retryBackoffMs: options.retryBackoffMs,
     retryableStatuses: options.retryableStatuses,

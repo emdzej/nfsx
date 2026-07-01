@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { MockEdiabasProvider } from '@emdzej/inpax-mock-provider';
-import { startNfsRuntime } from './runtime.js';
+import { startNfsRuntimeFromPath } from './node.js';
 
 /**
  * Hello-world test for the runtime: load a real NFS IPO, dispatch
@@ -15,7 +15,7 @@ const IPO_PATH = `${process.env.HOME}/Downloads/inpa/EC-APPS/NFS/SGDAT/16ACC65.i
 
 describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world', () => {
   it('runs cabimain(JOB_ERMITTELN) on a real NFS IPO and captures the published job list', async () => {
-    const handle = await startNfsRuntime({ ipoPath: IPO_PATH });
+    const handle = await startNfsRuntimeFromPath(IPO_PATH, { });
 
     await handle.runCabimain('JOB_ERMITTELN');
 
@@ -52,7 +52,7 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
   });
 
   it('returns empty when an unknown JOBNAME is dispatched', async () => {
-    const handle = await startNfsRuntime({ ipoPath: IPO_PATH });
+    const handle = await startNfsRuntimeFromPath(IPO_PATH, { });
 
     // cabimain switches on JOBNAME; an unknown one falls through
     // without populating any JOB[*] entries.
@@ -77,8 +77,7 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
       HW_REF_PROJEKT: 'E60-ACC-Project',
     });
 
-    const handle = await startNfsRuntime({
-      ipoPath: IPO_PATH,
+    const handle = await startNfsRuntimeFromPath(IPO_PATH, {
       sgbd: 'C_ACC65',
       ediabas,
     });
@@ -139,8 +138,7 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
       ID_DATUM_JAHR: 2008,
     });
 
-    const handle = await startNfsRuntime({
-      ipoPath: IPO_PATH,
+    const handle = await startNfsRuntimeFromPath(IPO_PATH, {
       sgbd: 'C_ACC65',
       ediabas,
     });
@@ -168,8 +166,7 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
     // wired, the trace ends right after the first exit instead of
     // running through the happy-path reads with stale data.
     const ediabas = new MockEdiabasProvider();
-    const handle = await startNfsRuntime({
-      ipoPath: IPO_PATH,
+    const handle = await startNfsRuntimeFromPath(IPO_PATH, {
       sgbd: 'C_ACC65',
       ediabas,
     });
@@ -208,8 +205,7 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
       AIF_PROG_NR: 'P-001',
     });
 
-    const handle = await startNfsRuntime({
-      ipoPath: IPO_PATH,
+    const handle = await startNfsRuntimeFromPath(IPO_PATH, {
       sgbd: 'C_ACC65',
       ediabas,
     });
@@ -236,8 +232,7 @@ describe.skipIf(!existsSync(IPO_PATH))('startNfsRuntime — Phase 3 hello-world'
       FLASH_PROGRAMMIER_STATUS: 7, // arbitrary mock value
     });
 
-    const handle = await startNfsRuntime({
-      ipoPath: IPO_PATH,
+    const handle = await startNfsRuntimeFromPath(IPO_PATH, {
       sgbd: 'C_ACC65',
       ediabas,
     });
@@ -275,8 +270,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('Phase 4 — FSC + cert workflow (00s
       JOB_STATUS_CODE: 0,
     });
 
-    const handle = await startNfsRuntime({
-      ipoPath: SWT_KWP_PATH,
+    const handle = await startNfsRuntimeFromPath(SWT_KWP_PATH, {
       sgbd: 'C_DSC_KWP',
       ediabas,
       cabdPars: {
@@ -315,8 +309,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('Phase 4 — FSC + cert workflow (00s
     // API_RESULT cabd-pars so the host can surface the failure to
     // the user.
     const ediabas = new MockEdiabasProvider();
-    const handle = await startNfsRuntime({
-      ipoPath: SWT_KWP_PATH,
+    const handle = await startNfsRuntimeFromPath(SWT_KWP_PATH, {
       sgbd: 'C_DSC_KWP',
       ediabas,
     });
@@ -341,8 +334,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('Phase 4 — FSC + cert workflow (00s
       FAHRGESTELL_NR: 'WBAVB13546PT12345',
     });
 
-    const handle = await startNfsRuntime({
-      ipoPath: SWT_KWP_PATH,
+    const handle = await startNfsRuntimeFromPath(SWT_KWP_PATH, {
       sgbd: 'C_DSC_KWP',
       ediabas,
       cabdPars: {
@@ -366,8 +358,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('Phase 4 — FSC + cert workflow (00s
     // Default ("000000000000Z") is the IPO's epoch when host didn't
     // set one.
     const ediabas = new MockEdiabasProvider();
-    const handle = await startNfsRuntime({
-      ipoPath: SWT_KWP_PATH,
+    const handle = await startNfsRuntimeFromPath(SWT_KWP_PATH, {
       sgbd: 'C_DSC_KWP',
       ediabas,
       cabdPars: {
@@ -400,7 +391,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('Phase 4 — FSC + cert workflow (00s
     for (const variant of variants) {
       const path = `${process.env.HOME}/Downloads/inpa/EC-APPS/NFS/SGDAT/${variant}.ipo`;
       if (!existsSync(path)) continue;
-      const handle = await startNfsRuntime({ ipoPath: path });
+      const handle = await startNfsRuntimeFromPath(path, {});
       await handle.runCabimain('JOB_ERMITTELN');
       const published = [...handle.state.cabdPars.entries()]
         .filter(([k]) => /^JOB\[\d+\]$/.test(k))

@@ -20,7 +20,7 @@
  */
 
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
-import { startNfsRuntime } from '@emdzej/nfsx-runtime';
+import { startNfsRuntimeFromPath } from '@emdzej/nfsx-runtime/node';
 import { FscManager } from '@emdzej/nfsx-fsc';
 import type { EcuTarget, PrecheckOptions } from './types.js';
 
@@ -89,9 +89,9 @@ export async function runPrecheck(
   const runAny = allFour.some((c) => !skip.has(c));
 
   if (runAny) {
-    let handle: Awaited<ReturnType<typeof startNfsRuntime>>;
+    let handle: Awaited<ReturnType<typeof startNfsRuntimeFromPath>>;
     try {
-      handle = await startNfsRuntime({ ipoPath: ecu.ipoPath, sgbd: ecu.sgbd, ediabas, workingDir: ecu.workingDir });
+      handle = await startNfsRuntimeFromPath(ecu.ipoPath, { sgbd: ecu.sgbd, ediabas, workingDir: ecu.workingDir });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const failure = { ok: false, reason: `IPO load failed: ${msg}` };
@@ -134,7 +134,7 @@ export async function runPrecheck(
   return report;
 }
 
-type Handle = Awaited<ReturnType<typeof startNfsRuntime>>;
+type Handle = Awaited<ReturnType<typeof startNfsRuntimeFromPath>>;
 
 async function dispatchHwReferenz(
   handle: Handle,

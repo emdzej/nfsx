@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { basename, dirname, resolve as resolvePath } from 'node:path';
 import { MockEdiabasProvider } from '@emdzej/inpax-mock-provider';
-import { startNfsRuntime, type StartNfsRuntimeOptions } from '@emdzej/nfsx-runtime';
+import { startNfsRuntimeFromPath, type StartNfsRuntimeOptions } from '@emdzej/nfsx-runtime/node';
 import type { RunOptions } from './cli.js';
 import { buildEdiabasProvider } from './ediabasx-provider.js';
 
@@ -44,8 +44,7 @@ export async function runRun(flags: RunOptions): Promise<number> {
   }
 
   try {
-    const handle = await startNfsRuntime({
-      ipoPath: flags.ipoPath,
+    const handle = await startNfsRuntimeFromPath(flags.ipoPath, {
       sgbd: flags.sgbd,
       ediabas: provider,
       workingDir: flags.workingDir ?? deriveWorkingDirFromIpo(flags.ipoPath),

@@ -18,7 +18,7 @@
  * `coapiKf*` call constructs a new CABI session.
  */
 
-import { startNfsRuntime, type NfsRuntimeHandle } from '@emdzej/nfsx-runtime';
+import { startNfsRuntimeFromPath, type NfsRuntimeHandle } from '@emdzej/nfsx-runtime/node';
 import type {
   FscCabdParPreseeds,
   FscManagerOptions,
@@ -130,8 +130,7 @@ export class FscManager {
     extraCabdPars?: Record<string, string>,
   ): Promise<NfsRuntimeHandle> {
     const cabdPars = this.buildPreseeds(extraCabdPars);
-    const handle = await startNfsRuntime({
-      ipoPath: this.opts.ipoPath,
+    const handle = await startNfsRuntimeFromPath(this.opts.ipoPath, {
       sgbd: this.opts.sgbd,
       ediabas: this.opts.ediabas,
       cabdPars,

@@ -19,7 +19,7 @@
  */
 
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
-import { startNfsRuntime, type FirmwareSource } from '@emdzej/nfsx-runtime';
+import { startNfsRuntimeFromPath, type FirmwareSource } from '@emdzej/nfsx-runtime/node';
 import type { EcuTarget } from './types.js';
 import {
   buildInstrumentedFirmwareSource,
@@ -182,8 +182,7 @@ export async function runProgramSg(
     : undefined;
 
   try {
-    const handle = await startNfsRuntime({
-      ipoPath: ecu.ipoPath,
+    const handle = await startNfsRuntimeFromPath(ecu.ipoPath, {
       sgbd: ecu.sgbd,
       ediabas: countingProvider,
       cabdPars,
@@ -247,8 +246,7 @@ export async function runAifSchreiben(
   const ediabasJobs = newEdiabasJobCounters();
   const countingProvider = wrapWithJobCounter(ediabas, ediabasJobs);
   try {
-    const handle = await startNfsRuntime({
-      ipoPath: ecu.ipoPath,
+    const handle = await startNfsRuntimeFromPath(ecu.ipoPath, {
       sgbd: ecu.sgbd,
       ediabas: countingProvider,
       cabdPars,

@@ -22,8 +22,7 @@
  * overrides — those live in `winkfpt.exe`'s slot table, not NCSEXPER's.
  */
 
-import { closeSync, openSync, readFileSync, writeSync } from 'node:fs';
-import { isAbsolute, resolve, sep } from 'node:path';
+import type { FileBackend } from './file-backend.js';
 import type { ExecutionContext, VM } from '@emdzej/inpax-interpreter';
 import { StackEntryFlags, ValueType, type StackEntry, type Value } from '@emdzej/inpax-core';
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
@@ -111,6 +110,15 @@ export interface BuildSystemFunctionsOptions {
    * faster transports or higher (300-500 ms) on flaky cables.
    */
   retryBackoffMs?: number;
+  /**
+   * File I/O backend for the IPO's `fileopen` / `fileread` /
+   * `filewrite` / `fileclose` slots. Node consumers pass
+   * `nodeFileBackend()` from `@emdzej/nfsx-runtime/node`. Browser
+   * consumers omit — fileopen slots then fail-close (recorded in
+   * the trace, no crash). Identity IPOs (HW_REFERENZ, SG_IDENT,
+   * SG_AIF) don't call fileopen; only the flash IPO does.
+   */
+  fileBackend?: FileBackend;
 }
 
 /**
@@ -831,20 +839,25 @@ function makeOverride(
           args: { filename, mode },
         });
         // Close any previously-open file before opening a new one.
-        closeOpenFile(state);
+        closeOpenFile(state, opts.fileBackend);
         try {
-          const path = resolveWorkingPath(opts.workingDir, filename);
+          if (!opts.fileBackend) {
+            throw new Error(
+              'fileopen not available — runtime started without a fileBackend',
+            );
+          }
+          const path = opts.fileBackend.resolveWorkingPath(opts.workingDir, filename);
           if (mode === 'r') {
-            const buf = readFileSync(path);
+            const bytes = opts.fileBackend.readAll(path);
             state.openFile = {
               path,
               mode,
               fd: -1,
-              readBuffer: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
+              readBuffer: bytes,
               readPos: 0,
             };
           } else {
-            const fd = openSync(path, mode === 'w' ? 'w' : 'a');
+            const fd = opts.fileBackend.openForWrite(path, mode);
             state.openFile = { path, mode, fd };
           }
         } catch (err) {
@@ -868,7 +881,7 @@ function makeOverride(
           name: slot.name,
           args: { path: state.openFile?.path ?? null },
         });
-        closeOpenFile(state);
+        closeOpenFile(state, opts.fileBackend);
       };
 
     case 'filewrite':
@@ -890,7 +903,10 @@ function makeOverride(
           return;
         }
         try {
-          writeSync(f.fd, str);
+          if (!opts.fileBackend) {
+            throw new Error('filewrite not available — no fileBackend configured');
+          }
+          opts.fileBackend.writeString(f.fd, str);
         } catch (err) {
           state.trace.push({
             slot: slot.id,
@@ -1053,28 +1069,9 @@ function defaultOverrideWithTrace(
   };
 }
 
-/**
- * Resolve a basename or relative path against the configured working
- * directory. Throws if the resolved path escapes (e.g. `../foo`) or if
- * `workingDir` is unset and the path isn't absolute — better to fail
- * loud than silently open files from the current process directory.
- */
-function resolveWorkingPath(workingDir: string | undefined, filename: string): string {
-  if (isAbsolute(filename)) {
-    return filename;
-  }
-  if (!workingDir) {
-    throw new Error(
-      `fileopen('${filename}'): no workingDir configured. Pass BuildSystemFunctionsOptions.workingDir to enable relative file references.`,
-    );
-  }
-  const baseDir = resolve(workingDir);
-  const full = resolve(baseDir, filename);
-  if (full !== baseDir && !full.startsWith(baseDir + sep)) {
-    throw new Error(`fileopen('${filename}'): refusing to open path that escapes workingDir ${baseDir}`);
-  }
-  return full;
-}
+// Path resolution moved into `FileBackend.resolveWorkingPath` so
+// `system-functions.ts` doesn't need `node:path` at module scope.
+// Node-side implementation lives in `node-file-backend.ts`.
 
 /**
  * Write `src` into the binbuf at `position`, growing capacity if
@@ -1103,12 +1100,12 @@ function writeBinBufBytes(
 }
 
 /** Tear down whatever file is open in `state.openFile`. Idempotent. */
-function closeOpenFile(state: CabiState): void {
+function closeOpenFile(state: CabiState, fileBackend: FileBackend | undefined): void {
   const f = state.openFile;
   if (!f) return;
-  if (f.fd >= 0) {
+  if (f.fd >= 0 && fileBackend) {
     try {
-      closeSync(f.fd);
+      fileBackend.close(f.fd);
     } catch {
       /* ignore */
     }

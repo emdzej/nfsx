@@ -4,6 +4,16 @@
   "description": "CABI-style IPO runtime for nfsx. Wraps the inpax VM with the NCSEXPER 99-slot CABI surface (via @emdzej/ncsx-inpax-cabi-provider) plus NFS-specific overrides for flash/FSC/AIF slots not in the NCSEXPER table.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    }
+  },
   "type": "module",
   "files": [
     "dist"
