@@ -28,7 +28,7 @@ import {
   resolveUpgrade,
   type FlashCandidate,
   type SpDaten,
-} from '@emdzej/nfsx-resolver';
+} from '@emdzej/nfsx-resolver/node';
 import type { HwnrRow, NpvRow } from '@emdzej/nfsx-data-files';
 import type { BrowseOptions } from './cli.js';
 import { resolveSpDaten, NfsxConfigError } from './config.js';

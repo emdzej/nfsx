@@ -18,7 +18,7 @@ import {
 import {
   resolveFlashContextLite,
   FlashContextError,
-} from '@emdzej/nfsx-resolver';
+} from '@emdzej/nfsx-resolver/node';
 import { MockEdiabasProvider } from '@emdzej/inpax-mock-provider';
 import type { CheckOptions } from './cli.js';
 import { buildEdiabasProvider } from './ediabasx-provider.js';

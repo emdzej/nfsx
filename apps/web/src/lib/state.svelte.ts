@@ -3,6 +3,7 @@ import type {
   Ms4xEcuVariant as EcuVariant,
 } from "@emdzej/nfsx-flash-data";
 import type { VirtualDirectory } from "@emdzej/bimmerz-vfs";
+import type { SpDaten } from "@emdzej/nfsx-resolver";
 import { loadConfig, type WebConfig } from "./config";
 import { getInstallSource, type InstallSource } from "./bundled-install";
 
@@ -57,6 +58,21 @@ interface AppState {
    * mid-session when the user switches sources without reloading.
    */
   installSource: InstallSource | null;
+  /**
+   * Parsed SP-Daten snapshot. Loaded eagerly once an install is
+   * mounted so Browse / Plan / Check / Flash / Verify all read from
+   * one authoritative source. `null` while loading or when the
+   * install has no SP-Daten dir. Warnings / parse errors surface
+   * through `error` if any file failed to parse.
+   */
+  spDaten: SpDaten | null;
+  /** True while `spDaten` is being loaded — drives spinners in OEM views. */
+  spDatenLoading: boolean;
+  /**
+   * HWNR the user picked in Browse — drives Plan and its downstream
+   * views (Check / Flash / Verify). Cleared when install changes.
+   */
+  selectedHwnr: string | null;
 
   // Flashing
   flashingTab: FlashingTab;
@@ -82,6 +98,9 @@ export const app: AppState = $state({
   oemView: "picker",
   install: null,
   installSource: getInstallSource(),
+  spDaten: null,
+  spDatenLoading: false,
+  selectedHwnr: null,
 
   flashingTab: "checksum",
   checksumState: {

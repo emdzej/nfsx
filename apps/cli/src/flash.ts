@@ -34,7 +34,7 @@ import {
   resolveFlashContext,
   FlashContextError,
   type FlashContext,
-} from '@emdzej/nfsx-resolver';
+} from '@emdzej/nfsx-resolver/node';
 import type { FlashOptions } from './cli.js';
 import { buildEdiabasProvider, type BuiltEdiabasProvider } from './ediabasx-provider.js';
 import { resolveSpDaten, NfsxConfigError } from './config.js';

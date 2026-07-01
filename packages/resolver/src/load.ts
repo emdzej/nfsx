@@ -25,53 +25,14 @@ import {
   parsePrgIfSel,
   parseSgId,
   parseZbNrTab,
-  type HwnrFile,
-  type KfConfFile,
-  type KmmSitFile,
-  type NpvFile,
-  type PrgIfSelFile,
-  type SgIdFile,
   type ZbNrTabFile,
 } from '@emdzej/nfsx-data-files';
+import type { SpDaten, SpDatenPaths } from './types.js';
 
-export interface SpDaten {
-  hwnr?: HwnrFile;
-  kfConf?: KfConfFile;
-  kmmSit?: KmmSitFile;
-  /** SGIDC.AS2 — level-3 authentication material. */
-  sgIdc?: SgIdFile;
-  /** SGIDD.AS2 — level-4 authentication material. */
-  sgIdd?: SgIdFile;
-  /** npv.dat — ZB upgrade rules. */
-  npv?: NpvFile;
-  /** prgifsel.dat — per-SG transport selection. */
-  prgIfSel?: PrgIfSelFile;
-  /** Files that were expected but missing on disk. */
-  warnings: string[];
-  /**
-   * Lines that failed to parse across all loaded files, with their
-   * source file annotated so the consumer can point users at the
-   * right spot.
-   */
-  parseErrors: Array<{ source: string; lineNo: number; reason: string }>;
-}
-
-export interface SpDatenPaths {
-  /** Absolute path to HWNR.DA2 (or override). */
-  hwnr: string;
-  /** Absolute path to KFCONF10.DA2 (or override). */
-  kfConf: string;
-  /** Absolute path to kmm_SIT.txt (or override). */
-  kmmSit: string;
-  /** Absolute path to SGIDC.AS2 (or override). */
-  sgIdc: string;
-  /** Absolute path to SGIDD.AS2 (or override). */
-  sgIdd: string;
-  /** Absolute path to npv.dat (or override). */
-  npv: string;
-  /** Absolute path to prgifsel.dat (or override). */
-  prgIfSel: string;
-}
+// Re-export the types so existing `import { SpDaten } from './load.js'`
+// call sites keep working. The browser-facing consumers should import
+// from './types.js' directly (which has no `node:*` dependencies).
+export type { SpDaten, SpDatenPaths } from './types.js';
 
 /**
  * Default-path layout for an extracted SP-Daten chassis drop. The

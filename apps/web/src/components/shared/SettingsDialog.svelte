@@ -21,6 +21,7 @@
   import { clearInstallSource, setInstallSource } from "../../lib/bundled-install";
   import { FsaDirectory } from "@emdzej/bimmerz-vfs";
   import { discoverInstall } from "../../lib/install-discovery";
+  import { clearSpDatenState, loadSpDatenIntoState } from "../../lib/sp-daten-loader";
   import { app } from "../../lib/state.svelte";
   import { applyLoggerConfig } from "../../lib/logger-wiring";
   import { LOG_CATEGORIES as INPAX_LOG_CATEGORIES } from "@emdzej/inpax-interpreter";
@@ -77,6 +78,7 @@
     app.install = null;
     app.installSource = null;
     app.oemView = "picker";
+    clearSpDatenState();
   }
 
   async function forgetInstall(): Promise<void> {
@@ -97,6 +99,8 @@
       clearRemoteInstallUrl();
       setInstallSource({ source: "fs-access" });
       app.installSource = { source: "fs-access" };
+      // Kick off SP-Daten parse for the new install.
+      void loadSpDatenIntoState(install);
       app.oemView = "browse";
       app.showSettings = false;
     } catch (err) {

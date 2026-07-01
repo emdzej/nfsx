@@ -27,7 +27,7 @@ import type {
   PrgIfSelRow,
   SgIdEntry,
 } from '@emdzej/nfsx-data-files';
-import type { SpDaten } from './load.js';
+import type { SpDaten } from './types.js';
 
 export interface FlashCandidate {
   /**

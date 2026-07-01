@@ -21,7 +21,7 @@ import {
   resolveUpgrade,
   type FlashCandidate,
   type SpDaten,
-} from '@emdzej/nfsx-resolver';
+} from '@emdzej/nfsx-resolver/node';
 import { findByHwNr, type NpvRow, type ZbNrTabRow } from '@emdzej/nfsx-data-files';
 import chalk from 'chalk';
 import type { PlanOptions } from './cli.js';

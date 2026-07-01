@@ -10,6 +10,7 @@
   import { app } from "../../lib/state.svelte";
   import { FsaDirectory, HttpDirectory, type VirtualDirectory } from "@emdzej/bimmerz-vfs";
   import { discoverInstall } from "../../lib/install-discovery";
+  import { loadSpDatenIntoState } from "../../lib/sp-daten-loader";
   import {
     isFileSystemAccessSupported,
     loadInstallHandle,
@@ -75,8 +76,11 @@
   async function mountInstall(root: VirtualDirectory): Promise<void> {
     const install = await discoverInstall(root);
     app.install = install;
-    app.oemView = "browse";
     app.installSource = getInstallSource();
+    // Kick off SP-Daten parse before navigating so BrowseView opens
+    // with data ready (or the load spinner if the parse is slow).
+    void loadSpDatenIntoState(install);
+    app.oemView = "browse";
   }
 
   async function mountFsaHandle(
