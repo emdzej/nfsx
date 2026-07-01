@@ -16,7 +16,7 @@ export type OemView =
   | "flash"
   | "verify";
 
-export type FlashingTab = "checksum" | "directmode" | "bootmode";
+export type FlashingTab = "checksum" | "tune" | "directmode" | "bootmode";
 
 /**
  * Discovered install layout. Directory fields are typed as

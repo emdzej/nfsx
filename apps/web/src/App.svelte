@@ -13,6 +13,7 @@
   import PlanView from "./components/oem/PlanView.svelte";
 
   import ChecksumView from "./components/flashing/ChecksumView.svelte";
+  import TuneView from "./components/flashing/TuneView.svelte";
   import DirectmodeView from "./components/flashing/DirectmodeView.svelte";
   import BootmodeView from "./components/flashing/BootmodeView.svelte";
 
@@ -25,6 +26,7 @@
   type FlashTab = { id: typeof app.flashingTab; label: string };
   const flashTabs: FlashTab[] = [
     { id: "checksum", label: "Checksum" },
+    { id: "tune", label: "Tune" },
     { id: "directmode", label: "Directmode" },
     { id: "bootmode", label: "Bootmode" },
   ];
@@ -249,6 +251,8 @@
 
       {#if app.flashingTab === "checksum"}
         <ChecksumView />
+      {:else if app.flashingTab === "tune"}
+        <TuneView />
       {:else if app.flashingTab === "directmode"}
         <DirectmodeView />
       {:else if app.flashingTab === "bootmode"}
