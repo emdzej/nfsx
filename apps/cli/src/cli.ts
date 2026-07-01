@@ -37,6 +37,12 @@ import {
   runDirectmodeWrite,
 } from './directmode.js';
 import {
+  runMs45Probe,
+  runMs45Read,
+  runMs45Write,
+  runMs45Checksum,
+} from './ms45.js';
+import {
   runTuneRead,
   runTuneApply,
   type TuneFeature,
@@ -400,6 +406,91 @@ directmode
     if (code !== 0) process.exit(code);
   });
 
+// ── ms45 (SGBD-driven MS45 DME flashing) ────────────────────────────
+const ms45 = program
+  .command('ms45')
+  .description(
+    'BMW MS45.0 / MS45.1 DME flashing over the EDIABAS D_Motor SGBD. Probe / read / write / checksum. RSA-1024 firmware signing + CRC-32 checksum recompute are automatic on write; can be individually skipped.',
+  );
+
+ms45
+  .command('probe')
+  .description('IDENT the DME — variant (MS45.0/MS45.1), VIN, HW/SW ref, diag protocol.')
+  .option('--ediabas-config <path>', 'EDIABAS-X config file (default: ~/.config/ediabasx/config.json)')
+  .option('--interface <name>', 'override `interface` from config (simulation|serial|kdcan|j2534|enet|gateway)')
+  .option('--serial-port <path>', 'override `options.port` from config')
+  .option('--serial-baud <rate>', 'override `options.baudRate` from config', parseBaud)
+  .option('--gateway <host:port>', 'shortcut: gateway interface')
+  .option('--ecu-dir <path>', 'directory containing the MS45 SGBD (default: ediabasx config sgbdPath, then <sp-daten>/ecu)')
+  .option('--sgbd <name>', 'SGBD to dispatch against (default: D_Motor)')
+  .option('--sp-daten <dir>', 'SP-Daten drop — only used to derive <sp-daten>/ecu fallback for --ecu-dir')
+  .option('--config <path>', `nfsx config file path (default ${DEFAULT_CONFIG_PATH})`)
+  .option('--json', 'machine-readable output', false)
+  .action(async (opts: Ms45ProbeOpts) => {
+    const code = await runMs45Probe(opts);
+    if (code !== 0) process.exit(code);
+  });
+
+ms45
+  .command('read')
+  .description('Read the DME. --mode tune dumps the 116 KB parameter blob; --mode full dumps both external flash (1 MB) and internal MPC flash (448 KB, `_MPC` suffix).')
+  .requiredOption('-o, --output <path>', 'destination BIN path (for --mode full, MPC is written to <path>_MPC.<ext>)')
+  .requiredOption('-m, --mode <mode>', 'tune | full', parseMs45Mode)
+  .option('--ediabas-config <path>', 'EDIABAS-X config file')
+  .option('--interface <name>', 'override interface')
+  .option('--serial-port <path>', 'override serial port')
+  .option('--serial-baud <rate>', 'override serial baud', parseBaud)
+  .option('--gateway <host:port>', 'shortcut: gateway interface')
+  .option('--ecu-dir <path>', 'directory containing the MS45 SGBD')
+  .option('--sgbd <name>', 'SGBD to dispatch against (default: D_Motor)')
+  .option('--sp-daten <dir>', 'SP-Daten drop — <sp-daten>/ecu fallback for --ecu-dir')
+  .option('--config <path>', `nfsx config file path (default ${DEFAULT_CONFIG_PATH})`)
+  .option('--json', 'machine-readable output', false)
+  .action(async (opts: Ms45ReadOpts) => {
+    const code = await runMs45Read(opts);
+    if (code !== 0) process.exit(code);
+  });
+
+ms45
+  .command('write')
+  .description('Flash a BIN into the DME. Erases the target region, recomputes CRC-32 + RSA signature, streams the payload, verifies. `--mode full` requires `--mpc <path>`.')
+  .requiredOption('-i, --input <path>', 'input BIN (tune: 0x1D000 bytes; full: external 0x100000 bytes)')
+  .requiredOption('-m, --mode <mode>', 'tune | full', parseMs45Mode)
+  .option('--mpc <path>', 'MPC BIN (required for --mode full, must be 0x70000 bytes)')
+  .option('--skip-checksum', 'do not recompute CRC-32 before flashing', false)
+  .option('--skip-sign', 'do not recompute RSA signature before flashing', false)
+  .option('--skip-verify', 'skip the post-flash FLASH_SIGNATUR_PRUEFEN check', false)
+  .option('--yes', 'skip the "type FLASH to proceed" confirmation prompt', false)
+  .option('--ediabas-config <path>', 'EDIABAS-X config file')
+  .option('--interface <name>', 'override interface')
+  .option('--serial-port <path>', 'override serial port')
+  .option('--serial-baud <rate>', 'override serial baud', parseBaud)
+  .option('--gateway <host:port>', 'shortcut: gateway interface')
+  .option('--ecu-dir <path>', 'directory containing the MS45 SGBD')
+  .option('--sgbd <name>', 'SGBD to dispatch against (default: D_Motor)')
+  .option('--sp-daten <dir>', 'SP-Daten drop — <sp-daten>/ecu fallback for --ecu-dir')
+  .option('--config <path>', `nfsx config file path (default ${DEFAULT_CONFIG_PATH})`)
+  .option('--json', 'machine-readable output', false)
+  .action(async (opts: Ms45WriteOpts) => {
+    const code = await runMs45Write(opts);
+    if (code !== 0) process.exit(code);
+  });
+
+ms45
+  .command('checksum')
+  .description('Verify or rewrite the CRC-32 + RSA signature on an MS45 BIN offline. Auto-detects tune (0x1D000 bytes) vs. full external flash (0x100000 bytes); full requires --mpc.')
+  .requiredOption('-f, --file <path>', 'BIN file to check')
+  .option('--mpc <path>', 'MPC BIN (required when --file is a 0x100000-byte external flash)')
+  .option('--rewrite', 'recompute + rewrite in-place (or to --output)', false)
+  .option('-o, --output <path>', 'write rewritten BIN here instead of overwriting --file (requires --rewrite)')
+  .option('--skip-checksum', 'do not verify/rewrite CRC-32', false)
+  .option('--skip-signature', 'do not verify/rewrite RSA signature', false)
+  .option('--json', 'machine-readable output', false)
+  .action((opts: Ms45ChecksumOpts) => {
+    const code = runMs45Checksum(opts);
+    if (code !== 0) process.exit(code);
+  });
+
 // ── tune (firmware BIN field read/apply) ────────────────────────────
 const tune = program
   .command('tune')
@@ -497,6 +588,12 @@ function parseFlashMode(value: string): 'full' | 'calibration' {
   const v = value.trim().toLowerCase();
   if (v === 'full' || v === 'calibration') return v;
   throw new InvalidArgumentError(`"${value}" is not a valid flash mode (full | calibration).`);
+}
+
+function parseMs45Mode(value: string): 'tune' | 'full' {
+  const v = value.trim().toLowerCase();
+  if (v === 'tune' || v === 'full') return v;
+  throw new InvalidArgumentError(`"${value}" is not a valid MS45 mode (tune | full).`);
 }
 
 function parseTuneReadFeature(value: string): TuneFeature {
@@ -700,4 +797,44 @@ interface DirectmodeWriteOpts extends DirectmodeProbeOpts {
   calculateChecksum: boolean;
   nonce: number;
   writeBaud: number;
+}
+
+interface Ms45BaseOpts {
+  ediabasConfig?: string;
+  interface?: string;
+  serialPort?: string;
+  serialBaud?: number;
+  gateway?: string;
+  ecuDir?: string;
+  sgbd?: string;
+  spDaten?: string;
+  config?: string;
+  json: boolean;
+}
+
+type Ms45ProbeOpts = Ms45BaseOpts;
+
+interface Ms45ReadOpts extends Ms45BaseOpts {
+  output: string;
+  mode: 'tune' | 'full';
+}
+
+interface Ms45WriteOpts extends Ms45BaseOpts {
+  input: string;
+  mode: 'tune' | 'full';
+  mpc?: string;
+  skipChecksum: boolean;
+  skipSign: boolean;
+  skipVerify: boolean;
+  yes: boolean;
+}
+
+interface Ms45ChecksumOpts {
+  file: string;
+  mpc?: string;
+  output?: string;
+  rewrite: boolean;
+  skipChecksum: boolean;
+  skipSignature: boolean;
+  json: boolean;
 }

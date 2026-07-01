@@ -5,16 +5,20 @@ programming toolchain, in the same family as
 [`ncsx`](https://github.com/emdzej/ncsx) (NCS Expert / coding) and
 [`inpax`](https://github.com/emdzej/inpax) (INPA / diagnostics).
 
-> **Status**: pre-release `0.2.0`. Three flash paths are implemented
-> and bench-verified:
+> **Status**: pre-release `0.2.0`. Four flash paths are implemented:
 >
-> - **IPO-driven** (`nfsx flash`) — validated against GS20 bench ECU
->   (HWNR 7544721) via K+DCAN. Real flash succeeded.
-> - **Direct DS2** (`nfsx directmode`) — validated against GS20 bench
->   ECU. Real flash + readback verify succeeded.
-> - **Bootmode** (`nfsx bootmode`) — validated against MS42 bench ECU
->   via C167 BSL. Full chip erase + 512 KB write + readback verify
+> - **IPO-driven** (`nfsx flash`) — bench-verified against GS20 (HWNR
+>   7544721) via K+DCAN. Real flash succeeded.
+> - **Direct DS2** (`nfsx directmode`) — bench-verified against GS20.
+>   Real flash + readback verify succeeded.
+> - **Bootmode** (`nfsx bootmode`) — bench-verified against MS42 via
+>   C167 BSL. Full chip erase + 512 KB write + readback verify
 >   succeeded (both MiniMon and JMG blob paths).
+> - **MS45 SGBD** (`nfsx ms45`) — MS45.0 / MS45.1 DME flashing over
+>   `D_Motor.grp`. Offline BIN helpers (CRC-32 + RSA-1024 sig
+>   verify/rewrite) are green against fixture data; the wire path is
+>   test-covered against a mock `IEdiabas` but not yet exercised on
+>   real hardware. See [`docs/ms45-flashing.md`](docs/ms45-flashing.md).
 >
 > **All write commands can brick an ECU.** Read
 > [`docs/first-flash-runbook.md`](docs/first-flash-runbook.md) before
@@ -313,6 +317,25 @@ Options: `--variant MS42|MS43|GS20`, `--write-baud 38400`,
 Options: `--baud 19200`, `--alt` (JMG blob path instead of MiniMon),
 `--calculate-checksum`, `--skip-verify`.
 
+### MS45 flashing (SGBD-driven, E46 / E60 / E65)
+
+MS45.0 and MS45.1 DMEs via the EDIABAS `D_Motor` group. Handles the
+DS2-vs-BMW-FAST split (baud raise on MS45.0, native 115200 on
+MS45.1), RSA-1024 security-access auth, and per-write CRC-32 +
+RSA-1024 signature recompute.
+
+| Command | Purpose |
+|---|---|
+| `nfsx ms45 probe` | IDENT DME → variant (MS45.0/MS45.1), VIN, HW/SW ref, diag protocol |
+| `nfsx ms45 read -o out.bin -m tune\|full` | Dump the 116 KB tune blob, or full external flash (1 MB) + MPC flash (448 KB, `_MPC` suffix) |
+| `nfsx ms45 write -i in.bin -m tune\|full [--mpc mpc.bin]` | Erase + write + CRC-32/RSA recompute + signature verify |
+| `nfsx ms45 checksum -f file.bin [--mpc mpc.bin]` | Offline: verify or `--rewrite` CRC-32 + RSA signature |
+
+Options: `--sgbd D_Motor`, `--ecu-dir <path>` (where MS450DS0.prg /
+10MDS45.prg live), `--skip-checksum`, `--skip-sign`, `--skip-verify`,
+`--yes` (skip the "type FLASH" confirmation). Full protocol reference
+in [`docs/ms45-flashing.md`](docs/ms45-flashing.md).
+
 ### Firmware tune (offline BIN editing)
 
 Read or modify MS42/MS43 firmware fields without an ECU connection.
@@ -383,6 +406,7 @@ EDIABAS entirely (rehearsal / unit-test path).
 | [`docs/reverse-engineering.md`](docs/reverse-engineering.md) | What NFS is (vs. NCS Expert / INPA), original-binary layout, building-blocks-reuse table, resolved + open RE questions |
 | [`docs/raw-ds2-flashing.md`](docs/raw-ds2-flashing.md) | DS2 wire protocol spec — framing, SEED/KEY auth, erase/write/verify commands, per-ECU region tables, MS4x checksums |
 | [`docs/bootmode.md`](docs/bootmode.md) | C167 BSL bootmode — entry sequence, MiniMon path, JMG blob path, annotated disassembly of the JMG secondary |
+| [`docs/ms45-flashing.md`](docs/ms45-flashing.md) | MS45 SGBD-driven flashing — memory model, job choreography, RSA-1024 auth + firmware signing, CRC-32/MPEG-2 checksums, credits |
 
 ## Packages
 
@@ -393,6 +417,7 @@ EDIABAS entirely (rehearsal / unit-test path).
 | `@emdzej/nfsx-flash-data` | `.0PA` / `.0DA` parser, S37 parser, memory-region builder, CRC32, MS42/MS43 firmware CRC-16/CCITT verify+rewrite, VIN codec, UIF/ISN/immo field access, virginize |
 | `@emdzej/nfsx-directmode` | Raw DS2 flashing for MS42 / MS43 / GS20 — IDENT → SEED/KEY → erase → write → verify, full + calibration modes |
 | `@emdzej/nfsx-bootmode` | C167 silicon BSL bootmode flashing for bench-pulled MS42 / MS43 / ME 7.2 — MiniMon + custom stubs path and JMG blob path (monolithic secondary with built-in flash driver) |
+| `@emdzej/nfsx-ms45` | MS45.0 / MS45.1 SGBD-driven flashing — probe / read / write / offline checksum. RSA-1024 auth + firmware signing + CRC-32/MPEG-2 checksum recompute. Clean-room reimplementation of terraphantm/MS45-Flasher |
 | `@emdzej/nfsx-runtime` | NFS-specific CABI slot overrides on the inpax VM (file-I/O, BinBuf, ApiJobData, firmware-source iterator) |
 | `@emdzej/nfsx-resolver` | SP-Daten lookup chain (HWNR → SG_TYP → IPO + SGBD + ZB rows) |
 | `@emdzej/nfsx-data-files` | Per-format parsers for the SP-Daten text files (HWNR.DA2 / KFCONF10.DA2 / npv.dat / prgifsel.dat / SGIDC.AS2 / kmm_SIT.txt / `<SG>.DAT`) |
@@ -416,6 +441,14 @@ The three flash paths cover different operating modes:
   secondary with built-in flash driver). Bench-pull only; recovers
   bricked ECUs since it doesn't depend on existing firmware.
   See [`docs/bootmode.md`](docs/bootmode.md).
+- **`nfsx ms45`** (SGBD-driven, via `nfsx-ms45`) — MS45.0 (E46 DS2) and
+  MS45.1 (E60/E65 BMW-FAST) DMEs over the EDIABAS `D_Motor` group.
+  Different shape from the others: it uses SGBD jobs (not IPO, not raw
+  wire) and requires an ECU dir containing `MS450DS0.prg` /
+  `10MDS45.prg`. Handles RSA-1024 auth + per-write CRC-32/MPEG-2 and
+  RSA-1024 firmware-signature recompute automatically. Clean-room
+  reimplementation of terraphantm/MS45-Flasher; see
+  [`docs/ms45-flashing.md`](docs/ms45-flashing.md).
 
 Built on top of [`@emdzej/inpax`](https://github.com/emdzej/inpax)
 (IPO bytecode VM), [`@emdzej/ediabasx`](https://github.com/emdzej/ediabasx)

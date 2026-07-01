@@ -1,0 +1,33 @@
+{
+  "name": "@emdzej/nfsx-ms45",
+  "version": "0.0.1",
+  "description": "MS45 DME flashing helpers — offline CRC-32/MPEG-2 checksum verify/rewrite, RSA-1024 firmware signing, security-access payload builder, and (Stage 2+) SGBD-driven flash session for BMW MS45.0 / MS45.1 engine control units.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@emdzej/ediabasx-core": "^0.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "vitest": "^2.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emdzej/nfsx.git",
+    "directory": "packages/nfsx-ms45"
+  }
+}
