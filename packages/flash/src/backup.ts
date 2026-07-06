@@ -30,11 +30,9 @@
  * design (see [[feedback-precheck-ipo-driven]]).
  */
 
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
-import { startNfsRuntimeFromPath } from '@emdzej/nfsx-runtime/node';
-import type { EcuTarget } from './types.js';
+import type { IpoRuntimeStart } from '@emdzej/nfsx-runtime';
+import type { BackupEmitter, EcuTarget } from './types.js';
 
 export interface BackupReport {
   /** ISO-8601 timestamp the backup was taken (UTC). */
@@ -117,11 +115,12 @@ export const ZIF_BACKUP_NOT_AVAILABLE = 0x427;
 export async function runBackup(
   ecu: EcuTarget,
   ediabas: IEdiabasProvider,
+  startRuntime: IpoRuntimeStart,
   opts: BackupOptions = {},
 ): Promise<BackupReport> {
   const jobs = opts.jobs ?? DEFAULT_BACKUP_JOBS;
 
-  const handle = await startNfsRuntimeFromPath(ecu.ipoPath, {
+  const handle = await startRuntime(ecu.ipoPath, {
     sgbd: ecu.sgbd,
     ediabas,
     cabdPars: { HWNR_IS_NEW: '0', ...(opts.cabdPars ?? {}) },
@@ -177,23 +176,27 @@ export async function runBackup(
 }
 
 /**
- * Persist a `BackupReport` to disk. Default filename pattern:
- * `<HWNR>-<ZB>-<UTC-timestamp>.json` under the chosen directory.
- * Creates the directory if missing. Returns the resolved absolute
- * path.
+ * Serialize a `BackupReport` to the canonical JSON bytes that
+ * `writeBackupFile` (Node) and the browser's Blob-download emitter
+ * both wrap. Trailing newline preserved for git-friendly diffs.
  */
-export function writeBackupFile(
-  report: BackupReport,
-  outputDir: string,
-  filename?: string,
-): string {
-  const dir = resolvePath(outputDir);
-  mkdirSync(dir, { recursive: true });
+export function serializeBackup(report: BackupReport): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(report, null, 2) + '\n');
+}
 
+/**
+ * Route a `BackupReport` through a `BackupEmitter`. Resolves to the
+ * caller-visible location the emitter returned (path / download name)
+ * or `undefined` when the emitter doesn't report one.
+ */
+export async function emitBackup(
+  report: BackupReport,
+  emitter: BackupEmitter,
+  filename?: string,
+): Promise<string | undefined> {
   const name = filename ?? defaultBackupFilename(report);
-  const path = join(dir, name);
-  writeFileSync(path, JSON.stringify(report, null, 2) + '\n', 'utf-8');
-  return path;
+  const bytes = serializeBackup(report);
+  return (await emitter.emit(name, bytes)) ?? undefined;
 }
 
 /**

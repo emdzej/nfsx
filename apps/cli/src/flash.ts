@@ -27,9 +27,11 @@ import {
   FlashSession,
   allowAllConfirmation,
   buildPromptConfirmation,
+  nodeStartRuntime,
+  nodeBackupEmitter,
   type Stage,
   type ConfirmContext,
-} from '@emdzej/nfsx-flash';
+} from '@emdzej/nfsx-flash/node';
 import {
   resolveFlashContext,
   FlashContextError,
@@ -144,6 +146,8 @@ export async function runFlash(opts: FlashOptions): Promise<number> {
     },
     firmware,
     ediabas,
+    startRuntime: nodeStartRuntime,
+    backup: { emitter: nodeBackupEmitter('./backups') },
     program: Object.keys(programOpts).length > 0 ? programOpts : undefined,
   });
 

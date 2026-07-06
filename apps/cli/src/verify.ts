@@ -11,7 +11,7 @@
 
 import { readFileSync } from 'node:fs';
 import chalk from 'chalk';
-import { runBackup } from '@emdzej/nfsx-flash';
+import { runBackup, nodeStartRuntime } from '@emdzej/nfsx-flash/node';
 import {
   resolveFlashContextLite,
   FlashContextError,
@@ -83,6 +83,7 @@ export async function runVerifyCmd(opts: VerifyOptions): Promise<number> {
     const report = await runBackup(
       { sgbd, ipoPath, swtIpoPath: '', expectedHwnr: opts.hwnr },
       provider.provider,
+      nodeStartRuntime,
     );
 
     // 4. Optional diff against a saved backup.

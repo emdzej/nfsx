@@ -11,6 +11,7 @@
  */
 
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
+import type { IpoRuntimeStart } from '@emdzej/nfsx-runtime';
 
 /**
  * Common host pre-seeds the FSC IPOs read at the top of every job
@@ -39,6 +40,14 @@ export interface FscCabdParPreseeds {
 }
 
 export interface FscManagerOptions {
+  /**
+   * Loads + starts an `NfsRuntimeHandle` for the FSC IPO. Node
+   * consumers pass `startNfsRuntimeFromPath` from
+   * `@emdzej/nfsx-runtime/node`; browsers pass a closure that pulls
+   * bytes out of the mounted SP-Daten VFS and delegates to
+   * `startNfsRuntime`. See `IpoRuntimeStart` for the contract.
+   */
+  startRuntime: IpoRuntimeStart;
   /**
    * Path to the 00swt*.ipo file for the ECU's transport.
    *

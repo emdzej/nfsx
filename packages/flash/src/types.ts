@@ -42,6 +42,7 @@
 
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
 import type { MemoryRegion } from '@emdzej/nfsx-flash-data';
+import type { IpoRuntimeStart } from '@emdzej/nfsx-runtime';
 
 /** Flash pipeline stages. */
 export type Stage =
@@ -98,12 +99,32 @@ export interface PrecheckOptions {
 }
 
 /**
+ * Sink for the BACKUP stage's JSON payload. Node emits to a file
+ * under `outputDir`; browsers offer the bytes as a Blob download.
+ * Return the caller-visible location (path, URL, "download") for
+ * logs — or `undefined` if no location applies.
+ */
+export interface BackupEmitter {
+  emit(
+    filename: string,
+    bytes: Uint8Array,
+  ): Promise<string | undefined> | string | undefined;
+}
+
+/**
  * Backup options — see `backup.ts`. Captures an audit snapshot
  * before any destructive operation.
  */
 export interface BackupOptions {
-  /** Output directory. */
-  outputDir?: string;
+  /**
+   * Where the serialized `BackupReport` gets written. Node callers
+   * typically use `nodeBackupEmitter(outputDir)`; browsers a
+   * `Blob`-download emitter. When omitted, the BACKUP stage still
+   * runs but the bytes go nowhere — useful for tests + dry-run
+   * flows where the operator just wants the audit trace in the
+   * event log.
+   */
+  emitter?: BackupEmitter;
   /** Filename override. Default: `<HWNR>-<ZB>-<timestamp>.json`. */
   filename?: string;
   /** When `true`, skip the BACKUP stage entirely. Default `false`. */
@@ -169,7 +190,12 @@ export interface FlashResult {
   abortedAt?: Stage;
   /** Why the abort happened. */
   abortReason?: string;
-  /** Path to the BACKUP JSON, if BACKUP ran. */
+  /**
+   * Caller-visible location the BACKUP JSON landed at, as returned by
+   * the `BackupEmitter`. Node emitters return an absolute path;
+   * browser emitters typically return the downloaded filename. Empty
+   * when the BACKUP stage was skipped or ran without an emitter.
+   */
   backupPath?: string;
   /** Total bytes in the firmware payload (from RESOLVE). */
   totalBytes: number;
@@ -198,6 +224,15 @@ export interface FlashSessionOptions {
    */
   firmware: { regions: MemoryRegion[] } | { s37Bytes: Uint8Array } | { paDaBytes: Uint8Array };
   ediabas: IEdiabasProvider;
+  /**
+   * Loads + starts an `NfsRuntimeHandle` for the target IPO. Node
+   * consumers pass `startNfsRuntimeFromPath` from
+   * `@emdzej/nfsx-runtime/node`; browsers pass a closure that pulls
+   * bytes out of the mounted SP-Daten VFS and delegates to
+   * `startNfsRuntime`. This is the seam that keeps the package
+   * browser-safe.
+   */
+  startRuntime: IpoRuntimeStart;
   precheck?: PrecheckOptions;
   backup?: BackupOptions;
   /** Cabd-pars + AIF metadata for the SG_PROGRAMMIEREN dispatch. */

@@ -25,6 +25,7 @@ export {
   type FirmwareSource,
   type BuildSystemFunctionsOptions,
 } from './system-functions.js';
+export type { IpoRuntimeStart } from './index.js';
 
 /**
  * Convenience: read the IPO from `path`, wire the Node fileBackend

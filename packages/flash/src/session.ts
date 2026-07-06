@@ -18,7 +18,7 @@ import {
   type PaDaRecord,
 } from '@emdzej/nfsx-flash-data';
 import { runPrecheck } from './precheck.js';
-import { runBackup, writeBackupFile } from './backup.js';
+import { runBackup, emitBackup } from './backup.js';
 import { runProgramSg } from './prog-sg.js';
 import {
   buildRegionsFirmwareSource,
@@ -102,6 +102,7 @@ export class FlashSession {
         const report = await runPrecheck(
           this.opts.ecu,
           this.opts.ediabas,
+          this.opts.startRuntime,
           this.opts.precheck,
         );
         stagesRun.push('PRECHECK');
@@ -136,10 +137,26 @@ export class FlashSession {
             reason: skipBackup ? '--no-backup' : 'backup.skip = true',
           });
         } else {
-          const report = await runBackup(this.opts.ecu, this.opts.ediabas);
-          const outputDir = this.opts.backup?.outputDir ?? './backups';
-          backupPath = writeBackupFile(report, outputDir, this.opts.backup?.filename);
-          this.emit({ type: 'log', level: 'info', message: `backup saved → ${backupPath}` });
+          const report = await runBackup(
+            this.opts.ecu,
+            this.opts.ediabas,
+            this.opts.startRuntime,
+          );
+          const emitter = this.opts.backup?.emitter;
+          if (emitter) {
+            backupPath = await emitBackup(report, emitter, this.opts.backup?.filename);
+            if (backupPath) {
+              this.emit({ type: 'log', level: 'info', message: `backup saved → ${backupPath}` });
+            } else {
+              this.emit({ type: 'log', level: 'info', message: `backup emitted` });
+            }
+          } else {
+            this.emit({
+              type: 'log',
+              level: 'info',
+              message: `backup captured (no emitter — audit trace only)`,
+            });
+          }
         }
         stagesRun.push('BACKUP');
         this.emit({ type: 'stage:done', stage: 'BACKUP', durationMs: Date.now() - t0 });
@@ -184,6 +201,7 @@ export class FlashSession {
           const report = await runProgramSg(
             this.opts.ecu,
             this.opts.ediabas,
+            this.opts.startRuntime,
             this.opts.program,
             firmwareSource,
             onProgress,
@@ -221,6 +239,7 @@ export class FlashSession {
           const report = await runPrecheck(
             this.opts.ecu,
             this.opts.ediabas,
+            this.opts.startRuntime,
             // Skip FSC + hwnr_match — after a successful flash the
             // identity may have changed; we just want a liveness check.
             { skip: ['fsc', 'hwnr_match', 'sg_aif'] },

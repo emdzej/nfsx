@@ -20,7 +20,7 @@
  */
 
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
-import { startNfsRuntimeFromPath } from '@emdzej/nfsx-runtime/node';
+import type { IpoRuntimeStart, NfsRuntimeHandle } from '@emdzej/nfsx-runtime';
 import { FscManager } from '@emdzej/nfsx-fsc';
 import type { EcuTarget, PrecheckOptions } from './types.js';
 
@@ -69,6 +69,7 @@ export interface PrecheckEntry {
 export async function runPrecheck(
   ecu: EcuTarget,
   ediabas: IEdiabasProvider,
+  startRuntime: IpoRuntimeStart,
   opts: PrecheckOptions = {},
 ): Promise<PrecheckReport> {
   const skip = new Set(opts.skip ?? []);
@@ -89,9 +90,9 @@ export async function runPrecheck(
   const runAny = allFour.some((c) => !skip.has(c));
 
   if (runAny) {
-    let handle: Awaited<ReturnType<typeof startNfsRuntimeFromPath>>;
+    let handle: NfsRuntimeHandle;
     try {
-      handle = await startNfsRuntimeFromPath(ecu.ipoPath, { sgbd: ecu.sgbd, ediabas, workingDir: ecu.workingDir });
+      handle = await startRuntime(ecu.ipoPath, { sgbd: ecu.sgbd, ediabas, workingDir: ecu.workingDir });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const failure = { ok: false, reason: `IPO load failed: ${msg}` };
@@ -100,7 +101,7 @@ export async function runPrecheck(
       report.sgIdent = skip.has('sg_ident') ? { ok: true, skipped: true } : failure;
       report.sgAif = skip.has('sg_aif') ? { ok: true, skipped: true } : failure;
       report.hwnrMatch = skip.has('hwnr_match') ? { ok: true, skipped: true } : failure;
-      report.fsc = await runFscCheck(ecu, ediabas, skip.has('fsc'));
+      report.fsc = await runFscCheck(ecu, ediabas, startRuntime, skip.has('fsc'));
       report.ok = false;
       return report;
     }
@@ -121,7 +122,7 @@ export async function runPrecheck(
   }
 
   report.hwnrMatch = checkHwnrMatch(ecu, report.sgIdent, skip.has('hwnr_match'));
-  report.fsc = await runFscCheck(ecu, ediabas, skip.has('fsc'));
+  report.fsc = await runFscCheck(ecu, ediabas, startRuntime, skip.has('fsc'));
 
   report.ok =
     (report.hwReferenz.skipped || report.hwReferenz.ok) &&
@@ -134,7 +135,7 @@ export async function runPrecheck(
   return report;
 }
 
-type Handle = Awaited<ReturnType<typeof startNfsRuntimeFromPath>>;
+type Handle = NfsRuntimeHandle;
 
 async function dispatchHwReferenz(
   handle: Handle,
@@ -264,6 +265,7 @@ function checkHwnrMatch(
 async function runFscCheck(
   ecu: EcuTarget,
   ediabas: IEdiabasProvider,
+  startRuntime: IpoRuntimeStart,
   skip: boolean,
 ): Promise<PrecheckEntry> {
   if (skip) return { ok: true, skipped: true };
@@ -272,6 +274,7 @@ async function runFscCheck(
       ipoPath: ecu.swtIpoPath,
       sgbd: ecu.sgbd,
       ediabas,
+      startRuntime,
     });
     const result = await mgr.checkFsc();
     if (!result.ok) {

@@ -19,7 +19,7 @@
  */
 
 import type { IEdiabasProvider } from '@emdzej/inpax-interfaces';
-import { startNfsRuntimeFromPath, type FirmwareSource } from '@emdzej/nfsx-runtime/node';
+import type { FirmwareSource, IpoRuntimeStart } from '@emdzej/nfsx-runtime';
 import type { EcuTarget } from './types.js';
 import {
   buildInstrumentedFirmwareSource,
@@ -146,6 +146,7 @@ export interface ProgramReport {
 export async function runProgramSg(
   ecu: EcuTarget,
   ediabas: IEdiabasProvider,
+  startRuntime: IpoRuntimeStart,
   opts: ProgramOptions = {},
   firmwareSource?: FirmwareSource,
   onProgress?: (stats: import('./firmware-source.js').FirmwareSourceStats) => void,
@@ -182,7 +183,7 @@ export async function runProgramSg(
     : undefined;
 
   try {
-    const handle = await startNfsRuntimeFromPath(ecu.ipoPath, {
+    const handle = await startRuntime(ecu.ipoPath, {
       sgbd: ecu.sgbd,
       ediabas: countingProvider,
       cabdPars,
@@ -228,6 +229,7 @@ export async function runProgramSg(
 export async function runAifSchreiben(
   ecu: EcuTarget,
   ediabas: IEdiabasProvider,
+  startRuntime: IpoRuntimeStart,
   opts: ProgramOptions,
 ): Promise<ProgramReport> {
   const cabdPars: Record<string, string> = {};
@@ -246,7 +248,7 @@ export async function runAifSchreiben(
   const ediabasJobs = newEdiabasJobCounters();
   const countingProvider = wrapWithJobCounter(ediabas, ediabasJobs);
   try {
-    const handle = await startNfsRuntimeFromPath(ecu.ipoPath, {
+    const handle = await startRuntime(ecu.ipoPath, {
       sgbd: ecu.sgbd,
       ediabas: countingProvider,
       cabdPars,

@@ -14,6 +14,7 @@ export type OemView =
   | "browse"
   | "plan"
   | "check"
+  | "backup"
   | "flash"
   | "verify";
 

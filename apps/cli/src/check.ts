@@ -13,8 +13,9 @@ import chalk from 'chalk';
 import { readFileSync } from 'node:fs';
 import {
   runBackup,
+  nodeStartRuntime,
   ZIF_BACKUP_NOT_AVAILABLE,
-} from '@emdzej/nfsx-flash';
+} from '@emdzej/nfsx-flash/node';
 import {
   resolveFlashContextLite,
   FlashContextError,
@@ -77,6 +78,7 @@ export async function runCheckCmd(opts: CheckOptions): Promise<number> {
     const report = await runBackup(
       { sgbd, ipoPath, swtIpoPath: '', expectedHwnr: opts.hwnr },
       provider.provider,
+      nodeStartRuntime,
     );
 
     if (opts.json) {

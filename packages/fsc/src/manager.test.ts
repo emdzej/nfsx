@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { MockEdiabasProvider } from '@emdzej/inpax-mock-provider';
+import { startNfsRuntimeFromPath } from '@emdzej/nfsx-runtime/node';
 import { FscManager } from './manager.js';
 
 const SWT_KWP_PATH = `${process.env.HOME}/Downloads/inpa/EC-APPS/NFS/SGDAT/00swtkwp.ipo`;
@@ -14,6 +15,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('FscManager — Phase 4 host orchestr
     });
 
     const mgr = new FscManager({
+      startRuntime: startNfsRuntimeFromPath,
       ipoPath: SWT_KWP_PATH,
       sgbd: 'C_DSC_KWP',
       ediabas,
@@ -36,6 +38,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('FscManager — Phase 4 host orchestr
     // surface in `result.error`.
     const ediabas = new MockEdiabasProvider();
     const mgr = new FscManager({
+      startRuntime: startNfsRuntimeFromPath,
       ipoPath: SWT_KWP_PATH,
       sgbd: 'C_DSC_KWP',
       ediabas,
@@ -61,6 +64,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('FscManager — Phase 4 host orchestr
     });
 
     const mgr = new FscManager({
+      startRuntime: startNfsRuntimeFromPath,
       ipoPath: SWT_KWP_PATH,
       sgbd: 'C_DSC_KWP',
       ediabas,
@@ -83,6 +87,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('FscManager — Phase 4 host orchestr
     });
 
     const mgr = new FscManager({
+      startRuntime: startNfsRuntimeFromPath,
       ipoPath: SWT_KWP_PATH,
       sgbd: 'C_DSC_KWP',
       ediabas,
@@ -102,6 +107,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('FscManager — Phase 4 host orchestr
     // value back from cabd-pars.
     const ediabas = new MockEdiabasProvider();
     const mgr = new FscManager({
+      startRuntime: startNfsRuntimeFromPath,
       ipoPath: SWT_KWP_PATH,
       sgbd: 'C_DSC_KWP',
       ediabas,
@@ -122,6 +128,7 @@ describe.skipIf(!existsSync(SWT_KWP_PATH))('FscManager — Phase 4 host orchestr
     });
 
     const mgr = new FscManager({
+      startRuntime: startNfsRuntimeFromPath,
       ipoPath: SWT_KWP_PATH,
       sgbd: 'C_DSC_KWP',
       ediabas,

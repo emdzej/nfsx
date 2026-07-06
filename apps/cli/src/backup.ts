@@ -13,8 +13,9 @@ import { readFileSync } from 'node:fs';
 import {
   runBackup,
   writeBackupFile,
+  nodeStartRuntime,
   ZIF_BACKUP_NOT_AVAILABLE,
-} from '@emdzej/nfsx-flash';
+} from '@emdzej/nfsx-flash/node';
 import {
   resolveFlashContextLite,
   FlashContextError,
@@ -92,6 +93,7 @@ export async function runBackupCmd(opts: BackupOptions): Promise<number> {
         expectedHwnr: opts.hwnr,
       },
       provider.provider,
+      nodeStartRuntime,
     );
 
     const outputPath = writeBackupFile(report, opts.outputDir);

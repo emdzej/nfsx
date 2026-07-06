@@ -280,6 +280,12 @@
               </button>
               <button
                 class="rounded border border-rule px-2 py-0.5 text-xs text-muted hover:border-accent hover:bg-elevated hover:text-foreground"
+                onclick={() => (app.oemView = "backup")}
+              >
+                Backup →
+              </button>
+              <button
+                class="rounded border border-rule px-2 py-0.5 text-xs text-muted hover:border-accent hover:bg-elevated hover:text-foreground"
                 onclick={() => (app.oemView = "flash")}
               >
                 Flash →

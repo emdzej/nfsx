@@ -3,8 +3,10 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MockEdiabasProvider } from '@emdzej/inpax-mock-provider';
+import { startNfsRuntimeFromPath } from '@emdzej/nfsx-runtime/node';
 import { FlashSession } from './session.js';
 import { allowAllConfirmation } from './safety.js';
+import { nodeBackupEmitter } from './node.js';
 import type { EcuTarget, FlashSessionOptions } from './types.js';
 
 const SWT_KWP_PATH = `${process.env.HOME}/Downloads/inpa/EC-APPS/NFS/SGDAT/00swtkwp.ipo`;
@@ -68,6 +70,7 @@ describe('FlashSession — IPO-driven orchestrator', () => {
       ecu: ECU,
       firmware: SAMPLE_FIRMWARE,
       ediabas,
+      startRuntime: startNfsRuntimeFromPath,
       precheck: { skip: PRECHECK_SKIP },
       backup: { skip: true },
     });
@@ -96,8 +99,9 @@ describe('FlashSession — IPO-driven orchestrator', () => {
       ecu: ECU,
       firmware: SAMPLE_FIRMWARE,
       ediabas,
+      startRuntime: startNfsRuntimeFromPath,
       precheck: { skip: PRECHECK_SKIP_KEEP_FSC },
-      backup: { outputDir: backupDir },
+      backup: { emitter: nodeBackupEmitter(backupDir) },
     });
 
     const result = await session.run({ dryRun: false, confirm: allowAllConfirmation });
@@ -150,6 +154,7 @@ describe('FlashSession — IPO-driven orchestrator', () => {
       ecu: ECU,
       firmware: SAMPLE_FIRMWARE,
       ediabas,
+      startRuntime: startNfsRuntimeFromPath,
       precheck: { skip: PRECHECK_SKIP },
       backup: { skip: true },
     });
@@ -174,6 +179,7 @@ describe('FlashSession — IPO-driven orchestrator', () => {
       ecu: ECU,
       firmware: { s37Bytes: new TextEncoder().encode(s37) },
       ediabas,
+      startRuntime: startNfsRuntimeFromPath,
       precheck: { skip: PRECHECK_SKIP },
       backup: { skip: true },
     });
@@ -189,6 +195,7 @@ describe('FlashSession — IPO-driven orchestrator', () => {
       ecu: ECU,
       firmware: SAMPLE_FIRMWARE,
       ediabas,
+      startRuntime: startNfsRuntimeFromPath,
       precheck: { skip: PRECHECK_SKIP },
       backup: { skip: true },
     });
