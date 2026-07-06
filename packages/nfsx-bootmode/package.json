@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-bootmode",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Bootmode flashing for Infineon C167-based ECUs (BMW MS42/MS43, Bosch ME 7.2). Implements the C167 silicon BSL handshake and the MiniMon-style RAM monitor command protocol over K-line / ASC0 serial.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

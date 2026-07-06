@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.1 — 2026-07-06 — connect() idempotence
+
+Prophylactic patch. `useEmbeddedAutoConnect`'s `$effect` re-runs on
+any reactive state it reads, and `connect()`'s own
+`connection.status = { kind: 'connecting' }` is a reactive write —
+so the hook re-enters `connect()` before the first WebSocket
+finishes opening, spinning up N parallel sockets. Adds the same
+idempotence guard inpax's `connect()` has had since 0.11.0.
+
+Not observed leaking in nfsx yet (ncsx reported ~20 sockets to
+`/rpc/ediabasx` from a single Connect); the mechanism is identical
+so fixing before it bites.
+
+### Fixed
+
+- `apps/web/src/lib/ediabas-session.svelte.ts` — early-return from
+  `connect()` when `status.kind === 'connecting'` or when already
+  `'connected'` with an active session.
+
 ## 0.4.0 — 2026-07-06 — Embedded Build + Dongle K-line
 
 Adopts [ediabasx 0.8.0](https://github.com/emdzej/ediabasx/releases/tag/0.8.0)

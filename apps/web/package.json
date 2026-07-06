@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-web",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Browser SPA for nfsx — flash ECU firmware via IPO-driven, direct DS2, or C167 bootmode paths. Pure client-side; no server.",
   "private": true,
   "type": "module",

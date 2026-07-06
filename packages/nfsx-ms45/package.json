@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-ms45",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "MS45 DME flashing helpers — offline CRC-32/MPEG-2 checksum verify/rewrite, RSA-1024 firmware signing, security-access payload builder, and (Stage 2+) SGBD-driven flash session for BMW MS45.0 / MS45.1 engine control units.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-fsc",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "FSC + cert + identity host orchestrator for nfsx. Wraps @emdzej/nfsx-runtime with high-level FscManager operations (checkFsc / getFsc / getVin / getFsStatus / …) over the 00swt*.ipo CABI surface. The TypeScript equivalent of winkfpt's coapiKf* C functions, scoped to the FSC + cert + identity subset.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
