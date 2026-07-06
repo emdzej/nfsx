@@ -57,8 +57,17 @@ jobs:
       # to `npm publish` per package. `--provenance` attaches a
       # verifiable build attestation — free when publishing via trusted
       # publishing.
+      #
+      # `continue-on-error: true` — the npm publish is best-effort. If
+      # it fails (registry hiccup, OIDC handshake glitch, a specific
+      # package already published at this version, …) we don't want it
+      # to gate the embedded-zip upload that dongle packagers depend on.
+      # The step still shows as failed in the workflow UI so we notice
+      # and can retry with `workflow_dispatch`; but the job continues
+      # on to the artefact-upload steps below.
       - name: Publish packages
         if: ${{ github.event.inputs.dry_run != 'true' }}
+        continue-on-error: true
         run: pnpm -r publish --provenance --no-git-checks
 
       - name: Dry run
