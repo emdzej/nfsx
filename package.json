@@ -10,7 +10,11 @@
     "typecheck": "turbo run typecheck",
     "ci": "turbo run build lint typecheck test",
     "clean": "turbo run clean",
-    "web": "pnpm --filter @emdzej/nfsx-web dev"
+    "web": "pnpm --filter @emdzej/nfsx-web dev",
+    "build:web": "pnpm --filter @emdzej/nfsx-web build",
+    "build:web:embedded": "pnpm --filter @emdzej/nfsx-web build:embedded",
+    "preview:web": "pnpm --filter @emdzej/nfsx-web preview",
+    "preview:web:embedded": "pnpm --filter @emdzej/nfsx-web preview:embedded"
   },
   "devDependencies": {
     "@types/node": "^22.13.1",

@@ -20,11 +20,14 @@ import {
   writeFullFlash as pkgWriteFullFlash,
   type BootmodeProgress,
   type BootmodeSessionConfig,
+  type BootmodeTransport,
   type BundleLoader,
   type IntegrityReport,
 } from "@emdzej/nfsx-bootmode";
 import { WebBootmodeTransport } from "./bootmode-transport";
 import { createWebBundleLoader } from "./bootmode-bundle-loader";
+import { isEmbedded, embeddedEndpoints } from "./embedded";
+import { RpcUartTransport, UartRevokedError } from "./rpc-uart-transport";
 
 export type BmConnectionStatus =
   | { kind: "disconnected" }
@@ -50,9 +53,46 @@ export const bm: BmSessionState = $state({
 });
 
 // Module-level (not part of state) — the active transport instance
-// and the bundle loader. Neither is reactive.
-let activeTransport: WebBootmodeTransport | null = null;
+// and the bundle loader. Neither is reactive. `activeTransport` is
+// typed against the shared `BootmodeTransport` interface so either
+// the Web Serial-backed `WebBootmodeTransport` or the dongle-path
+// `RpcBootmodeTransport` adapter can live here interchangeably.
+let activeTransport: BootmodeTransport | null = null;
+let activeRpc: RpcUartTransport | null = null;
 let bundleLoader: BundleLoader = createWebBundleLoader();
+
+/**
+ * Thin `BootmodeTransport` adapter around `RpcUartTransport`. The
+ * dongle firmware strips the K-line half-duplex echo server-side
+ * (via `consumeEcho: true` at open time), so the BSL layer sees
+ * only response bytes — no echo-verify needed here. Handles the
+ * timeout-argument mismatch: `BootmodeTransport.read` allows an
+ * optional `timeoutMs`, `RpcUartTransport.read` requires it; we
+ * fall back to a large default when the caller omits it.
+ */
+class RpcBootmodeTransport implements BootmodeTransport {
+  constructor(private readonly rpc: RpcUartTransport, private readonly defaultTimeoutMs = 5000) {}
+
+  async open(): Promise<void> {
+    await this.rpc.open();
+  }
+
+  async close(): Promise<void> {
+    await this.rpc.close();
+  }
+
+  async write(data: Uint8Array): Promise<void> {
+    await this.rpc.write(data);
+  }
+
+  async read(count: number, timeoutMs?: number): Promise<Uint8Array> {
+    return this.rpc.read(count, timeoutMs ?? this.defaultTimeoutMs);
+  }
+
+  flushInput(): void {
+    this.rpc.flushInput();
+  }
+}
 
 /**
  * Rebuild the bundle loader. Only useful for tests; the default
@@ -66,8 +106,14 @@ function isWebSerialAvailable(): boolean {
   return typeof navigator !== "undefined" && "serial" in navigator;
 }
 
+/**
+ * Whether the Connect K-line button will work in this build. The
+ * embedded build talks to the dongle over WebSocket instead of Web
+ * Serial, so the browser API is irrelevant — always show the button
+ * as usable there.
+ */
 export function isWebSerialSupported(): boolean {
-  return isWebSerialAvailable();
+  return isEmbedded || isWebSerialAvailable();
 }
 
 // ── connection lifecycle ───────────────────────────────────────────
@@ -80,14 +126,47 @@ export interface ConnectBootmodeOptions {
 }
 
 export async function connectBootmode(opts: ConnectBootmodeOptions = {}): Promise<void> {
-  if (!isWebSerialAvailable()) {
-    bm.status = { kind: "error", message: "Web Serial not available" };
-    return;
-  }
   bm.status = { kind: "connecting" };
   bm.lastError = null;
   const baud = opts.baudRate ?? 19200;
+
   try {
+    if (isEmbedded) {
+      /* Dongle path — RpcUartTransport with `consumeEcho: true` so
+         the firmware strips the K-line half-duplex echo server-side.
+         The BSL protocol above expects to only see response bytes,
+         which matches. `exclusive: true` because a stray dashboard
+         tab issuing an ediabasx `job` would fight over the same
+         physical wire. */
+      const { uartWsUrl } = embeddedEndpoints();
+      const rpc = new RpcUartTransport({
+        wsUrl: uartWsUrl,
+        exclusive: true,
+        consumeEcho: true,
+        onRevoked: (by) => {
+          bm.status = { kind: "error", message: `K-line taken by ${by}` };
+        },
+      });
+      /* Baud has to be applied via configure() before open — the
+         firmware's `uart.open` accepts a `baud` param, but we want
+         to keep the RpcUartTransport constructor call-site agnostic.
+         Configure here uses the transport's stashed config; open()
+         picks it up. */
+      await rpc.configure({ baudRate: baud, dataBits: 8, parity: "none", stopBits: 1 });
+      const transport = new RpcBootmodeTransport(rpc);
+      await transport.open();
+      activeTransport = transport;
+      activeRpc = rpc;
+      bm.status = { kind: "connected", portInfo: "dongle K-line", baud };
+      return;
+    }
+
+    /* Browser path — port picker + WebBootmodeTransport with the
+       echo-verify layer above the raw Web Serial writes. */
+    if (!isWebSerialAvailable()) {
+      bm.status = { kind: "error", message: "Web Serial not available" };
+      return;
+    }
     const serial = (
       navigator as unknown as {
         serial: { requestPort(): Promise<PortHandle> };
@@ -110,7 +189,10 @@ export async function connectBootmode(opts: ConnectBootmodeOptions = {}): Promis
       bm.status = { kind: "disconnected" };
       return;
     }
-    bm.status = { kind: "error", message: (err as Error).message };
+    const message = err instanceof UartRevokedError
+      ? `K-line revoked by ${err.by}`
+      : (err as Error).message;
+    bm.status = { kind: "error", message };
   }
 }
 
@@ -123,6 +205,7 @@ export async function disconnectBootmode(): Promise<void> {
     }
     activeTransport = null;
   }
+  activeRpc = null;
   bm.status = { kind: "disconnected" };
   bm.progress = null;
 }
@@ -131,7 +214,7 @@ function onProgress(p: BootmodeProgress): void {
   bm.progress = { ...p };
 }
 
-function requireTransport(): WebBootmodeTransport {
+function requireTransport(): BootmodeTransport {
   if (!activeTransport) {
     throw new Error("bootmode: not connected — call connectBootmode() first");
   }

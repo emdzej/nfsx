@@ -1,0 +1,93 @@
+name: Publish Packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (do not publish)'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # `id-token: write` is required to mint the OIDC token that npm
+      # trusted publishing exchanges for a short-lived publish credential.
+      # Without it the `npm publish` step would fall back to looking for
+      # NODE_AUTH_TOKEN and fail. Mirrors the ediabasx / inpax / ncsx
+      # publish workflows.
+      # `contents: write` lets the "Attach embedded web bundle" step
+      # upload the dongle artefact to the GitHub Release.
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          # Pin the registry so the OIDC handshake targets npmjs.org.
+          # Each publishable package declares `publishConfig.access:
+          # "public"` (scoped packages default to private; that flag
+          # flips them to public so they don't trip npm 402).
+          registry-url: 'https://registry.npmjs.org'
+
+      # Node 22 ships with npm 10; npm trusted publishing (the OIDC ↔
+      # npmjs.org flow) requires npm >= 11.5.1.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      # pnpm -r publish walks the workspace, skips private packages
+      # (currently apps/web + apps/cli where appropriate), and forwards
+      # to `npm publish` per package. `--provenance` attaches a
+      # verifiable build attestation — free when publishing via trusted
+      # publishing.
+      - name: Publish packages
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: pnpm -r publish --provenance --no-git-checks
+
+      - name: Dry run
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: pnpm -r publish --provenance --no-git-checks --dry-run
+
+      # Dongle-hosted variant of the web SPA (mounted at `/nfsx/` on
+      # the Bimmerz Box). Not published to npm — packagers grab it from
+      # the GitHub Release and drop it under `/sdcard/apps/nfsx/`.
+      # See apps/web/README.md#embedded-build-dongle-hosted.
+      - name: Build embedded web bundle
+        if: ${{ github.event_name == 'release' }}
+        run: pnpm --filter @emdzej/nfsx-web build:embedded
+
+      # Zip with a versioned name so multiple releases coexist on the
+      # same download page. The release tag drives the version; skipped
+      # entirely for manual `workflow_dispatch` runs.
+      - name: Package embedded web bundle
+        if: ${{ github.event_name == 'release' }}
+        id: package-embedded
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          artifact="nfsx-web-embedded-${version}.zip"
+          (cd apps/web/dist-embedded && zip -r "../../../${artifact}" .)
+          echo "artifact=${artifact}" >> "$GITHUB_OUTPUT"
+
+      - name: Attach embedded web bundle to release
+        if: ${{ github.event_name == 'release' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.package-embedded.outputs.artifact }}" --clobber

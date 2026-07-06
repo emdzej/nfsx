@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.4.0 — 2026-07-06 — Embedded Build + Dongle K-line
+
+Adopts [ediabasx 0.8.0](https://github.com/emdzej/ediabasx/releases/tag/0.8.0)
+and [inpax 0.12.0](https://github.com/emdzej/inpax/releases/tag/0.12.0),
+adds a `--mode embedded` build for the [Bimmerz Box](https://github.com/emdzej/bimmerz-box)
+dongle, and swaps every K-line consumer over to a dongle-hosted
+JSON-RPC transport when running embedded. Attaches
+`nfsx-web-embedded-<version>.zip` to every GitHub Release so dongle
+packagers can drop the SPA onto the SD card without cloning the
+monorepo.
+
+Nothing changes for the hosted browser build at `nfsx.bimmerz.app` —
+the embedded gates are compile-time `__EMBEDDED__` constants that
+tree-shake in either build.
+
+### Added
+
+- **`RpcUartTransport`** (`apps/web/src/lib/rpc-uart-transport.ts`) —
+  a `SerialTransport` implementation backed by the dongle firmware's
+  `/rpc/uart/0` JSON-RPC-over-WebSocket endpoint. Wraps `uart.open`
+  / `uart.configure` / `uart.write` / `uart.transact` / `uart.slowInit`
+  / `uart.fastInit` / `uart.close` + streams `uart.rx` /
+  `uart.revoked` / `uart.error` notifications. 14 vitest cases with
+  a fake WebSocket cover open / write / read reassembly / timeout /
+  revoke / close / malformed-input tolerance.
+- **Embedded-mode auto-connect** (OEM scope) via
+  `@emdzej/bimmerz-ui@0.2.0`'s `useEmbeddedAutoConnect` hook. Opens
+  the same-origin `/rpc/ediabasx` RPC session once the install has
+  mounted (`isReady: () => app.install !== null`), retries with
+  exponential backoff on transient drops (1 → 2 → 4 → 8 → 16 → 30 s
+  cap), disconnects cleanly on `beforeunload` / `pagehide`.
+  Attempts stream to the `nfsx.autoconnect` bimmerz-logger category.
+- **Directmode dongle path** — `directmode-session.svelte.ts`
+  branches on `isEmbedded` and builds an `RpcUartTransport` bound
+  to `${origin}/rpc/uart/0` instead of `navigator.serial.requestPort()`.
+  The `Ds2DirectModeTransport` above the byte-pipe stays unchanged —
+  DS2 framing / echo / baud switches work identically over the
+  WebSocket. `exclusive: true` so a stray dashboard tab issuing an
+  ediabasx `job` can't fight over the wire mid-flash.
+- **Bootmode dongle path** — `bootmode-session.svelte.ts` swaps
+  `WebBootmodeTransport` for a thin `RpcBootmodeTransport` adapter
+  (dongle strips the K-line echo server-side via `consumeEcho: true`,
+  so no echo-verify layer is needed above). BSL protocol code
+  unchanged.
+- **Embedded-build infra** — `lib/embedded.ts` (`isEmbedded`,
+  `embeddedEndpoints()`), `__EMBEDDED__` compile-time constant,
+  `build:embedded` + `preview:embedded` scripts, config-load
+  overrides so persisted `mode` / `serverUrl` never fight the dongle
+  origin, PWA + service worker dropped in the embedded build,
+  base path rewritten to `/nfsx/`.
+- **Bimmerz Box `manifest.json`** emitted by a small Vite plugin —
+  `name` / `description` / `version` from `package.json` / `icon`
+  (`requires: ["kline"]`). Schema: [bimmerz-box's App manifest
+  section](https://github.com/emdzej/bimmerz-box#app-manifest).
+- **`apps/web/README.md`** — first draft, covering the two scopes
+  and the embedded-build workflow.
+
+### Release artefacts
+
+- **`nfsx-web-embedded-<version>.zip`** attached to each GitHub
+  Release via `publish.yml`. Workflow runs
+  `pnpm --filter @emdzej/nfsx-web build:embedded`, zips
+  `dist-embedded/`, and uploads via `gh release upload`. Skipped on
+  manual `workflow_dispatch` / dry runs.
+- New `publish.yml` also runs `pnpm -r publish --provenance` on
+  release-published, mirroring the ediabasx / inpax / ncsx pattern.
+
+### Changed
+
+- **`@emdzej/ediabasx-*` deps bumped `^0.7.1` → `^0.8.0`** across
+  `nfsx-web`, `nfsx-cli`, `nfsx-flash`, `nfsx-runtime`,
+  `nfsx-directmode`, `nfsx-ms45`.
+- **`@emdzej/inpax-*` deps bumped `^0.11.1` → `^0.12.0`** across
+  `nfsx-web`, `nfsx-cli`, `nfsx-flash`, `nfsx-runtime`, `nfsx-fsc`.
+
+### Dependencies
+
+- **`@emdzej/bimmerz-ui@^0.2.0`** — new dep of `@emdzej/nfsx-web`.
+  Source-only Svelte package — added to `optimizeDeps.exclude` so
+  each `.svelte` / `.svelte.ts` file is routed through
+  `@sveltejs/vite-plugin-svelte`'s transform instead of esbuild's
+  pre-bundler.
+- **`vitest@^2.1.8`** — new devDep of `@emdzej/nfsx-web` for the
+  `RpcUartTransport` unit tests.
+
 ## 0.3.0 — MS45 Flashing, Browser Bootmode
 
 Fourth flash path (BMW MS45.0 / MS45.1 DMEs over the EDIABAS `D_Motor` SGBD), plus a functional bootmode flow in the web app. Bootmode package is now browser-safe end to end.

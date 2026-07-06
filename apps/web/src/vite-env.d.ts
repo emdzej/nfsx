@@ -5,3 +5,4 @@
 declare const __APP_VERSION__: string;
 declare const __EDIABASX_VERSION__: string;
 declare const __INPAX_VERSION__: string;
+declare const __EMBEDDED__: boolean;

@@ -1,6 +1,28 @@
 <script lang="ts">
+  import { useEmbeddedAutoConnect } from "@emdzej/bimmerz-ui";
+  import { getLogger } from "@emdzej/bimmerz-logger";
   import { app } from "./lib/state.svelte";
+  import { connection, connect, disconnect } from "./lib/ediabas-session.svelte";
+  import { isEmbedded } from "./lib/embedded";
   import { loadRemoteInstallUrl } from "./lib/install-storage";
+
+  /* Embedded-mode lifecycle — dongle-hosted nfsx auto-connects the
+     OEM scope's IEdiabas session once the install has mounted from
+     `${origin}/data`. Only the OEM scope needs this — the Flashing
+     scope's directmode / bootmode sessions have their own transport
+     open/close flow (against `/rpc/uart/0` when embedded, driven by
+     the Connect K-line button on each subview). No-op in the browser
+     build. */
+  const autoConnectLog = getLogger("nfsx.autoconnect");
+  useEmbeddedAutoConnect({
+    isEmbedded,
+    connect,
+    disconnect,
+    isReady: () => app.install !== null,
+    isConnected: () => connection.status.kind === "connected",
+    log: (msg: string, level?: "info" | "warn" | "error") =>
+      autoConnectLog[level ?? "info"](msg),
+  });
 
   import ErrorBanner from "./components/shared/ErrorBanner.svelte";
   import ConnectButton from "./components/shared/ConnectButton.svelte";
@@ -12,6 +34,9 @@
   import BrowseView from "./components/oem/BrowseView.svelte";
   import PlanView from "./components/oem/PlanView.svelte";
   import CheckView from "./components/oem/CheckView.svelte";
+  import BackupView from "./components/oem/BackupView.svelte";
+  import FlashView from "./components/oem/FlashView.svelte";
+  import VerifyView from "./components/oem/VerifyView.svelte";
 
   import ChecksumView from "./components/flashing/ChecksumView.svelte";
   import TuneView from "./components/flashing/TuneView.svelte";
@@ -230,6 +255,12 @@
         <PlanView />
       {:else if app.oemView === "check"}
         <CheckView />
+      {:else if app.oemView === "backup"}
+        <BackupView />
+      {:else if app.oemView === "flash"}
+        <FlashView />
+      {:else if app.oemView === "verify"}
+        <VerifyView />
       {/if}
     {:else}
       <!-- Flashing sub-tabs -->

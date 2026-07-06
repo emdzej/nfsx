@@ -1,6 +1,6 @@
 {
   "name": "@emdzej/nfsx-runtime",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "CABI-style IPO runtime for nfsx. Wraps the inpax VM with the NCSEXPER 99-slot CABI surface (via @emdzej/ncsx-inpax-cabi-provider) plus NFS-specific overrides for flash/FSC/AIF slots not in the NCSEXPER table.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -26,13 +26,13 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@emdzej/ediabasx-core": "^0.7.1",
-    "@emdzej/inpax-parser": "^0.11.1",
-    "@emdzej/inpax-interpreter": "^0.11.1",
-    "@emdzej/inpax-core": "^0.11.1",
-    "@emdzej/inpax-providers": "^0.11.1",
-    "@emdzej/inpax-mock-provider": "^0.11.1",
-    "@emdzej/inpax-interfaces": "^0.11.1",
+    "@emdzej/ediabasx-core": "^0.8.0",
+    "@emdzej/inpax-parser": "^0.12.0",
+    "@emdzej/inpax-interpreter": "^0.12.0",
+    "@emdzej/inpax-core": "^0.12.0",
+    "@emdzej/inpax-providers": "^0.12.0",
+    "@emdzej/inpax-mock-provider": "^0.12.0",
+    "@emdzej/inpax-interfaces": "^0.12.0",
     "@emdzej/ncsx-inpax-cabi-provider": "^0.8.0",
     "@emdzej/ncsx-chassis": "^0.8.0",
     "@emdzej/ncsx-fa-asw": "^0.8.0",
